@@ -51,6 +51,22 @@ function duplicateValues(values) {
 function readSource(...parts) {
 	return fs.readFileSync(resolveProject(...parts), "utf8");
 }
+function workflowJobBlock(workflow, jobName) {
+	const lines = workflow.split(/\r?\n/u);
+	const start = lines.findIndex(line => line === `  ${jobName}:`);
+
+	if (start === -1) {
+		return "";
+	}
+
+	let end = start + 1;
+
+	while (end < lines.length && !/^ {2}[A-Za-z0-9_-]+:\s*$/u.test(lines[end])) {
+		end += 1;
+	}
+
+	return lines.slice(start, end).join("\n");
+}
 
 function validatePackageMetadata() {
 	const pkg = readJson("package.json");
@@ -99,7 +115,15 @@ function validateStandaloneWiring() {
 	assert(workflow.includes("npm run check") && workflow.includes("npm run lint") && workflow.includes("npm run smoke"), "Release workflow should verify before building.");
 	assert(workflow.includes("npm run dist") && workflow.includes("dist/HachiGen.exe"), "Release workflow should build and upload dist/HachiGen.exe.");
 	assert(workflow.includes("--latest"), "Standalone HachiGen releases should mark the newest HachiGen release as latest.");
-	assert(ci.includes("npm run check") && ci.includes("npm run lint") && ci.includes("npm run smoke"), "CI workflow should run check, lint, and smoke.");
+	const ciCheckJob = workflowJobBlock(ci, "check");
+	const ciLintJob = workflowJobBlock(ci, "lint");
+	const ciSmokeJob = workflowJobBlock(ci, "smoke");
+	assert(ciCheckJob.includes("name: check") && ciCheckJob.includes("npm run check"), "CI workflow should run check in its own job.");
+	assert(ciLintJob.includes("name: lint") && ciLintJob.includes("npm run lint"), "CI workflow should run lint in its own job.");
+	assert(ciSmokeJob.includes("name: smoke") && ciSmokeJob.includes("npm run smoke"), "CI workflow should run smoke in its own job.");
+	assert(!ciCheckJob.includes("npm run lint") && !ciCheckJob.includes("npm run smoke"), "CI check job should not run lint or smoke.");
+	assert(!ciLintJob.includes("npm run check") && !ciLintJob.includes("npm run smoke"), "CI lint job should not run check or smoke.");
+	assert(!ciSmokeJob.includes("npm run check") && !ciSmokeJob.includes("npm run lint"), "CI smoke job should not run check or lint.");
 	assert(ci.includes("npm audit --audit-level=moderate"), "CI workflow should include dependency audit.");
 	assert(readSource("CHANGELOG.md").includes(`## v${version}`), "CHANGELOG.md should include the current release entry.");
 	assert(readSource("docs", "patch-notes.md").includes(`# v${version}`), "docs/patch-notes.md should include the current release entry.");
