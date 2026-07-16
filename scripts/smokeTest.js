@@ -77,6 +77,10 @@ function validatePackageMetadata() {
 	const pkg = readJson("package.json");
 	const lock = readJson("package-lock.json");
 	const rootPackage = lock.packages?.[""];
+	// Release builds must not let Electron Builder auto-publish before the workflow upload step.
+	const distScript = "electron-builder --win --publish=never && node scripts/copyRootInstaller.js";
+	const installerScript = "electron-builder --win nsis --publish=never && node scripts/copyRootInstaller.js";
+	const portableScript = "electron-builder --win portable --publish=never";
 	assert(pkg.name === "hachigen", "package.json name should be hachigen.");
 	assert(pkg.version === lock.version, "package.json and package-lock.json versions do not match.");
 	assert(rootPackage?.version === pkg.version, "package-lock root package version does not match package.json.");
@@ -86,9 +90,9 @@ function validatePackageMetadata() {
 	assert(pkg.scripts?.lint === "eslint . --config config/eslint.config.js", "package.json is missing the lint script.");
 	assert(pkg.scripts?.smoke === "node scripts/smokeTest.js", "package.json is missing the smoke script.");
 	assert(pkg.scripts?.["smoke:packaged-ui"] === "node scripts/packagedUiSmoke.js", "package.json is missing the packaged UI smoke script.");
-	assert(pkg.scripts?.dist === "electron-builder --win && node scripts/copyRootInstaller.js", "package.json should build all Windows release targets and copy the installer to the root.");
-	assert(pkg.scripts?.["dist:installer"] === "electron-builder --win nsis && node scripts/copyRootInstaller.js", "package.json should include an installer-only build script that copies the installer to the root.");
-	assert(pkg.scripts?.["dist:portable"] === "electron-builder --win portable", "package.json should include a portable-only build script.");
+	assert(pkg.scripts?.dist === distScript, "package.json should build all Windows release targets without implicit CI publishing and copy the installer to the root.");
+	assert(pkg.scripts?.["dist:installer"] === installerScript, "package.json should include an installer-only build script without implicit CI publishing that copies the installer to the root.");
+	assert(pkg.scripts?.["dist:portable"] === portableScript, "package.json should include a portable-only build script without implicit CI publishing.");
 	assert(pkg.build?.productName === "HachiGen", "Electron Builder productName should be HachiGen.");
 	assert(pkg.build?.copyright === "Copyright (c) 2026 FearlessKenji", "Electron Builder should include copyright metadata.");
 	assert(pkg.build?.artifactName === "HachiGen.${ext}", "Electron Builder artifactName should produce HachiGen.exe.");

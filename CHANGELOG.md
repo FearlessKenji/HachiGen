@@ -45,6 +45,7 @@ No unreleased changes yet.
 
 ### Fixed
 
+- Fixed release builds so Electron Builder cannot implicitly publish from CI during `npm run dist`; GitHub release uploads remain handled by the release workflow.
 - Fixed Windows npm/PM2 shim launching so local update dependency installs can run from paths like `C:\Program Files\nodejs\npm.cmd`.
 - Paused visible log-window redraws while text is selected so periodic log refreshes do not interrupt copying PM2 or HachiGen output.
 - Fixed remote database table reads that could fail with `spawn ENAMETOOLONG` by streaming remote worker source and database worker requests through stdin instead of command-line arguments.
