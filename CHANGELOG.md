@@ -50,6 +50,7 @@ No unreleased changes yet.
 - Fixed remote database table reads that could fail with `spawn ENAMETOOLONG` by streaming remote worker source and database worker requests through stdin instead of command-line arguments.
 - Fixed HachiGen self-update relaunch handling so the running app exits decisively and the updater logs the relaunched process ID.
 - Fixed the app shell layout so the sidebar stays viewport-sized while long pages scroll in the main content pane.
+- Fixed the smoke-test workflow parser so split CI job assertions do not fail with an undefined helper.
 
 ## v1.0.2 - 2026-07-14
 
