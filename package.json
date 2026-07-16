@@ -13,9 +13,9 @@
   "scripts": {
     "start": "electron .",
     "check": "node --check main.js && node --check preload.js && node --check src/shell.js && node --check src/hachigenLogger.js && node --check src/manager.js && node --check src/database-worker.js && node --check renderer/app.js",
-    "dist": "electron-builder --win && node scripts/copyRootInstaller.js",
-    "dist:installer": "electron-builder --win nsis && node scripts/copyRootInstaller.js",
-    "dist:portable": "electron-builder --win portable",
+    "dist": "electron-builder --win --publish=never && node scripts/copyRootInstaller.js",
+    "dist:installer": "electron-builder --win nsis --publish=never && node scripts/copyRootInstaller.js",
+    "dist:portable": "electron-builder --win portable --publish=never",
     "lint": "eslint . --config config/eslint.config.js",
     "lint:fix": "eslint . --config config/eslint.config.js --fix",
     "smoke": "node scripts/smokeTest.js",
