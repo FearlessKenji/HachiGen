@@ -134,7 +134,15 @@ function validateStandaloneWiring() {
 	assert(workflow.includes("Get-FileHash") && workflow.includes("dist/SHA256SUMS.txt"), "Release workflow should publish SHA-256 checksums.");
 	assert(workflow.includes("HACHIGEN_WIN_CSC_LINK") && workflow.includes("WIN_CSC_LINK"), "Release workflow should pass optional Windows signing secrets.");
 	assert(workflow.includes("--latest"), "Standalone HachiGen releases should mark the newest HachiGen release as latest.");
-	assert(ci.includes("npm run check") && ci.includes("npm run lint") && ci.includes("npm run smoke"), "CI workflow should run check, lint, and smoke.");
+	const ciCheckJob = workflowJobBlock(ci, "check");
+	const ciLintJob = workflowJobBlock(ci, "lint");
+	const ciSmokeJob = workflowJobBlock(ci, "smoke");
+	assert(ciCheckJob.includes("name: check") && ciCheckJob.includes("npm run check"), "CI workflow should run check in its own job.");
+	assert(ciLintJob.includes("name: lint") && ciLintJob.includes("npm run lint"), "CI workflow should run lint in its own job.");
+	assert(ciSmokeJob.includes("name: smoke") && ciSmokeJob.includes("npm run smoke"), "CI workflow should run smoke in its own job.");
+	assert(!ciCheckJob.includes("npm run lint") && !ciCheckJob.includes("npm run smoke"), "CI check job should not run lint or smoke.");
+	assert(!ciLintJob.includes("npm run check") && !ciLintJob.includes("npm run smoke"), "CI lint job should not run check or smoke.");
+	assert(!ciSmokeJob.includes("npm run check") && !ciSmokeJob.includes("npm run lint"), "CI smoke job should not run check or lint.");
 	assert(ci.includes("npm audit --audit-level=moderate"), "CI workflow should include dependency audit.");
 	assert(readSource("CHANGELOG.md").includes(`## v${version}`), "CHANGELOG.md should include the current release entry.");
 	assert(readSource("docs", "patch-notes.md").includes(`# v${version}`), "docs/patch-notes.md should include the current release entry.");
