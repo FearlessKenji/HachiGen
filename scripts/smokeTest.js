@@ -52,6 +52,19 @@ function duplicateValues(values) {
 function readSource(...parts) {
 	return fs.readFileSync(resolveProject(...parts), "utf8");
 }
+function workflowJobBlock(workflowSource, jobName) {
+	const lines = String(workflowSource || "").split(/\r?\n/u);
+	const header = `  ${jobName}:`;
+	const start = lines.findIndex(line => line === header);
+
+	if (start < 0) {
+		return "";
+	}
+
+	const endOffset = lines.slice(start + 1).findIndex(line => /^ {2}[A-Za-z0-9_-]+:\s*$/u.test(line));
+	const end = endOffset < 0 ? lines.length : start + 1 + endOffset;
+	return lines.slice(start, end).join("\n");
+}
 function restoreEnvValue(name, value) {
 	if (value === undefined) {
 		delete process.env[name];
