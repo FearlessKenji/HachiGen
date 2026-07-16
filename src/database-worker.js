@@ -1,4 +1,5 @@
 // External Node worker for HachiGen database inspection and cleanup.
+const fs = require("node:fs");
 const path = require("node:path");
 const { createRequire } = require("node:module");
 
@@ -769,9 +770,11 @@ async function applyCleanActions(db, actionIds) {
 }
 
 async function main() {
-	// manager.js passes one JSON argument with action, dbPath, root, and optional
-	// actionIds. All success and failure responses are returned through output().
-	const request = JSON.parse(process.argv[2] || "{}");
+	// manager.js pipes one JSON request with action, dbPath, root, and optional
+	// actionIds. The argv fallback keeps older launchers working.
+	const stdinText = process.stdin.isTTY ? "" : fs.readFileSync(0, "utf8").trim();
+	const requestText = stdinText || process.argv[2] || "{}";
+	const request = JSON.parse(requestText);
 	const expectedSchema = loadExpectedSchema(request.root);
 	const db = await openDatabase(request.root, request.dbPath, request.action === "view");
 

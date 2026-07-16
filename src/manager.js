@@ -4,6 +4,7 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const https = require("node:https");
+const zlib = require("node:zlib");
 const { Buffer } = require("node:buffer");
 const { URL } = require("node:url");
 const {
@@ -78,6 +79,23 @@ const DEFAULT_REMOTE_SETTINGS = {
 	remotePath: "",
 	pm2Name: PROCESS_NAME,
 };
+const RUNTIME_ARCHIVE_FORMAT = "hachigen-runtime-archive-v1";
+const RUNTIME_ARCHIVE_EXCLUDED_DIRECTORIES = new Set([
+	".cache",
+	".codex",
+	".git",
+	".next",
+	"build",
+	"coverage",
+	"dist",
+	"exports",
+	"logs",
+	"node_modules",
+	"tmp",
+]);
+const RUNTIME_ARCHIVE_EXCLUDED_FILES = new Set([
+	".DS_Store",
+]);
 
 // Values stored in the .env file. These are secrets or API/client IDs.
 const ENV_FIELDS = [
@@ -489,6 +507,281 @@ function fileStatus(filePath) {
 	}
 }
 
+function readTextFile(filePath, fallback = "") {
+	try {
+		return fs.readFileSync(filePath, "utf8");
+	} catch {
+		return fallback;
+	}
+}
+
+function writeJsonFile(filePath, value) {
+	ensureDir(path.dirname(filePath));
+	fs.writeFileSync(filePath, `${JSON.stringify(value, null, "\t")}\n`, "utf8");
+}
+
+function removeLocalDatabaseSidecars(databasePath) {
+	for (const sidecar of [`${databasePath}-wal`, `${databasePath}-shm`, `${databasePath}-journal`]) {
+		if (fileExists(sidecar)) {
+			fs.rmSync(sidecar, { force: true });
+		}
+	}
+}
+
+function sha256Buffer(buffer) {
+	const hash = crypto.createHash("sha256");
+	hash.update(buffer);
+	return hash.digest("hex");
+}
+
+function supportBundleStamp(date = new Date()) {
+	return date.toISOString().replace(/\D/gu, "").slice(0, 14);
+}
+
+function runtimeArchiveStamp(date = new Date()) {
+	return date.toISOString().replace(/\D/gu, "").slice(0, 14);
+}
+
+function normalizeArchivePath(value) {
+	return String(value || "").replace(/\\/gu, "/").replace(/^\/+/u, "");
+}
+
+function assertSafeRelativeArchivePath(value, label = "archive path") {
+	const normalized = normalizeArchivePath(value);
+
+	if (!normalized || normalized.split("/").some(part => !part || part === "." || part === "..")) {
+		throw new Error(`Invalid ${label}: ${value || "empty"}.`);
+	}
+
+	return normalized;
+}
+
+function isPathInside(root, filePath) {
+	const relative = path.relative(path.resolve(root), path.resolve(filePath));
+	return !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isRuntimeArchiveExcludedDirectory(name) {
+	return RUNTIME_ARCHIVE_EXCLUDED_DIRECTORIES.has(String(name || "").toLowerCase());
+}
+
+function isRuntimeArchiveExcludedFile(name) {
+	return RUNTIME_ARCHIVE_EXCLUDED_FILES.has(String(name || ""));
+}
+
+function isSensitiveRuntimeArchivePath(relativePath) {
+	const normalized = normalizeArchivePath(relativePath).toLowerCase();
+	return normalized === ".env" ||
+		normalized.endsWith(".key") ||
+		normalized.includes("/keys/") ||
+		normalized.startsWith("database/") ||
+		normalized.startsWith("manager/backups/database/");
+}
+
+function readTarOctal(buffer, offset, length) {
+	const text = buffer.toString("ascii", offset, offset + length).replace(/\0.*$/u, "").trim();
+	return text ? Number.parseInt(text, 8) || 0 : 0;
+}
+
+function readTarName(buffer, offset) {
+	return buffer.toString("utf8", offset, offset + 100).replace(/\0.*$/u, "");
+}
+
+function readTarGzEntries(archivePath) {
+	const archiveBuffer = zlib.gunzipSync(fs.readFileSync(archivePath));
+	const entries = new Map();
+	let offset = 0;
+
+	while (offset + 512 <= archiveBuffer.length) {
+		const header = archiveBuffer.subarray(offset, offset + 512);
+
+		if (header.every(byte => byte === 0)) {
+			break;
+		}
+
+		const name = readTarName(header, 0);
+		const size = readTarOctal(header, 124, 12);
+		const typeFlag = header.toString("ascii", 156, 157);
+		const contentStart = offset + 512;
+		const contentEnd = contentStart + size;
+
+		if (!name || contentEnd > archiveBuffer.length) {
+			throw new Error("Runtime archive is damaged or incomplete.");
+		}
+
+		if (!typeFlag || typeFlag === "0") {
+			entries.set(assertSafeRelativeArchivePath(name), Buffer.from(archiveBuffer.subarray(contentStart, contentEnd)));
+		}
+
+		offset = contentStart + Math.ceil(size / 512) * 512;
+	}
+
+	return entries;
+}
+
+function runtimeArchiveProjectFileEntry(filePath, restorePath, sourcePath = filePath) {
+	const content = fs.readFileSync(filePath);
+
+	return {
+		bytes: content.length,
+		content,
+		restoreKind: "project",
+		restorePath: normalizeArchivePath(restorePath),
+		sensitive: isSensitiveRuntimeArchivePath(restorePath),
+		sha256: sha256Buffer(content),
+		sourcePath,
+	};
+}
+
+function collectLocalProjectFiles(root) {
+	const files = [];
+
+	function visit(directory) {
+		for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+			if (entry.isDirectory()) {
+				if (!isRuntimeArchiveExcludedDirectory(entry.name)) {
+					visit(path.join(directory, entry.name));
+				}
+
+				continue;
+			}
+
+			if (!entry.isFile() || isRuntimeArchiveExcludedFile(entry.name)) {
+				continue;
+			}
+
+			const fullPath = path.join(directory, entry.name);
+			const restorePath = normalizeArchivePath(path.relative(root, fullPath));
+			files.push(runtimeArchiveProjectFileEntry(fullPath, restorePath));
+		}
+	}
+
+	visit(root);
+	return files;
+}
+
+function readRuntimeArchiveManifest(archivePath) {
+	const entries = readTarGzEntries(archivePath);
+	const manifestBuffer = entries.get("manifest.json");
+
+	if (!manifestBuffer) {
+		throw new Error("Runtime archive is missing manifest.json.");
+	}
+
+	const manifest = parseJsonText(manifestBuffer.toString("utf8"), null);
+
+	if (!manifest || manifest.format !== RUNTIME_ARCHIVE_FORMAT || !Array.isArray(manifest.entries)) {
+		throw new Error("Choose a HachiGen runtime archive.");
+	}
+
+	for (const entry of manifest.entries) {
+		entry.archivePath = assertSafeRelativeArchivePath(entry.archivePath, "payload path");
+
+		if (!entries.has(entry.archivePath)) {
+			throw new Error(`Runtime archive is missing payload file ${entry.archivePath}.`);
+		}
+
+		const content = entries.get(entry.archivePath);
+
+		if (entry.sha256 && sha256Buffer(content) !== entry.sha256) {
+			throw new Error(`Runtime archive payload failed checksum verification: ${entry.archivePath}.`);
+		}
+
+		if (entry.restoreKind === "project") {
+			entry.restorePath = assertSafeRelativeArchivePath(entry.restorePath, "restore path");
+		} else if (!["database-key", "secrets-key"].includes(entry.restoreKind)) {
+			throw new Error(`Runtime archive contains an unsupported restore kind: ${entry.restoreKind || "unknown"}.`);
+		}
+	}
+
+	return {
+		entries,
+		manifest,
+	};
+}
+
+function summarizeSettings(settings = {}) {
+	const remote = normalizeRemoteSettings(settings.remote);
+
+	return {
+		activeStash: settings.activeStash ?
+			{
+				createdAt: settings.activeStash.createdAt || "",
+				ref: settings.activeStash.ref || "",
+			} :
+			null,
+		hachiGenReleaseTag: settings.hachiGenReleaseTag || null,
+		installPath: settings.installPath || "",
+		remote: {
+			configured: Boolean(remote.host && remote.username && remote.remotePath),
+			hasHost: Boolean(remote.host),
+			hasSshKeyPath: Boolean(remote.sshKeyPath),
+			lastTest: normalizeRemoteTestState(settings.lastRemoteTest),
+			portMode: remote.portMode,
+			pm2Name: remote.pm2Name || PROCESS_NAME,
+		},
+		runtimeTarget: settings.runtimeTarget === "remote" ? "remote" : "local",
+	};
+}
+
+function redactUrlCredentials(value) {
+	try {
+		const parsed = new URL(String(value || ""));
+
+		if (parsed.username) {
+			parsed.username = "redacted";
+		}
+
+		if (parsed.password) {
+			parsed.password = "redacted";
+		}
+
+		return parsed.toString();
+	} catch {
+		return redactHachiGenLogText(value);
+	}
+}
+
+function summarizeRepository(repository = {}) {
+	return {
+		currentBranch: repository.currentBranch || "",
+		isGit: Boolean(repository.isGit),
+		originUrl: redactUrlCredentials(repository.originUrl || ""),
+		source: repository.source || "",
+		updateTarget: repository.updateTarget || UPDATE_TARGET,
+	};
+}
+
+function summarizeScan(scan = {}) {
+	return {
+		configurationMissing: scan.configurationMissing || [],
+		configurationReady: Boolean(scan.configurationReady),
+		dependenciesReady: scan.dependenciesReady !== false,
+		hasConfig: Boolean(scan.hasConfig),
+		hasEnv: Boolean(scan.hasEnv),
+		hasGit: Boolean(scan.hasGit),
+		hasNodeModules: Boolean(scan.hasNodeModules),
+		installPath: scan.installPath || "",
+		missingDependencies: scan.missingDependencies || [],
+		missingFiles: scan.missingFiles || [],
+		packageName: scan.packageName || "",
+		packageVersion: scan.packageVersion || "",
+		projectFound: Boolean(scan.projectFound),
+		source: scan.source || "",
+	};
+}
+
+function summarizeUpdateState(update = {}) {
+	return {
+		available: Boolean(update.available || update.updateAvailable),
+		checkedAt: update.checkedAt || null,
+		message: update.message || "",
+		status: update.status || "unchecked",
+		updateTarget: update.updateTarget || "",
+		verification: update.verification || null,
+	};
+}
+
 function databaseFileStatus(dbPath) {
 	if (!dbPath || !fileExists(dbPath)) {
 		return {
@@ -780,6 +1073,103 @@ function displayPath(filePath, root = process.cwd()) {
 	return path.basename(resolvedPath) || resolvedPath;
 }
 
+function readableCause(error) {
+	return redactHachiGenLogText(error?.message || String(error || "Unknown error.")).replace(/^ShellError:\s*/u, "");
+}
+
+function errorWithContext(context, error) {
+	const wrapped = new Error(`${context}: ${readableCause(error)}`);
+	wrapped.cause = error;
+	return wrapped;
+}
+
+function failedToolVersionMessage(command, result) {
+	const output = redactHachiGenLogText(result?.stderr || result?.stdout || "")
+		.replace(/\s+/gu, " ")
+		.trim();
+	const reason = output ? `: ${output}` : ".";
+
+	return `${command} is installed, but HachiGen could not run ${command} --version${reason}`;
+}
+
+function normalizeWindowState(value = null) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return null;
+	}
+
+	const bounds = value.bounds && typeof value.bounds === "object" ? value.bounds : value;
+	const width = Math.max(1040, Math.round(Number(bounds.width) || 0));
+	const height = Math.max(720, Math.round(Number(bounds.height) || 0));
+	const x = Number.isFinite(Number(bounds.x)) ? Math.round(Number(bounds.x)) : null;
+	const y = Number.isFinite(Number(bounds.y)) ? Math.round(Number(bounds.y)) : null;
+
+	if (!width || !height) {
+		return null;
+	}
+
+	return {
+		bounds: {
+			...(x === null ? {} : { x }),
+			...(y === null ? {} : { y }),
+			height,
+			width,
+		},
+		maximized: Boolean(value.maximized),
+	};
+}
+
+function patchNotesSummary(markdown) {
+	const text = String(markdown || "");
+	const unreleased = topLevelMarkdownSection(text, "Unreleased");
+	let lines = releaseNoteBullets(unreleased);
+
+	// Release builds reset Unreleased, so fall back to the latest dated section.
+	if (!lines.length) {
+		lines = releaseNoteBullets(latestReleaseNotesSection(text));
+	}
+
+	return lines.slice(0, 8);
+}
+
+function topLevelMarkdownSection(text, heading) {
+	const lines = String(text || "").split(/\r?\n/u);
+	const start = lines.findIndex(line => line.trim() === `# ${heading}`);
+
+	if (start < 0) {
+		return "";
+	}
+
+	const endOffset = lines.slice(start + 1).findIndex(line => /^#\s+/u.test(line));
+	const end = endOffset < 0 ? lines.length : start + 1 + endOffset;
+	return lines.slice(start + 1, end).join("\n").trim();
+}
+
+function latestReleaseNotesSection(text) {
+	const lines = String(text || "").split(/\r?\n/u);
+	const start = lines.findIndex(line => /^# v\d+\.\d+\.\d+(?:\s+-\s+.*)?$/u.test(line.trim()));
+
+	if (start < 0) {
+		return "";
+	}
+
+	const endOffset = lines.slice(start + 1).findIndex(line => /^#\s+/u.test(line));
+	const end = endOffset < 0 ? lines.length : start + 1 + endOffset;
+	return lines.slice(start + 1, end).join("\n").trim();
+}
+
+function releaseNoteBullets(section) {
+	if (!section) {
+		return [];
+	}
+
+	return String(section)
+		.split(/\r?\n/u)
+		.map(line => line.trim())
+		.filter(line => line.startsWith("- "))
+		.map(line => line.slice(2).trim())
+		.filter(Boolean);
+}
+
 function backupRotationSummaryText(rotation) {
 	if (!rotation) {
 		return "";
@@ -1043,6 +1433,53 @@ function downloadUrlToFile(url, targetPath, { maxRedirects = 5, onProgress = noo
 		});
 		request.on("error", reject);
 	});
+}
+
+function sha256File(filePath) {
+	const hash = crypto.createHash("sha256");
+	hash.update(fs.readFileSync(filePath));
+	return hash.digest("hex");
+}
+
+function readFilePrefix(filePath, length) {
+	const file = fs.openSync(filePath, "r");
+	const buffer = Buffer.alloc(length);
+
+	try {
+		fs.readSync(file, buffer, 0, length, 0);
+		return buffer;
+	} finally {
+		fs.closeSync(file);
+	}
+}
+
+function verifyHachiGenUpdateFile(filePath, expectedBytes = 0) {
+	if (!fileExists(filePath)) {
+		throw new Error("Downloaded HachiGen update file was not found.");
+	}
+
+	const stats = fs.statSync(filePath);
+
+	if (!stats.isFile() || stats.size <= 0) {
+		throw new Error("Downloaded HachiGen update is empty or invalid.");
+	}
+
+	if (expectedBytes && stats.size !== expectedBytes) {
+		throw new Error(`Downloaded HachiGen update size mismatch. Expected ${expectedBytes} bytes, got ${stats.size}.`);
+	}
+
+	const prefix = readFilePrefix(filePath, 2).toString("ascii");
+
+	if (prefix !== "MZ") {
+		throw new Error("Downloaded HachiGen update is not a Windows executable.");
+	}
+
+	return {
+		bytes: stats.size,
+		checkedAt: new Date().toISOString(),
+		sha256: sha256File(filePath),
+		status: "verified",
+	};
 }
 
 function nodeVersionMeetsMinimum(versionText) {
@@ -1314,6 +1751,24 @@ function validateRemoteSettings(settings, { requireFields = true } = {}) {
 	return errors;
 }
 
+function remoteConnectionLabel(settings = {}) {
+	const host = settings.host ? `${settings.username || "user"}@${settings.host}` : "remote profile";
+	return settings.remotePath ? `${host}:${settings.remotePath}` : host;
+}
+
+function normalizeRemoteTestState(value = null) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return null;
+	}
+
+	return {
+		checkedAt: String(value.checkedAt || ""),
+		message: redactHachiGenLogText(value.message || ""),
+		ok: Boolean(value.ok),
+		target: redactHachiGenLogText(value.target || ""),
+	};
+}
+
 function quotePosix(value) {
 	return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -1436,14 +1891,19 @@ class HachiManager {
 			installPath: this.defaultInstallPath,
 			activeStash: null,
 			hachiGenReleaseTag: null,
+			lastRemoteTest: null,
+			lastRecoveryNoticeEventTime: null,
 			remote: { ...DEFAULT_REMOTE_SETTINGS },
 			runtimeTarget: "local",
+			windowState: null,
 		};
 		const saved = readJson(this.settingsPath, {}) || {};
 
 		return {
 			...defaults,
 			...saved,
+			lastRemoteTest: normalizeRemoteTestState(saved.lastRemoteTest),
+			windowState: normalizeWindowState(saved.windowState),
 			remote: normalizeRemoteSettings(saved.remote),
 			runtimeTarget: saved.runtimeTarget === "remote" ? "remote" : "local",
 		};
@@ -1453,6 +1913,67 @@ class HachiManager {
 		// settings.json stores user choices such as install path and active stash.
 		ensureDir(path.dirname(this.settingsPath));
 		fs.writeFileSync(this.settingsPath, JSON.stringify(this.settings, null, "\t"));
+	}
+
+	getWindowState() {
+		return normalizeWindowState(this.settings.windowState);
+	}
+
+	saveWindowState(windowState) {
+		const normalized = normalizeWindowState(windowState);
+
+		if (!normalized) {
+			return { ok: false, message: "Window state was not saved." };
+		}
+
+		this.settings.windowState = normalized;
+		this.saveSettings();
+		return { ok: true, message: "Window state saved." };
+	}
+
+	getPendingRecoveryEvent() {
+		const events = this.logger.readRecentEvents(80, { includeHidden: true });
+		const recoveryEvents = events.filter(event => ["crash-handler", "process-recovery"].includes(event.area));
+		const latest = recoveryEvents[recoveryEvents.length - 1] || null;
+
+		if (!latest || latest.time === this.settings.lastRecoveryNoticeEventTime) {
+			return null;
+		}
+
+		return latest;
+	}
+
+	markRecoveryEventNotified(eventTime) {
+		if (!eventTime) {
+			return { ok: false, message: "Recovery event was not marked." };
+		}
+
+		this.settings.lastRecoveryNoticeEventTime = eventTime;
+		this.saveSettings();
+		return { ok: true, message: "Recovery notice recorded." };
+	}
+
+	async getAboutInfo() {
+		const scan = await this.getQuickScan().catch(() => null);
+		const logs = this.logger.ensureLogs();
+		const notesPath = path.join(this.managerRoot, "docs", "patch-notes.md");
+		const releaseNotes = patchNotesSummary(readTextFile(notesPath));
+
+		return {
+			appName: "HachiGen",
+			hachiGenVersion: this.getHachiGenVersion(),
+			hachiVersion: scan?.packageVersion || "unknown",
+			installPath: this.getInstallPath(),
+			paths: {
+				logFolder: logs.folder,
+				settingsPath: this.settingsPath,
+				userDataPath: this.userDataPath,
+			},
+			releaseNotes,
+			runtimeTarget: this.getRuntimeTarget(),
+			updateChannel: "Stable releases (hachigen-v*)",
+			updateTarget: UPDATE_TARGET,
+		};
 	}
 
 	event(type, message, details = {}) {
@@ -1665,6 +2186,7 @@ class HachiManager {
 			active: this.getRuntimeTarget() === "remote",
 			configured: errors.length === 0,
 			errors,
+			lastTest: normalizeRemoteTestState(this.settings.lastRemoteTest),
 			settings,
 		};
 	}
@@ -1706,7 +2228,12 @@ class HachiManager {
 			assertSshPrivateKeyFile(remote.sshKeyPath);
 		}
 
+		const currentRemote = normalizeRemoteSettings(this.settings.remote);
+		const remoteChanged = JSON.stringify(currentRemote) !== JSON.stringify(remote);
 		this.settings.remote = remote;
+		if (remoteChanged) {
+			this.settings.lastRemoteTest = null;
+		}
 		this.saveSettings();
 		this.log("Remote settings saved.");
 
@@ -1767,10 +2294,11 @@ class HachiManager {
 		return settings;
 	}
 
-	async runRemoteCommand(remoteCommand, { allowFailure = false, log = false, timeoutMs = 30000 } = {}) {
+	async runRemoteCommand(remoteCommand, { allowFailure = false, input, log = false, timeoutMs = 30000 } = {}) {
 		const settings = await this.requireRemoteRuntime();
 		return run("ssh", this.buildRemoteSshArgs(settings, remoteCommand), {
 			allowFailure,
+			input,
 			timeoutMs,
 			onLog: log ? entry => this.logShell(entry) : null,
 		});
@@ -1782,6 +2310,7 @@ class HachiManager {
 
 		return run("ssh", this.buildRemoteSshArgs(settings, `cd ${quoteRemotePath(settings.remotePath)} && ${command}`), {
 			allowFailure: Boolean(options.allowFailure),
+			input: options.input,
 			timeoutMs: options.timeoutMs || 30000,
 			onLog: shouldLog ? entry => this.logShell(entry) : null,
 		});
@@ -1818,10 +2347,10 @@ class HachiManager {
 
 	async writeRemoteText(relativePath, content) {
 		const directory = path.posix.dirname(relativePath);
-		const encoded = Buffer.from(String(content), "utf8").toString("base64");
 		const mkdir = directory && directory !== "." ? `mkdir -p ${quotePosix(directory)} && ` : "";
 
-		await this.runRemoteHachiCommand(`${mkdir}printf %s ${quotePosix(encoded)} | base64 -d > ${quotePosix(relativePath)}`, {
+		await this.runRemoteHachiCommand(`${mkdir}cat > ${quotePosix(relativePath)}`, {
+			input: String(content),
 			timeoutMs: 30000,
 		});
 	}
@@ -1998,11 +2527,22 @@ class HachiManager {
 			timeoutMs: 20000,
 		});
 		const ok = result.code === 0;
+		const message = ok ? "Remote connection validated." : "Remote connection test failed. Review the output for details.";
+		const lastTest = {
+			checkedAt: new Date().toISOString(),
+			message,
+			ok,
+			target: remoteConnectionLabel(settings),
+		};
+
+		this.settings.lastRemoteTest = lastTest;
+		this.saveSettings();
 
 		return {
+			checkedAt: lastTest.checkedAt,
 			code: result.code,
 			ok,
-			message: ok ? "Remote connection validated." : "Remote connection test failed. Review the output for details.",
+			message,
 			stderr: result.stderr,
 			stdout: result.stdout,
 		};
@@ -2039,6 +2579,12 @@ class HachiManager {
 		// with the Hachi instance they protect, while .gitignore keeps them local.
 		// Example: <Hachi>/manager/backups/database/database-2026-06-21.sqlite
 		return path.join(this.getInstallPath(), "manager", "backups", "database");
+	}
+
+	getRuntimeExportsDir() {
+		// Runtime archives intentionally live beside the selected Hachi project,
+		// while .gitignore keeps the secrets-bearing exports folder local only.
+		return path.join(this.getInstallPath(), "exports");
 	}
 
 	getDatabaseWorkerPath() {
@@ -2264,11 +2810,11 @@ class HachiManager {
 
 	async writeRemoteAbsoluteText(filePath, content) {
 		const directory = path.posix.dirname(filePath);
-		const encoded = Buffer.from(String(content), "utf8").toString("base64");
 
 		await this.runRemoteCommand(
-			`mkdir -p ${quotePosix(directory)} && printf %s ${quotePosix(encoded)} | base64 -d > ${quotePosix(filePath)} && chmod 700 ${quotePosix(directory)} && chmod 600 ${quotePosix(filePath)}`,
+			`mkdir -p ${quotePosix(directory)} && cat > ${quotePosix(filePath)} && chmod 700 ${quotePosix(directory)} && chmod 600 ${quotePosix(filePath)}`,
 			{
+				input: String(content),
 				log: false,
 				timeoutMs: 30000,
 			},
@@ -3477,7 +4023,7 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 		}
 
 		this.logDatabase("checkpointing database before conversion.");
-		await this.checkpointDatabase();
+		await this.checkpointLocalDatabase();
 
 		const script = this.databaseEncryptionConversionScript(backupFileName);
 		this.logDatabase(`creating encrypted database and recovery backup ${backupFileName}.`);
@@ -4083,6 +4629,10 @@ process.stdout.write(JSON.stringify({
 			return this.runRemoteDatabaseWorker(action, options);
 		}
 
+		return this.runLocalDatabaseWorker(action, options);
+	}
+
+	async runLocalDatabaseWorker(action, options = {}) {
 		// Run SQLite inspection/cleanup in the user's normal Node.js process.
 		// That keeps native sqlite3 loading out of Electron's runtime.
 		// The worker returns JSON, so this method converts worker failures into
@@ -4101,11 +4651,12 @@ process.stdout.write(JSON.stringify({
 			root: paths.root,
 			...options,
 		};
-		// Pass the whole request as one argument. That avoids quoting problems
-		// from trying to pass several paths and options separately on Windows.
-		const result = await run("node", [this.getDatabaseWorkerPath(), JSON.stringify(request)], {
+		// Pipe the request through stdin instead of argv so payload size cannot
+		// trip Windows command-line length limits.
+		const result = await run("node", [this.getDatabaseWorkerPath()], {
 			cwd: paths.root,
 			allowFailure: true,
+			input: JSON.stringify(request),
 			timeoutMs: 300000,
 		});
 		const output = (result.stdout || "").trim();
@@ -4128,26 +4679,15 @@ process.stdout.write(JSON.stringify({
 		const request = {
 			action,
 			dbPath: "database/database.sqlite",
+			root: ".",
 			...options,
 		};
 		const remoteWorkerPath = ".hachigen/database-worker.js";
 		const remoteWorkerSource = fs.readFileSync(path.join(this.managerRoot, "src", DATABASE_WORKER_FILE), "utf8");
 		await this.writeRemoteText(remoteWorkerPath, remoteWorkerSource);
-		const launcher = `
-const { spawnSync } = require("node:child_process");
-const path = require("node:path");
-const request = JSON.parse(process.argv[process.argv.length - 1] || "{}");
-request.root = process.cwd();
-request.dbPath = path.resolve(request.dbPath);
-const child = spawnSync(process.execPath, ["${remoteWorkerPath}", JSON.stringify(request)], {
-	encoding: "utf8",
-});
-process.stdout.write(child.stdout || "");
-process.stderr.write(child.stderr || "");
-process.exit(child.status === null ? 1 : child.status);
-`;
-		const result = await this.runRemoteHachiCommand(`node -e ${quotePosix(launcher)} ${quotePosix(JSON.stringify(request))}`, {
+		const result = await this.runRemoteHachiCommand(`node ${quotePosix(remoteWorkerPath)}`, {
 			allowFailure: true,
+			input: JSON.stringify(request),
 			log: false,
 			timeoutMs: 300000,
 		});
@@ -4286,10 +4826,24 @@ process.exit(child.status === null ? 1 : child.status);
 		// Ask SQLite to flush WAL data before copying the database. If the
 		// dependency is unavailable, backup still falls back to copying the file.
 		// This keeps Backup useful even if the database worker cannot run.
+		return this.getRuntimeTarget() === "remote" ?
+			this.checkpointRemoteDatabase() :
+			this.checkpointLocalDatabase();
+	}
+
+	async checkpointLocalDatabase() {
 		try {
-			await this.runDatabaseWorker("checkpoint");
+			await this.runLocalDatabaseWorker("checkpoint");
 		} catch (error) {
 			this.log(`Database checkpoint skipped: ${error.message}`);
+		}
+	}
+
+	async checkpointRemoteDatabase() {
+		try {
+			await this.runRemoteDatabaseWorker("checkpoint");
+		} catch (error) {
+			this.log(`Remote database checkpoint skipped: ${error.message}`);
 		}
 	}
 
@@ -4298,6 +4852,10 @@ process.exit(child.status === null ? 1 : child.status);
 			return this.backupRemoteDatabase({ fileName, overwrite });
 		}
 
+		return this.backupLocalDatabase({ fileName, overwrite });
+	}
+
+	async backupLocalDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false, reason = "manual" } = {}) {
 		this.logDatabase(`${overwrite ? "overwriting" : "creating"} backup ${fileName}.`);
 		// Copy the current database into the dated backup folder. Manual backups
 		// use a date-only filename so HachiGen can ask before replacing today's.
@@ -4334,7 +4892,7 @@ process.exit(child.status === null ? 1 : child.status);
 				const metadata = dbEncryption.writeDatabaseBackupMetadata({
 					backupPath,
 					key,
-					reason: "manual",
+					reason,
 					root: paths.root,
 					source: "local",
 				});
@@ -4423,7 +4981,7 @@ process.stdout.write(JSON.stringify({
 }));
 `;
 
-		await this.checkpointDatabase();
+		await this.checkpointRemoteDatabase();
 		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
 			fallbackMessage: "Remote database backup did not return valid JSON.",
 			timeoutMs: 300000,
@@ -4440,6 +4998,478 @@ process.stdout.write(JSON.stringify({
 		}
 
 		return result;
+	}
+
+	async readRemoteDatabaseFile() {
+		await this.checkpointRemoteDatabase();
+		const script = `
+const fs = require("node:fs");
+const databasePath = "database/database.sqlite";
+if (!fs.existsSync(databasePath)) {
+	process.stdout.write(JSON.stringify({ ok: false, error: "No remote Hachi database exists to pull." }));
+	process.exit(0);
+}
+const content = fs.readFileSync(databasePath);
+const stats = fs.statSync(databasePath);
+process.stdout.write(JSON.stringify({
+	bytes: content.length,
+	content: content.toString("base64"),
+	modifiedAt: stats.mtime.toISOString(),
+	ok: true,
+	path: databasePath,
+}));
+`;
+		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Remote database pull did not return valid JSON.",
+			log: false,
+			timeoutMs: 300000,
+		});
+
+		if (!result.ok) {
+			throw new Error(result.error || "Remote database pull failed.");
+		}
+
+		return result;
+	}
+
+	async writeRemoteDatabaseFile(content) {
+		const script = `
+const fs = require("node:fs");
+const path = require("node:path");
+const chunks = [];
+process.stdin.on("data", chunk => chunks.push(chunk));
+process.stdin.on("end", () => {
+	try {
+		const request = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+		const content = Buffer.from(String(request.content || ""), "base64");
+		const databasePath = "database/database.sqlite";
+		fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+		for (const sidecar of [databasePath + "-wal", databasePath + "-shm", databasePath + "-journal"]) {
+			if (fs.existsSync(sidecar)) {
+				fs.rmSync(sidecar, { force: true });
+			}
+		}
+		fs.writeFileSync(databasePath, content);
+		process.stdout.write(JSON.stringify({
+			bytes: content.length,
+			ok: true,
+			path: databasePath,
+		}));
+	} catch (error) {
+		process.stdout.write(JSON.stringify({ ok: false, error: error.message || String(error) }));
+	}
+});
+`;
+		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Remote database push did not return valid JSON.",
+			input: JSON.stringify({
+				content: Buffer.from(content).toString("base64"),
+			}),
+			log: false,
+			timeoutMs: 300000,
+		});
+
+		if (!result.ok) {
+			throw new Error(result.error || "Remote database push failed.");
+		}
+
+		return result;
+	}
+
+	async readRemoteDatabaseProtectionKeyIfAvailable() {
+		try {
+			const result = await this.runRemoteHachiJson(`node -e ${quotePosix(this.remoteDatabaseProtectionScript("read-key"))}`, {
+				fallbackMessage: "Remote database key read did not return valid JSON.",
+				log: false,
+				timeoutMs: 30000,
+			});
+
+			return result.ok ? normalizeDatabaseKey(result.key) : "";
+		} catch {
+			return "";
+		}
+	}
+
+	async ensureRemoteDatabaseProtectionKeyForTransfer() {
+		const protection = await this.runRemoteHachiJson(
+			`node -e ${quotePosix(this.remoteDatabaseProtectionScript("prepare"))}`,
+			{
+				fallbackMessage: "Remote database protection setup did not return valid JSON.",
+				log: false,
+				timeoutMs: 30000,
+			},
+		);
+
+		if (protection.ok === false) {
+			throw new Error(protection.error || "Remote database key setup failed.");
+		}
+
+		const key = await this.readRemoteDatabaseProtectionKeyIfAvailable();
+
+		if (!key) {
+			throw new Error("Remote database key is not available. Generate or restore the remote database key before transfer.");
+		}
+
+		return key;
+	}
+
+	ensureLocalDatabaseProtectionKeyForTransfer() {
+		const current = this.localDatabaseProtectionState();
+
+		if (["key-ready", "direct-key"].includes(current.status)) {
+			const key = this.readLocalDatabaseProtectionKeyIfAvailable();
+
+			if (key) {
+				return key;
+			}
+		}
+
+		if (current.databaseFile?.encryptedLikely) {
+			throw new Error("Local database is encrypted, but its configured key is missing. Restore the local database key before transfer.");
+		}
+
+		if (current.directKeyConfigured && !current.configuredKeyFile) {
+			this.updateLocalDatabaseProtectionEnv({
+				HACHI_DB_ENCRYPTION: "encrypted",
+			});
+			return this.readLocalDatabaseProtectionKeyIfAvailable();
+		}
+
+		if (current.configuredKeyFile) {
+			if (!current.keyFileStatus.readable) {
+				throw new Error("Configured local database key file is missing. HachiGen will not generate a replacement because encrypted databases require the original key.");
+			}
+
+			try {
+				fs.chmodSync(path.dirname(current.configuredKeyFile), 0o700);
+				fs.chmodSync(current.configuredKeyFile, 0o600);
+			} catch {
+				// Windows ACLs may not map cleanly to POSIX modes; the key still exists.
+			}
+
+			this.updateLocalDatabaseProtectionEnv({
+				HACHI_DB_ENCRYPTION: "encrypted",
+				HACHI_DB_KEY_FILE: current.configuredKeyFile,
+			});
+			return this.readLocalDatabaseProtectionKeyIfAvailable();
+		}
+
+		const location = this.getLocalDatabaseKeyLocation();
+		ensureDir(path.dirname(location.path));
+
+		if (!fileExists(location.path)) {
+			fs.writeFileSync(location.path, `${generateDatabaseKey()}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+		}
+
+		try {
+			fs.chmodSync(path.dirname(location.path), 0o700);
+			fs.chmodSync(location.path, 0o600);
+		} catch {
+			// Windows ACLs may not map cleanly to POSIX modes; the key still exists.
+		}
+
+		this.updateLocalDatabaseProtectionEnv({
+			HACHI_DB_ENCRYPTION: "encrypted",
+			HACHI_DB_KEY_FILE: location.path,
+		});
+		const key = this.readLocalDatabaseProtectionKeyIfAvailable();
+
+		if (!key) {
+			throw new Error("Local database key could not be prepared for transfer.");
+		}
+
+		return key;
+	}
+
+	databaseTransferTransformScript() {
+		// Transfer adapts a temporary database copy to the destination key. The
+		// source and destination installs keep their own configured keys.
+		return `
+const fs = require("node:fs");
+const path = require("node:path");
+
+function output(payload) {
+	process.stdout.write(JSON.stringify(payload));
+}
+
+const chunks = [];
+process.stdin.on("data", chunk => chunks.push(chunk));
+process.stdin.on("end", () => {
+	try {
+		const request = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+		const dbEncryption = require("./database/dbEncryption.js");
+		const sourcePath = path.resolve(String(request.sourcePath || ""));
+		const targetPath = path.resolve(String(request.targetPath || ""));
+		const sourceKey = String(request.sourceKey || "").trim();
+		const destinationKey = String(request.destinationKey || "").trim();
+		const sourceLabel = String(request.sourceLabel || "source");
+		const destinationLabel = String(request.destinationLabel || "destination");
+
+		if (!sourcePath || !fs.existsSync(sourcePath)) {
+			throw new Error("Transfer source database file does not exist.");
+		}
+
+		if (!targetPath) {
+			throw new Error("Transfer target database file was not provided.");
+		}
+
+		fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+
+		if (fs.existsSync(targetPath)) {
+			fs.rmSync(targetPath, { force: true });
+		}
+
+		const before = dbEncryption.databaseFileStatus(sourcePath);
+		let transform = "copied";
+
+		if (before.status === "plaintext") {
+			if (destinationKey) {
+				dbEncryption.convertPlainDatabaseToEncrypted({
+					key: destinationKey,
+					root: process.cwd(),
+					sourcePath,
+					targetPath,
+				});
+				transform = "encrypted";
+			} else {
+				fs.copyFileSync(sourcePath, targetPath);
+				transform = "copied-plaintext";
+			}
+		} else if (before.encryptedLikely) {
+			if (!sourceKey) {
+				throw new Error(sourceLabel + " database is encrypted, but the " + sourceLabel + " database key is not available.");
+			}
+
+			if (!destinationKey) {
+				throw new Error(destinationLabel + " database key is not available.");
+			}
+
+			fs.copyFileSync(sourcePath, targetPath);
+
+			if (sourceKey === destinationKey) {
+				dbEncryption.verifyEncryptedDatabaseFile({
+					dbPath: targetPath,
+					key: destinationKey,
+					root: process.cwd(),
+				});
+				transform = "verified";
+			} else {
+				dbEncryption.rekeyEncryptedDatabase({
+					dbPath: targetPath,
+					newKey: destinationKey,
+					oldKey: sourceKey,
+					root: process.cwd(),
+				});
+				transform = "rekeyed";
+			}
+		} else {
+			throw new Error("Transfer source database is not a recognizable Hachi database.");
+		}
+
+		if (destinationKey) {
+			dbEncryption.verifyEncryptedDatabaseFile({
+				dbPath: targetPath,
+				key: destinationKey,
+				root: process.cwd(),
+			});
+		}
+
+		const after = dbEncryption.databaseFileStatus(targetPath);
+		output({
+			after,
+			before,
+			bytes: fs.statSync(targetPath).size,
+			ok: true,
+			transform,
+		});
+	} catch (error) {
+		output({
+			error: error.message || String(error),
+			ok: false,
+		});
+	}
+});
+`;
+	}
+
+	async prepareDatabaseBytesForTransfer({
+		destinationKey,
+		destinationLabel,
+		sourceContent = null,
+		sourceKey = "",
+		sourceLabel,
+		sourcePath = "",
+	} = {}) {
+		const paths = this.getPaths();
+		const dbEncryption = loadDatabaseEncryptionModule(paths.root);
+
+		if (!dbEncryption?.rekeyEncryptedDatabase || !dbEncryption?.convertPlainDatabaseToEncrypted) {
+			throw new Error("Hachi database encryption helpers are not available. Update or validate Hachi before transferring encrypted databases.");
+		}
+
+		await this.ensureNodeAndNpm(false);
+		const tempFolder = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-db-transfer-"));
+		const tempSourcePath = path.join(tempFolder, "source.sqlite");
+		const targetPath = path.join(tempFolder, "target.sqlite");
+		const effectiveSourcePath = sourceContent ? tempSourcePath : sourcePath;
+
+		try {
+			if (sourceContent) {
+				fs.writeFileSync(tempSourcePath, Buffer.from(sourceContent));
+			}
+
+			const result = parseJsonResult(await run("node", ["-e", this.databaseTransferTransformScript()], {
+				allowFailure: true,
+				cwd: paths.root,
+				input: JSON.stringify({
+					destinationKey,
+					destinationLabel,
+					sourceKey,
+					sourceLabel,
+					sourcePath: effectiveSourcePath,
+					targetPath,
+				}),
+				timeoutMs: 600000,
+			}), "Database transfer re-encryption did not return valid JSON.");
+
+			if (!result.ok) {
+				throw new Error(result.error || "Database transfer re-encryption failed.");
+			}
+
+			const content = fs.readFileSync(targetPath);
+
+			return {
+				...result,
+				bytes: content.length,
+				content,
+			};
+		} finally {
+			try {
+				fs.rmSync(tempFolder, { force: true, recursive: true });
+			} catch {
+				// Temporary transfer files can be cleaned up by the OS if still locked.
+			}
+		}
+	}
+
+	async pullRemoteDatabase() {
+		const paths = this.getPaths();
+		this.logDatabase("pulling remote database to local install.");
+		const remoteDatabase = await this.readRemoteDatabaseFile();
+		this.logDatabase("remote database downloaded for local transfer.", {
+			bytes: remoteDatabase.bytes,
+			remotePath: remoteDatabase.path || "database/database.sqlite",
+		});
+		const localKey = this.ensureLocalDatabaseProtectionKeyForTransfer();
+		const remoteKey = await this.readRemoteDatabaseProtectionKeyIfAvailable();
+		const transfer = await this.prepareDatabaseBytesForTransfer({
+			destinationKey: localKey,
+			destinationLabel: "local",
+			sourceContent: Buffer.from(remoteDatabase.content, "base64"),
+			sourceKey: remoteKey,
+			sourceLabel: "remote",
+		});
+		let safetyBackup = null;
+
+		if (fileExists(paths.database)) {
+			const backup = await this.backupLocalDatabase({
+				fileName: `database-pre-pull-${fileTimestamp()}-${Date.now()}.sqlite`,
+				overwrite: false,
+				reason: "transfer-pull",
+			});
+			safetyBackup = backup.backupPath;
+		}
+
+		ensureDir(path.dirname(paths.database));
+		removeLocalDatabaseSidecars(paths.database);
+		fs.writeFileSync(paths.database, transfer.content);
+		this.databaseCipherTest = null;
+		const verification = await this.verifyLocalDatabaseCipherOpen();
+
+		if (!verification?.ok) {
+			throw new Error(`Local database was transferred but could not be verified with the local key: ${verification?.detail || "verification failed"}`);
+		}
+
+		this.setDatabaseCipherTestState(verification);
+		this.logDatabase(`remote database pulled to ${displayPath(paths.database, paths.root)}.`, {
+			safetyBackup: safetyBackup ? displayPath(safetyBackup, paths.root) : "",
+			transform: transfer.transform,
+		});
+
+		return {
+			bytes: transfer.bytes,
+			database: await this.getDatabaseState(),
+			localPath: paths.database,
+			message: `Remote database pulled to local Hachi and encrypted with the local database key.${safetyBackup ? ` Safety backup: ${path.basename(safetyBackup)}.` : ""}`,
+			ok: true,
+			remotePath: remoteDatabase.path || "database/database.sqlite",
+			safetyBackup,
+			source: "remote",
+			target: "local",
+			transform: transfer.transform,
+			verification,
+		};
+	}
+
+	async pushLocalDatabaseToRemote() {
+		const paths = this.getPaths();
+
+		if (!fileExists(paths.database)) {
+			throw new Error("No local Hachi database exists to push.");
+		}
+
+		this.logDatabase("pushing local database to remote install.");
+		await this.checkpointLocalDatabase();
+		const remoteKey = await this.ensureRemoteDatabaseProtectionKeyForTransfer();
+		const localKey = this.readLocalDatabaseProtectionKeyIfAvailable();
+		const transfer = await this.prepareDatabaseBytesForTransfer({
+			destinationKey: remoteKey,
+			destinationLabel: "remote",
+			sourceKey: localKey,
+			sourceLabel: "local",
+			sourcePath: paths.database,
+		});
+		let safetyBackup = null;
+
+		if (await this.remotePathExists("database/database.sqlite", "f")) {
+			const backup = await this.backupRemoteDatabase({
+				fileName: `database-pre-push-${fileTimestamp()}-${Date.now()}.sqlite`,
+				overwrite: false,
+			});
+			safetyBackup = backup.backupPath || "";
+		}
+
+		const pushed = await this.writeRemoteDatabaseFile(transfer.content);
+		const verification = await this.verifyRemoteDatabaseCipherOpen();
+
+		if (!verification?.ok) {
+			throw new Error(`Remote database was transferred but could not be verified with the remote key: ${verification?.detail || "verification failed"}`);
+		}
+
+		this.logDatabase("local database pushed to remote install.", {
+			bytes: pushed.bytes,
+			localPath: paths.database,
+			remotePath: pushed.path || "database/database.sqlite",
+			safetyBackup,
+			transform: transfer.transform,
+		});
+
+		return {
+			bytes: pushed.bytes,
+			database: await this.getDatabaseState(),
+			localPath: paths.database,
+			message: `Local database pushed to remote Hachi and encrypted with the remote database key.${safetyBackup ? ` Remote safety backup: ${safetyBackup}.` : ""}`,
+			ok: true,
+			remotePath: pushed.path || "database/database.sqlite",
+			safetyBackup,
+			source: "local",
+			target: "remote",
+			transform: transfer.transform,
+			verification,
+		};
 	}
 
 	async restoreDatabaseFromBackup(backupPath) {
@@ -4501,6 +5531,7 @@ process.stdout.write(JSON.stringify({
 			ok: true,
 			message: `Database restored from ${path.basename(resolvedBackup)}.`,
 			safetyBackup,
+			targetPath: paths.database,
 		};
 	}
 
@@ -4922,6 +5953,612 @@ process.stdout.write(JSON.stringify({
 		};
 	}
 
+	async getDiagnostics() {
+		const logs = this.logger.ensureLogs();
+		const [scanResult, repositoryResult, pm2Result, databaseResult] = await Promise.allSettled([
+			this.getQuickScan(),
+			this.getRepositoryInfo({ log: false }),
+			this.getPm2Status(),
+			this.getDatabaseState(),
+		]);
+		const scan = scanResult.status === "fulfilled" ? scanResult.value : null;
+		const repository = repositoryResult.status === "fulfilled" ? repositoryResult.value : null;
+		const pm2 = pm2Result.status === "fulfilled" ? pm2Result.value : null;
+		const database = databaseResult.status === "fulfilled" ? databaseResult.value : null;
+		const crashText = readTextFile(logs.crash);
+		const crashCount = (crashText.match(/\[CRASH\]/gu) || []).length;
+
+		return {
+			generatedAt: new Date().toISOString(),
+			app: {
+				hachiGenVersion: this.getHachiGenVersion(),
+				node: process.versions.node,
+				electron: process.versions.electron || "",
+				platform: process.platform,
+				arch: process.arch,
+				pid: process.pid,
+			},
+			paths: {
+				installPath: this.getInstallPath(),
+				logFolder: logs.folder,
+				settingsPath: this.settingsPath,
+				userDataPath: this.userDataPath,
+			},
+			settings: summarizeSettings(this.settings),
+			scan: scan ?
+				summarizeScan(scan) :
+				{
+					error: scanResult.reason?.message || "Scan unavailable.",
+				},
+			repository: repository ?
+				summarizeRepository(repository) :
+				{
+					error: repositoryResult.reason?.message || "Repository unavailable.",
+				},
+			pm2: pm2 ?
+				{
+					installed: Boolean(pm2.installed),
+					message: pm2.message || "",
+					pid: pm2.pid || null,
+					registered: Boolean(pm2.registered),
+					status: pm2.status || "unknown",
+					target: pm2.target || this.getRuntimeTarget(),
+				} :
+				{
+					error: pm2Result.reason?.message || "PM2 status unavailable.",
+				},
+			database: database ?
+				{
+					audit: database.audit ?
+						{
+							detail: database.audit.detail || "",
+							label: database.audit.label || "",
+							status: database.audit.status || "",
+						} :
+						null,
+					exists: Boolean(database.exists),
+					source: database.source || this.getRuntimeTarget(),
+				} :
+				{
+					error: databaseResult.reason?.message || "Database status unavailable.",
+				},
+			updates: {
+				hachi: summarizeUpdateState(this.updateState),
+				hachiGen: summarizeUpdateState(this.hachiGenUpdateState),
+			},
+			recovery: {
+				crashCount,
+				crashLog: fileStatus(logs.crash),
+				recentCrashEvents: this.logger.readRecentEvents(20, { includeHidden: true })
+					.filter(event => event.area === "crash-handler" || event.area === "process-recovery"),
+			},
+		};
+	}
+
+	validateHachiGenUpdateFile(filePath, expectedBytes = 0) {
+		return verifyHachiGenUpdateFile(filePath, expectedBytes);
+	}
+
+	async exportSupportBundle(targetPath) {
+		if (!targetPath) {
+			throw new Error("Choose where to save the diagnostics bundle.");
+		}
+
+		const resolvedTargetPath = path.resolve(targetPath);
+		const stamp = supportBundleStamp();
+		const tempFolder = path.join(this.userDataPath, "diagnostics-bundles", `hachigen-diagnostics-${stamp}`);
+		const logPaths = this.logger.ensureLogs();
+
+		if (fs.existsSync(tempFolder)) {
+			fs.rmSync(tempFolder, { force: true, recursive: true });
+		}
+
+		ensureDir(tempFolder);
+
+		try {
+			const diagnostics = await this.getDiagnostics();
+			writeJsonFile(path.join(tempFolder, "diagnostics.json"), diagnostics);
+			writeJsonFile(path.join(tempFolder, "settings-summary.json"), summarizeSettings(this.settings));
+			writeJsonFile(path.join(tempFolder, "recent-events.json"), this.logger.readRecentEvents(200, { includeHidden: true }));
+			fs.writeFileSync(path.join(tempFolder, "README.txt"), [
+				"HachiGen diagnostics bundle",
+				`Created: ${diagnostics.generatedAt}`,
+				"",
+				"This bundle contains redacted HachiGen diagnostics, recent HachiGen events, and HachiGen logs.",
+				"It does not include .env, config.json, database files, SSH keys, or decrypted secrets.",
+				"",
+			].join("\n"), "utf8");
+
+			const logsFolder = path.join(tempFolder, "logs");
+			ensureDir(logsFolder);
+
+			for (const [label, sourcePath] of Object.entries({
+				"crash.log": logPaths.crash,
+				"raw.log": logPaths.raw,
+				"structured.pretty.log": logPaths.structuredPretty,
+			})) {
+				if (fileExists(sourcePath)) {
+					fs.writeFileSync(path.join(logsFolder, label), readTextFile(sourcePath), "utf8");
+				}
+			}
+
+			ensureDir(path.dirname(resolvedTargetPath));
+
+			if (!await this.logger.compressFolderToTarGz(tempFolder, resolvedTargetPath)) {
+				throw new Error("Could not write diagnostics bundle archive.");
+			}
+
+			this.log(`Diagnostics bundle exported to ${displayPath(resolvedTargetPath)}.`);
+			return {
+				bundlePath: resolvedTargetPath,
+				diagnostics,
+				message: `Diagnostics bundle saved to ${path.basename(resolvedTargetPath)}.`,
+				ok: true,
+			};
+		} finally {
+			fs.rmSync(tempFolder, { force: true, recursive: true });
+		}
+	}
+
+	runtimeArchiveDefaultPath() {
+		return path.join(this.getRuntimeExportsDir(), `hachi-runtime-${runtimeArchiveStamp()}.tar.gz`);
+	}
+
+	resolveLocalSecretsKeyFile(value) {
+		try {
+			return this.loadSecretEncryption().resolveKeyFilePath(value, this.getInstallPath());
+		} catch {
+			return resolveLocalPath(value, this.getInstallPath());
+		}
+	}
+
+	addExternalLocalKeyEntry(entries, rawEnv, { field, restoreKind, resolver }) {
+		const configured = String(rawEnv[field] || "").trim();
+
+		if (!configured) {
+			return;
+		}
+
+		const keyPath = resolver(configured);
+
+		if (!keyPath || !fileExists(keyPath) || isPathInside(this.getInstallPath(), keyPath)) {
+			return;
+		}
+
+		const content = fs.readFileSync(keyPath);
+		entries.push({
+			bytes: content.length,
+			content,
+			restoreKind,
+			sensitive: true,
+			sha256: sha256Buffer(content),
+			sourcePath: keyPath,
+		});
+	}
+
+	async collectLocalRuntimeArchiveEntries() {
+		const paths = this.getPaths();
+
+		if (!fileExists(paths.root)) {
+			throw new Error("The selected local Hachi folder does not exist.");
+		}
+
+		await this.checkpointDatabase();
+		const entries = collectLocalProjectFiles(paths.root);
+		const rawEnv = fileExists(paths.env) ? parseDotEnv(paths.env) : {};
+
+		this.addExternalLocalKeyEntry(entries, rawEnv, {
+			field: "HACHI_DB_KEY_FILE",
+			restoreKind: "database-key",
+			resolver: value => resolveLocalPath(value, paths.root),
+		});
+		this.addExternalLocalKeyEntry(entries, rawEnv, {
+			field: "HACHI_SECRETS_KEY_FILE",
+			restoreKind: "secrets-key",
+			resolver: value => this.resolveLocalSecretsKeyFile(value),
+		});
+
+		return {
+			entries,
+			source: {
+				path: paths.root,
+				type: "local",
+			},
+			warnings: [],
+		};
+	}
+
+	remoteRuntimeArchiveScript() {
+		return `
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const crypto = require("node:crypto");
+const excludedDirectories = new Set(${JSON.stringify([...RUNTIME_ARCHIVE_EXCLUDED_DIRECTORIES])});
+const excludedFiles = new Set(${JSON.stringify([...RUNTIME_ARCHIVE_EXCLUDED_FILES])});
+function normalizeArchivePath(value) {
+	return String(value || "").replace(/\\\\/g, "/").replace(/^\\/+/, "");
+}
+function parseDotEnvContent(content) {
+	const values = {};
+	for (const line of String(content || "").split(/\\r?\\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith("#")) {
+			continue;
+		}
+		const equalsIndex = trimmed.indexOf("=");
+		if (equalsIndex === -1) {
+			continue;
+		}
+		let value = trimmed.slice(equalsIndex + 1).trim();
+		if (value.startsWith('"') && value.endsWith('"')) {
+			try {
+				value = JSON.parse(value);
+			} catch {
+				value = value.slice(1, -1);
+			}
+		} else if (value.startsWith("'") && value.endsWith("'")) {
+			value = value.slice(1, -1);
+		}
+		values[trimmed.slice(0, equalsIndex).trim()] = value;
+	}
+	return values;
+}
+function resolveRemotePath(value) {
+	const text = String(value || "").trim();
+	if (!text) {
+		return "";
+	}
+	if (text === "~") {
+		return os.homedir();
+	}
+	if (text.startsWith("~/")) {
+		return path.join(os.homedir(), text.slice(2));
+	}
+	return path.isAbsolute(text) ? text : path.resolve(process.cwd(), text);
+}
+function isInsideRoot(filePath) {
+	const relative = path.relative(process.cwd(), filePath);
+	return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+function isSensitiveRuntimeArchivePath(relativePath) {
+	const normalized = normalizeArchivePath(relativePath).toLowerCase();
+	return normalized === ".env" ||
+		normalized.endsWith(".key") ||
+		normalized.includes("/keys/") ||
+		normalized.startsWith("database/") ||
+		normalized.startsWith("manager/backups/database/");
+}
+function sha256Buffer(buffer) {
+	const hash = crypto.createHash("sha256");
+	hash.update(buffer);
+	return hash.digest("hex");
+}
+const files = [];
+const warnings = [];
+function addFile(filePath, restoreKind, restorePath) {
+	try {
+		const content = fs.readFileSync(filePath);
+		files.push({
+			bytes: content.length,
+			content: content.toString("base64"),
+			restoreKind,
+			restorePath: restorePath ? normalizeArchivePath(restorePath) : "",
+			sensitive: restoreKind !== "project" || isSensitiveRuntimeArchivePath(restorePath),
+			sha256: sha256Buffer(content),
+			sourcePath: filePath,
+		});
+	} catch (error) {
+		warnings.push(\`Skipped \${filePath}: \${error.message || error}\`);
+	}
+}
+function visit(directory) {
+	for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+		if (entry.isDirectory()) {
+			if (!excludedDirectories.has(entry.name.toLowerCase())) {
+				visit(path.join(directory, entry.name));
+			}
+			continue;
+		}
+		if (!entry.isFile() || excludedFiles.has(entry.name)) {
+			continue;
+		}
+		const fullPath = path.join(directory, entry.name);
+		addFile(fullPath, "project", path.relative(process.cwd(), fullPath));
+	}
+}
+function addExternalKey(env, field, restoreKind) {
+	const keyPath = resolveRemotePath(env[field]);
+	if (!keyPath || !fs.existsSync(keyPath) || isInsideRoot(keyPath)) {
+		return;
+	}
+	addFile(keyPath, restoreKind, "");
+}
+visit(process.cwd());
+const env = parseDotEnvContent(fs.existsSync(".env") ? fs.readFileSync(".env", "utf8") : "");
+addExternalKey(env, "HACHI_DB_KEY_FILE", "database-key");
+addExternalKey(env, "HACHI_SECRETS_KEY_FILE", "secrets-key");
+process.stdout.write(JSON.stringify({
+	files,
+	ok: true,
+	path: process.cwd(),
+	warnings,
+}));
+`;
+	}
+
+	async collectRemoteRuntimeArchiveEntries() {
+		await this.checkpointDatabase();
+		const remote = await this.requireRemoteRuntime();
+		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(this.remoteRuntimeArchiveScript())}`, {
+			fallbackMessage: "Remote runtime export did not return valid JSON.",
+			log: false,
+			timeoutMs: 600000,
+		});
+
+		if (!result.ok) {
+			throw new Error(result.error || "Remote runtime export failed.");
+		}
+
+		return {
+			entries: (result.files || []).map(file => ({
+				bytes: Number(file.bytes) || 0,
+				content: Buffer.from(String(file.content || ""), "base64"),
+				restoreKind: file.restoreKind,
+				restorePath: file.restorePath || "",
+				sensitive: Boolean(file.sensitive),
+				sha256: file.sha256 || "",
+				sourcePath: file.sourcePath || "",
+			})),
+			source: {
+				host: remote.host,
+				path: result.path || remote.remotePath,
+				type: "remote",
+			},
+			warnings: Array.isArray(result.warnings) ? result.warnings : [],
+		};
+	}
+
+	writeRuntimeArchivePayload(stagingFolder, entry, index) {
+		const archivePath = `payload/${String(index + 1).padStart(6, "0")}.bin`;
+		const payloadPath = path.join(stagingFolder, archivePath);
+		const content = Buffer.from(entry.content || "");
+
+		ensureDir(path.dirname(payloadPath));
+		fs.writeFileSync(payloadPath, content);
+
+		return {
+			archivePath,
+			bytes: content.length,
+			restoreKind: entry.restoreKind,
+			restorePath: entry.restoreKind === "project" ? assertSafeRelativeArchivePath(entry.restorePath, "restore path") : "",
+			sensitive: Boolean(entry.sensitive),
+			sha256: sha256Buffer(content),
+			sourcePath: entry.sourcePath || "",
+		};
+	}
+
+	async exportRuntimeArchive({ source = this.getRuntimeTarget(), targetPath = this.runtimeArchiveDefaultPath() } = {}) {
+		const archiveSource = source === "remote" ? "remote" : "local";
+		const collected = archiveSource === "remote" ?
+			await this.collectRemoteRuntimeArchiveEntries() :
+			await this.collectLocalRuntimeArchiveEntries();
+
+		if (!collected.entries.length) {
+			throw new Error("No runtime files were found to export.");
+		}
+
+		const resolvedTargetPath = path.resolve(targetPath);
+		const stagingFolder = path.join(this.userDataPath, "runtime-archives", `hachi-runtime-${runtimeArchiveStamp()}`);
+
+		if (fs.existsSync(stagingFolder)) {
+			fs.rmSync(stagingFolder, { force: true, recursive: true });
+		}
+
+		ensureDir(stagingFolder);
+		ensureDir(path.dirname(resolvedTargetPath));
+
+		try {
+			const manifestEntries = collected.entries.map((entry, index) => this.writeRuntimeArchivePayload(stagingFolder, entry, index));
+			const manifest = {
+				app: {
+					hachiGenVersion: this.getHachiGenVersion(),
+				},
+				createdAt: new Date().toISOString(),
+				entries: manifestEntries,
+				format: RUNTIME_ARCHIVE_FORMAT,
+				includesSecrets: manifestEntries.some(entry => entry.sensitive),
+				source: collected.source,
+				warnings: collected.warnings,
+			};
+
+			writeJsonFile(path.join(stagingFolder, "manifest.json"), manifest);
+
+			if (!await this.logger.compressFolderToTarGz(stagingFolder, resolvedTargetPath)) {
+				throw new Error("Could not write runtime archive.");
+			}
+
+			this.log(`Runtime archive exported to ${displayPath(resolvedTargetPath)}.`);
+			return {
+				archivePath: resolvedTargetPath,
+				fileCount: manifestEntries.length,
+				includesSecrets: manifest.includesSecrets,
+				message: `Runtime archive saved to ${displayPath(resolvedTargetPath, this.getInstallPath())}.`,
+				ok: true,
+				source: collected.source,
+				warnings: collected.warnings,
+			};
+		} finally {
+			fs.rmSync(stagingFolder, { force: true, recursive: true });
+		}
+	}
+
+	previewRuntimeArchive(archivePath) {
+		const resolvedArchivePath = path.resolve(String(archivePath || ""));
+
+		if (!fileExists(resolvedArchivePath)) {
+			throw new Error("Choose an existing runtime archive.");
+		}
+
+		const { manifest } = readRuntimeArchiveManifest(resolvedArchivePath);
+		const projectFiles = manifest.entries.filter(entry => entry.restoreKind === "project");
+		const keyFiles = manifest.entries.filter(entry => entry.restoreKind !== "project");
+
+		return {
+			archivePath: resolvedArchivePath,
+			createdAt: manifest.createdAt || "",
+			fileCount: manifest.entries.length,
+			includesSecrets: Boolean(manifest.includesSecrets),
+			keyFileCount: keyFiles.length,
+			message: `Runtime archive contains ${manifest.entries.length} files.`,
+			ok: true,
+			projectFileCount: projectFiles.length,
+			source: manifest.source || null,
+			warnings: manifest.warnings || [],
+		};
+	}
+
+	backupExistingRuntimeRestoreTarget(targetPath, backupPath, copied, seen) {
+		const resolvedTarget = path.resolve(targetPath);
+
+		if (seen.has(resolvedTarget) || !fileExists(resolvedTarget)) {
+			return;
+		}
+
+		seen.add(resolvedTarget);
+		ensureDir(path.dirname(backupPath));
+		fs.copyFileSync(resolvedTarget, backupPath);
+		copied.push(backupPath);
+	}
+
+	runtimeArchiveRestoreTarget(entry) {
+		if (entry.restoreKind === "database-key") {
+			return {
+				envUpdates: {
+					HACHI_DB_KEY: "",
+					HACHI_DB_KEY_FILE: this.getLocalDatabaseKeyLocation().path,
+				},
+				targetPath: this.getLocalDatabaseKeyLocation().path,
+			};
+		}
+
+		if (entry.restoreKind === "secrets-key") {
+			return {
+				envUpdates: {
+					HACHI_SECRETS_KEY: "",
+					HACHI_SECRETS_KEY_FILE: this.getLocalSecretsKeyLocation().path,
+				},
+				targetPath: this.getLocalSecretsKeyLocation().path,
+			};
+		}
+
+		const targetPath = path.resolve(this.getInstallPath(), entry.restorePath);
+
+		if (!isPathInside(this.getInstallPath(), targetPath)) {
+			throw new Error(`Runtime archive restore path escapes the Hachi folder: ${entry.restorePath}.`);
+		}
+
+		return {
+			envUpdates: {},
+			targetPath,
+		};
+	}
+
+	async restoreRuntimeArchive(archivePath) {
+		const resolvedArchivePath = path.resolve(String(archivePath || ""));
+		const { entries, manifest } = readRuntimeArchiveManifest(resolvedArchivePath);
+		const root = this.getInstallPath();
+		const backupDir = path.join(root, "manager", "backups", `runtime-restore-${timestampFolderName()}`);
+		const copiedBackups = [];
+		const backupSeen = new Set();
+		const restoredPaths = new Set();
+		const envUpdates = {};
+
+		if (!fileExists(root)) {
+			ensureDir(root);
+		}
+
+		if (manifest.entries.some(entry => entry.restoreKind === "project" && entry.restorePath === "database/database.sqlite") && this.getRuntimeTarget() === "local") {
+			await this.checkpointDatabase();
+		}
+
+		for (const entry of manifest.entries) {
+			const content = entries.get(entry.archivePath);
+			const restoreTarget = this.runtimeArchiveRestoreTarget(entry);
+			const backupRelativePath = entry.restoreKind === "project" ?
+				path.join("project", ...entry.restorePath.split("/")) :
+				path.join("keys", `${entry.restoreKind}-${path.basename(restoreTarget.targetPath)}`);
+
+			this.backupExistingRuntimeRestoreTarget(
+				restoreTarget.targetPath,
+				path.join(backupDir, backupRelativePath),
+				copiedBackups,
+				backupSeen,
+			);
+
+			ensureDir(path.dirname(restoreTarget.targetPath));
+			fs.writeFileSync(restoreTarget.targetPath, content);
+
+			if (entry.restoreKind !== "project") {
+				try {
+					fs.chmodSync(path.dirname(restoreTarget.targetPath), 0o700);
+					fs.chmodSync(restoreTarget.targetPath, 0o600);
+				} catch {
+					// Windows ACLs may not map cleanly to POSIX modes.
+				}
+			}
+
+			Object.assign(envUpdates, restoreTarget.envUpdates);
+
+			if (entry.restoreKind === "project") {
+				restoredPaths.add(entry.restorePath);
+			}
+		}
+
+		const envPath = path.join(root, ".env");
+
+		if (Object.keys(envUpdates).length && fileExists(envPath)) {
+			this.backupExistingRuntimeRestoreTarget(
+				envPath,
+				path.join(backupDir, "project", ".env"),
+				copiedBackups,
+				backupSeen,
+			);
+			fs.writeFileSync(envPath, updateDotEnvContent(fs.readFileSync(envPath, "utf8"), envUpdates), "utf8");
+		}
+
+		if (restoredPaths.has("database/database.sqlite")) {
+			for (const sidecar of ["database/database.sqlite-wal", "database/database.sqlite-shm"]) {
+				if (restoredPaths.has(sidecar)) {
+					continue;
+				}
+
+				const sidecarPath = path.join(root, ...sidecar.split("/"));
+
+				this.backupExistingRuntimeRestoreTarget(
+					sidecarPath,
+					path.join(backupDir, "project", ...sidecar.split("/")),
+					copiedBackups,
+					backupSeen,
+				);
+
+				if (fileExists(sidecarPath)) {
+					fs.rmSync(sidecarPath, { force: true });
+				}
+			}
+		}
+
+		this.log(`Runtime archive restored from ${displayPath(resolvedArchivePath)}.`);
+		return {
+			archivePath: resolvedArchivePath,
+			backupDir: copiedBackups.length ? backupDir : "",
+			fileCount: manifest.entries.length,
+			message: `Runtime archive restored ${manifest.entries.length} files.${copiedBackups.length ? ` Safety backup: ${displayPath(backupDir, root)}.` : ""}`,
+			ok: true,
+			source: manifest.source || null,
+		};
+	}
+
 	async installWithWinget(packageId, label) {
 		// Install a missing system tool with winget. This is only called from
 		// repair flows, so passive checks never install software unexpectedly.
@@ -4966,6 +6603,10 @@ process.stdout.write(JSON.stringify({
 			onLog: entry => this.logShell(entry),
 		});
 
+		if (nodeVersion.code !== 0) {
+			throw new Error(failedToolVersionMessage("node", nodeVersion));
+		}
+
 		if (!nodeVersionMeetsMinimum(nodeVersion.stdout)) {
 			const found = nodeVersion.stdout.trim() || "unknown";
 			throw new Error(`Node.js ${MIN_NODE_VERSION.label} or newer is required for Hachi dependencies. Found ${found}.`);
@@ -4975,6 +6616,10 @@ process.stdout.write(JSON.stringify({
 			allowFailure: true,
 			onLog: entry => this.logShell(entry),
 		});
+
+		if (npmVersion.code !== 0 || !npmVersion.stdout.trim()) {
+			throw new Error(failedToolVersionMessage("npm", npmVersion));
+		}
 
 		return {
 			node: nodeVersion.stdout.trim(),
@@ -5012,10 +6657,14 @@ process.stdout.write(JSON.stringify({
 		if (!hasPm2 && installMissing) {
 			await this.ensureNodeAndNpm(true);
 			this.log("PM2 is missing. Installing globally with npm...");
-			await run("npm", ["install", "-g", "pm2"], {
-				timeoutMs: 900000,
-				onLog: entry => this.logShell(entry),
-			});
+			try {
+				await run("npm", ["install", "-g", "pm2"], {
+					timeoutMs: 900000,
+					onLog: entry => this.logShell(entry),
+				});
+			} catch (error) {
+				throw errorWithContext("Could not install PM2 with npm", error);
+			}
 			hasPm2 = await commandExists("pm2");
 		}
 
@@ -5056,13 +6705,22 @@ process.stdout.write(JSON.stringify({
 			throw new Error("Hachi is not installed in the selected folder.");
 		}
 
-		await this.ensureNodeAndNpm(true);
+		try {
+			await this.ensureNodeAndNpm(true);
+		} catch (error) {
+			throw errorWithContext("Could not prepare Node.js and npm for Hachi dependencies", error);
+		}
+
 		this.log("Installing Hachi npm dependencies...");
-		await run("npm", ["install"], {
-			cwd: this.getInstallPath(),
-			timeoutMs: 900000,
-			onLog: entry => this.logShell(entry),
-		});
+		try {
+			await run("npm", ["install"], {
+				cwd: this.getInstallPath(),
+				timeoutMs: 900000,
+				onLog: entry => this.logShell(entry),
+			});
+		} catch (error) {
+			throw errorWithContext(`Could not install Hachi npm dependencies in ${displayPath(this.getInstallPath()) || "the selected install folder"}`, error);
+		}
 	}
 
 	async runConfigValidation() {
@@ -5566,7 +7224,7 @@ process.stdout.write(JSON.stringify({
 		try {
 			const latest = await this.fetchLatestHachiGenRelease();
 			const savedTag = this.settings.hachiGenReleaseTag || null;
-			const currentTag = String(savedTag || "").startsWith(HACHIGEN_RELEASE_TAG_PREFIX) ? savedTag : null;
+			let currentTag = String(savedTag || "").startsWith(HACHIGEN_RELEASE_TAG_PREFIX) ? savedTag : null;
 			const currentVersion = this.getHachiGenVersion();
 
 			if (!latest.assetUrl) {
@@ -5586,18 +7244,24 @@ process.stdout.write(JSON.stringify({
 				return this.hachiGenUpdateState;
 			}
 
-			const updateAvailable = currentTag ? currentTag !== latest.latestTag : true;
-			const versionLabel = currentVersion ? `HachiGen ${currentVersion}` : "HachiGen";
-			const latestTagLabel = latest.latestTag || "the latest HachiGen release";
-			const message = currentTag ?
-				updateAvailable ?
-					`HachiGen release ${latestTagLabel} is available. ${versionLabel} is installed from ${currentTag}.` :
-					`${versionLabel} is current at ${currentTag}.` :
-				`Latest HachiGen release is ${latestTagLabel}. Install Latest can update or reinstall ${versionLabel}.`;
+			const latestVersion = hachiGenReleaseVersion(latest.latestTag);
+			const updateAvailable = latestVersion && currentVersion ?
+				comparePackageVersions(latestVersion, currentVersion) > 0 :
+				(currentTag ? currentTag !== latest.latestTag : true);
+			const versionLabel = latestVersion || latest.latestTag || "Unknown";
+			const message = updateAvailable ?
+				`Updates are available: Version ${versionLabel}` :
+				"HachiGen is up to date.";
+
+			if (!updateAvailable && latest.latestTag && currentTag !== latest.latestTag) {
+				currentTag = latest.latestTag;
+				this.settings.hachiGenReleaseTag = latest.latestTag;
+				this.saveSettings();
+			}
 
 			this.hachiGenUpdateState = {
 				...latest,
-				canInstall: Boolean(latest.assetUrl),
+				canInstall: updateAvailable && Boolean(latest.assetUrl),
 				checkedAt,
 				currentTag,
 				currentVersion,
@@ -5631,11 +7295,13 @@ process.stdout.write(JSON.stringify({
 		const result = await downloadUrlToFile(update.assetUrl, targetPath, {
 			onProgress: options.onProgress,
 		});
-		this.log(`Downloaded ${HACHIGEN_ASSET_NAME} update to ${displayPath(targetPath)}.`);
+		const verification = this.validateHachiGenUpdateFile(targetPath, result.bytes);
+		this.log(`Downloaded and verified ${HACHIGEN_ASSET_NAME} update to ${displayPath(targetPath)}. SHA-256: ${verification.sha256}.`);
 
 		return {
 			...update,
 			bytes: result.bytes,
+			verification,
 			targetPath,
 		};
 	}
@@ -5859,13 +7525,18 @@ process.stdout.write(JSON.stringify({ backupDir, copied }));
 		});
 
 		// New bot code may have new package dependencies.
-		if (this.getRuntimeTarget() === "remote") {
-			this.log("Remote: installing npm dependencies after update...");
-			await this.runRemoteHachiCommand("npm install", {
-				timeoutMs: 900000,
-			});
-		} else {
-			await this.ensureNpmDependencies();
+		try {
+			if (this.getRuntimeTarget() === "remote") {
+				this.log("Remote: installing npm dependencies after update...");
+				await this.runRemoteHachiCommand("npm install", {
+					log: true,
+					timeoutMs: 900000,
+				});
+			} else {
+				await this.ensureNpmDependencies();
+			}
+		} catch (error) {
+			throw errorWithContext(`${this.getRuntimeTarget() === "remote" ? "Remote" : "Local"} update failed while installing npm dependencies after the Git merge`, error);
 		}
 
 		const refreshedState = await this.checkUpdates();

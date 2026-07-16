@@ -26,6 +26,8 @@ function invoke(channel, ...args) {
 contextBridge.exposeInMainWorld("hachiGen", {
 	// Install/state actions.
 	getState: () => invoke("manager:get-state"),
+	getDiagnostics: () => invoke("manager:get-diagnostics"),
+	getAboutInfo: () => invoke("manager:get-about-info"),
 	chooseInstallPath: () => invoke("manager:choose-install-path"),
 	chooseSshKey: () => invoke("manager:choose-ssh-key"),
 	setInstallPath: installPath => invoke("manager:set-install-path", installPath),
@@ -57,6 +59,9 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	getLogs: () => invoke("manager:get-logs"),
 	getPm2Status: () => invoke("manager:get-pm2-status"),
 	recordRendererEvent: payload => invoke("manager:record-renderer-event", payload),
+	copyDiagnosticInfo: () => invoke("manager:copy-diagnostic-info"),
+	exportSupportBundle: () => invoke("manager:export-support-bundle"),
+	openHachiGenLogFolder: () => invoke("manager:open-hachigen-log-folder"),
 
 	// Database viewing, maintenance, encryption, and backup actions.
 	readDatabaseTable: (tableName, sort) => invoke("manager:read-database-table", tableName, sort),
@@ -65,6 +70,8 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	backupDatabase: options => invoke("manager:backup-database", options),
 	chooseDatabaseBackup: () => invoke("manager:choose-database-backup"),
 	restoreDatabase: backupPath => invoke("manager:restore-database", backupPath),
+	pullRemoteDatabase: () => invoke("manager:pull-remote-database"),
+	pushLocalDatabaseToRemote: () => invoke("manager:push-local-database-to-remote"),
 	reviewDatabaseSanitation: () => invoke("manager:review-database-sanitation"),
 	applyDatabaseSanitation: actionIds => invoke("manager:apply-database-sanitation", actionIds),
 	prepareDatabaseProtection: () => invoke("manager:prepare-database-protection"),

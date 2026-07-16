@@ -4,11 +4,40 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+No unreleased changes yet.
+
+# v1.1.0 - 2026-07-16
+
 ## HachiGen
 
 ### Updates
 
-- HachiGen now has its own repository, CI checks, smoke tests, and release workflow.
+- HachiGen can now be installed with a normal Windows installer in addition to the portable executable. Built installers are copied to the repository root as `HachiGen-Setup-X.X.X.exe`, and older root installer copies are cleared during builds.
+- The Dashboard now shows a denser operations overview with runtime controls, target status, update status, recent activity, and one real `Check Updates` button.
+- The Updates tab now checks Hachi and HachiGen together, shows current and available versions, and only shows saved-change recovery when HachiGen has a stash to restore or delete.
+- Saved Changes restore and delete actions now sit at the top of the Updates card.
+- Updating Hachi with local changes now shows a confirmation listing added, modified, and deleted files before HachiGen saves those changes and continues.
+- The setup guide now checks or reviews updates before starting Hachi, including after switching between local and remote targets.
+- The File menu can now export and restore Hachi runtime archives. HachiGen warns when archives include secrets and keys, saves exports under `exports/`, and makes safety backups before restore.
+- The Database tab now uses one `Backup / Transfer` button for database backup, restore, remote pull, and remote push. Pull and push make a backup on the destination side before replacing an existing database.
+- Database pull and push now re-encrypt the transferred copy with the destination database key, so local and remote installs can keep separate keys.
+- Database transfers and restores now show clearer running and finished states, including source, destination, data size, and safety-backup details.
+- HachiGen now has a Diagnostics tab with status summaries, copied diagnostic info, diagnostics bundle export, log-folder access, and recovery details.
+- Error popups and logs now include clearer action context and the most useful command output when HachiGen can identify why something failed.
+- The Remote tab now remembers the last connection test result.
+- About HachiGen now includes release notes and shows where app data, logs, and settings are stored.
+- Repeated path and version details have been reduced so the sidebar, About panel, Diagnostics tab, and Updates tab each have clearer jobs.
+- HachiGen now remembers window size and position, focuses the existing window when opened twice, and shows a recovery prompt after previous UI crashes.
+- HachiGen's interface is more compact and polished, with cleaner icons, tighter spacing, stronger focus states, fixed-height sidebar behavior, and more consistent Dashboard card actions.
+- HachiGen self-updates now verify the downloaded executable and record its SHA-256 hash before installation.
+- HachiGen includes additional desktop security hardening for renderer isolation and external links.
+
+### Fixes
+
+- Local updates no longer fail during dependency installation when npm is installed under `C:\Program Files\nodejs`.
+- Selecting and copying text from the PM2 or HachiGen log windows is smoother because visible log refreshes now wait until the selection is cleared.
+- Remote database table viewing no longer fails with `spawn ENAMETOOLONG` when HachiGen stages or runs its remote database worker.
+- HachiGen self-updates now close and relaunch more reliably after replacing the app.
 
 # v1.0.2 - 2026-07-14
 

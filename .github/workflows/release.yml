@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "HachiGen release tag, for example hachigen-v1.0.2"
+        description: "HachiGen release tag, for example hachigen-v1.1.0"
         required: true
         type: string
 
@@ -88,7 +88,7 @@ jobs:
           }
 
           if ($tag -notmatch "^hachigen-v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$") {
-            Write-Error "HachiGen release tag '$tag' must look like hachigen-v1.0.2."
+            Write-Error "HachiGen release tag '$tag' must look like hachigen-v1.1.0."
             exit 1
           }
 
@@ -131,7 +131,41 @@ jobs:
 
       - name: Build HachiGen
         if: steps.release.outputs.should_release == 'true'
+        env:
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.HACHIGEN_WIN_CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.HACHIGEN_WIN_CSC_LINK }}
         run: npm run dist
+
+      - name: Run packaged UI smoke test
+        if: steps.release.outputs.should_release == 'true'
+        run: npm run smoke:packaged-ui
+
+      - name: Generate release checksums
+        if: steps.release.outputs.should_release == 'true'
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+        run: |
+          $assets = @(
+            "dist/HachiGen-Setup-$env:RELEASE_VERSION.exe",
+            "dist/HachiGen.exe"
+          )
+          $checksumPath = "dist/SHA256SUMS.txt"
+          $lines = @()
+
+          foreach ($asset in $assets) {
+            if (-not (Test-Path $asset)) {
+              Write-Error "Expected release asset was not built: $asset"
+              exit 1
+            }
+
+            $hash = (Get-FileHash -Path $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+            $name = Split-Path $asset -Leaf
+            $lines += "$hash  $name"
+          }
+
+          $lines | Set-Content -Path $checksumPath -Encoding ascii
+          Get-Content $checksumPath
 
       - name: Create HachiGen release tag
         if: steps.release.outputs.should_release == 'true' && github.ref_type != 'tag' && github.event_name != 'workflow_dispatch'
@@ -151,26 +185,49 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           RELEASE_TITLE: ${{ steps.release.outputs.release_title }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
         run: |
           $tag = $env:RELEASE_TAG
-          $asset = "dist/HachiGen.exe"
+          $assets = @(
+            "dist/HachiGen-Setup-$env:RELEASE_VERSION.exe",
+            "dist/HachiGen.exe",
+            "dist/SHA256SUMS.txt"
+          )
 
           if (-not $tag) {
             Write-Error "Release tag was not provided."
             exit 1
           }
 
-          if (-not (Test-Path $asset)) {
-            Write-Error "Expected release asset was not built: $asset"
-            exit 1
+          foreach ($asset in $assets) {
+            if (-not (Test-Path $asset)) {
+              Write-Error "Expected release asset was not built: $asset"
+              exit 1
+            }
           }
 
           gh release view $tag *> $null
 
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $asset --clobber
+            foreach ($asset in $assets) {
+              gh release upload $tag $asset --clobber
+              if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
+              }
+            }
+            exit 0
+          }
+
+          gh release create $tag --title "$env:RELEASE_TITLE" --generate-notes --latest
+          if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
 
-          gh release create $tag $asset --title "$env:RELEASE_TITLE" --generate-notes --latest
-          exit $LASTEXITCODE
+          foreach ($asset in $assets) {
+            gh release upload $tag $asset --clobber
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          }
+
+          exit 0
