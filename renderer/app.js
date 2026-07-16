@@ -17,6 +17,190 @@ const viewTitles = {
 	updates: "Updates",
 	database: "Database",
 	logs: "Logs",
+	diagnostics: "Diagnostics",
+};
+const ONBOARDING_DISMISSED_KEY = "hachigen:onboarding-dismissed:v1";
+// Inline Lucide SVG shapes. Keeping these here avoids extra asset files or runtime packages.
+const ICON_PATHS = {
+	archive: [
+		["rect", { height: "5", rx: "1", width: "20", x: "2", y: "3" }],
+		["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" }],
+		["path", { d: "M10 12h4" }],
+	],
+	check: [["path", { d: "M20 6 9 17l-5-5" }]],
+	clipboard: [
+		["rect", { height: "4", rx: "1", ry: "1", width: "8", x: "8", y: "2" }],
+		["path", { d: "M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" }],
+	],
+	copy: [
+		["rect", { height: "14", rx: "2", ry: "2", width: "14", x: "8", y: "8" }],
+		["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" }],
+	],
+	database: [
+		["ellipse", { cx: "12", cy: "5", rx: "9", ry: "3" }],
+		["path", { d: "M3 5V19A9 3 0 0 0 21 19V5" }],
+		["path", { d: "M3 12A9 3 0 0 0 21 12" }],
+	],
+	download: [
+		["path", { d: "M12 15V3" }],
+		["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }],
+		["path", { d: "m7 10 5 5 5-5" }],
+	],
+	external: [
+		["path", { d: "M15 3h6v6" }],
+		["path", { d: "M10 14 21 3" }],
+		["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" }],
+	],
+	folder: [["path", { d: "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" }]],
+	key: [
+		["path", { d: "M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" }],
+		["circle", { cx: "16.5", cy: "7.5", fill: "currentColor", r: ".5" }],
+	],
+	layoutDashboard: [
+		["rect", { height: "9", rx: "1", width: "7", x: "3", y: "3" }],
+		["rect", { height: "5", rx: "1", width: "7", x: "14", y: "3" }],
+		["rect", { height: "9", rx: "1", width: "7", x: "14", y: "12" }],
+		["rect", { height: "5", rx: "1", width: "7", x: "3", y: "16" }],
+	],
+	logs: [
+		["path", { d: "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" }],
+		["path", { d: "M14 2v5a1 1 0 0 0 1 1h5" }],
+		["path", { d: "M10 9H8" }],
+		["path", { d: "M16 13H8" }],
+		["path", { d: "M16 17H8" }],
+	],
+	package: [
+		["path", { d: "M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" }],
+		["path", { d: "M12 22V12" }],
+		["polyline", { points: "3.29 7 12 12 20.71 7" }],
+		["path", { d: "m7.5 4.27 9 5.15" }],
+	],
+	play: [["path", { d: "M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" }]],
+	refresh: [
+		["path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" }],
+		["path", { d: "M21 3v5h-5" }],
+		["path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" }],
+		["path", { d: "M8 16H3v5" }],
+	],
+	remote: [
+		["rect", { height: "8", rx: "2", ry: "2", width: "20", x: "2", y: "2" }],
+		["rect", { height: "8", rx: "2", ry: "2", width: "20", x: "2", y: "14" }],
+		["line", { x1: "6", x2: "6.01", y1: "6", y2: "6" }],
+		["line", { x1: "6", x2: "6.01", y1: "18", y2: "18" }],
+	],
+	restore: [
+		["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }],
+		["path", { d: "M3 3v5h5" }],
+	],
+	save: [
+		["path", { d: "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" }],
+		["path", { d: "M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" }],
+		["path", { d: "M7 3v4a1 1 0 0 0 1 1h7" }],
+	],
+	search: [
+		["path", { d: "m21 21-4.34-4.34" }],
+		["circle", { cx: "11", cy: "11", r: "8" }],
+	],
+	send: [
+		["path", { d: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" }],
+		["path", { d: "m21.854 2.147-10.94 10.939" }],
+	],
+	settings: [
+		["path", { d: "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" }],
+		["circle", { cx: "12", cy: "12", r: "3" }],
+	],
+	shield: [["path", { d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" }]],
+	shieldCheck: [
+		["path", { d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" }],
+		["path", { d: "m9 12 2 2 4-4" }],
+	],
+	square: [["rect", { height: "18", rx: "2", width: "18", x: "3", y: "3" }]],
+	trash: [
+		["path", { d: "M10 11v6" }],
+		["path", { d: "M14 11v6" }],
+		["path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }],
+		["path", { d: "M3 6h18" }],
+		["path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }],
+	],
+	upload: [
+		["path", { d: "M12 3v12" }],
+		["path", { d: "m17 8-5-5-5 5" }],
+		["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }],
+	],
+	wrench: [["path", { d: "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z" }]],
+};
+const VIEW_ICONS = {
+	dashboard: "layoutDashboard",
+	database: "database",
+	diagnostics: "shieldCheck",
+	logs: "logs",
+	remote: "remote",
+	setup: "settings",
+	updates: "download",
+};
+const ACTION_ICONS = {
+	"apply-sanitize": "shieldCheck",
+	"about-close": "square",
+	"backup-database": "archive",
+	"database-transfer-backup": "archive",
+	"database-transfer-close": "square",
+	"database-transfer-pull": "download",
+	"database-transfer-push": "upload",
+	"database-transfer-restore": "restore",
+	browse: "folder",
+	"browse-ssh-key": "folder",
+	"check-hachigen-update": "download",
+	"check-all-updates": "download",
+	"check-updates": "download",
+	"clear-hachigen-logs": "trash",
+	"clear-pm2-logs": "trash",
+	"copy-diagnostic-info": "copy",
+	"copy-secret": "copy",
+	"delete-stash": "trash",
+	deploy: "send",
+	"export-database-key-backup": "key",
+	"export-support-bundle": "package",
+	"force-migrate-database": "database",
+	"generate-database-key": "key",
+	"hachigen-update-close": "square",
+	"hachigen-update-start": "download",
+	"install-validate": "wrench",
+	"migrate-database": "database",
+	"open-folder": "folder",
+	"open-hachigen-log-folder": "logs",
+	"open-hachigen-release": "external",
+	"show-about": "clipboard",
+	refresh: "refresh",
+	"refresh-database-viewer": "refresh",
+	"refresh-diagnostics": "refresh",
+	restart: "restore",
+	"restore-database": "restore",
+	"restore-stash": "restore",
+	"rotate-database-backups": "restore",
+	"save-path": "save",
+	"save-remote-settings": "save",
+	"setup-guide-close": "square",
+	"setup-guide-primary": "check",
+	"show-database": "database",
+	"show-diagnostics": "shieldCheck",
+	"show-logs": "logs",
+	"show-remote": "remote",
+	"show-setup": "settings",
+	"show-setup-guide": "check",
+	"show-updates": "download",
+	"start": "play",
+	stop: "square",
+	"test-remote": "search",
+	update: "download",
+	"update-hachi": "download",
+	validate: "check",
+	"verify-database-protection": "shieldCheck",
+};
+const ABOUT_LINKS = {
+	changelog: "https://github.com/FearlessKenji/HachiGen/blob/main/CHANGELOG.md",
+	patchNotes: "https://github.com/FearlessKenji/HachiGen/blob/main/docs/patch-notes.md",
+	readme: "https://github.com/FearlessKenji/HachiGen#readme",
+	releases: "https://github.com/FearlessKenji/HachiGen/releases",
 };
 
 // These names must match the input "name" attributes in index.html and the
@@ -52,19 +236,29 @@ const envConfigFields = [
 // activeView: sidebar view currently visible.
 // busy: global action lock that disables buttons during backend work.
 // logPollTimer/pm2LogBaseline: live log polling and "clear visible logs" offset.
+// pendingLogText/activeLogSelectionElementId: delayed log-pane redraws while text is selected.
 // sanitizeReport: last database sanitation review/apply result.
 // databaseView/databaseSort/databaseViewerLoading: table preview state.
 // forceMigrationUnlocked: one-session flag for the dangerous migration button.
 // confirmationResolve: current modal promise resolver.
 // lastConfig: latest Setup config metadata, used to restore copy-button state.
 // hachiGenUpdateWizard: active self-update wizard state while the modal is open.
+// setupGuidePrimaryAction/setupGuideOpen: current setup-guide modal routing.
+// diagnosticsState: latest full diagnostics payload shown on the Diagnostics tab.
 let state = null;
+let hachiVersionUpdate = null;
 let activeView = "dashboard";
 let busy = false;
 let logPollTimer = null;
 let pm2LogBaseline = null;
 let lastPm2LogText = "";
 let hachiGenLogHistoryHidden = false;
+let activeLogSelectionElementId = "";
+let logSelectionResumeTimer = null;
+const pendingLogText = {
+	eventLogs: null,
+	pm2Logs: null,
+};
 let sanitizeReport = null;
 let databaseView = null;
 let databaseViewerLoading = false;
@@ -73,6 +267,10 @@ let forceMigrationUnlocked = false;
 let confirmationResolve = null;
 let lastConfig = null;
 let hachiGenUpdateWizard = null;
+let setupGuidePrimaryAction = "show-setup";
+let setupGuideOpen = false;
+let setupGuideAutoShown = false;
+let diagnosticsState = null;
 
 function setDatabaseView(nextView) {
 	// Keep database viewer state assignment outside async loader internals.
@@ -100,14 +298,180 @@ function $all(selector) {
 	return Array.from(document.querySelectorAll(selector));
 }
 
+function createIcon(iconName) {
+	const paths = ICON_PATHS[iconName];
+
+	if (!paths) {
+		return null;
+	}
+
+	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	svg.classList.add("ui-icon");
+	svg.setAttribute("aria-hidden", "true");
+	svg.setAttribute("focusable", "false");
+	svg.setAttribute("viewBox", "0 0 24 24");
+
+	for (const shape of paths) {
+		const [tagName, attrs] = Array.isArray(shape) ? shape : ["path", { d: shape }];
+		const element = document.createElementNS("http://www.w3.org/2000/svg", tagName);
+
+		for (const [name, value] of Object.entries(attrs)) {
+			element.setAttribute(name, value);
+		}
+
+		svg.append(element);
+	}
+
+	return svg;
+}
+
+function setElementText(element, value) {
+	if (element?.tagName === "BUTTON") {
+		const icon = element.querySelector(".ui-icon")?.cloneNode(true);
+		element.textContent = "";
+
+		if (icon) {
+			element.append(icon);
+		}
+
+		element.append(document.createTextNode(value ?? ""));
+		return;
+	}
+
+	if (element) {
+		element.textContent = value ?? "";
+	}
+}
+
+function decorateControlIcon(element, iconName) {
+	if (!element || !iconName || element.querySelector(".ui-icon")) {
+		return;
+	}
+
+	const icon = createIcon(iconName);
+
+	if (icon) {
+		element.prepend(icon);
+	}
+}
+
+function iconNameForControl(element) {
+	if (!element) {
+		return "";
+	}
+
+	if (element.dataset.view) {
+		return VIEW_ICONS[element.dataset.view] || "";
+	}
+
+	return ACTION_ICONS[element.dataset.action] || "";
+}
+
+function decorateStaticIcons(root = document) {
+	root.querySelectorAll("button[data-action], button[data-view]").forEach(button => {
+		decorateControlIcon(button, iconNameForControl(button));
+	});
+}
+
 // Safely update text when an element exists. Missing elements are ignored so
 // one renderer function can update several views without crashing off-screen tabs.
 function setText(selector, value) {
 	const element = $(selector);
 
-	if (element) {
-		element.textContent = value ?? "";
+	setElementText(element, value);
+}
+
+function selectedTextTouchesElement(element) {
+	const selection = window.getSelection();
+
+	if (!element || !selection || selection.isCollapsed || selection.rangeCount === 0) {
+		return false;
 	}
+
+	for (let index = 0; index < selection.rangeCount; index += 1) {
+		const range = selection.getRangeAt(index);
+
+		try {
+			if (range.intersectsNode(element)) {
+				return true;
+			}
+		} catch {
+			return element.contains(selection.anchorNode) || element.contains(selection.focusNode);
+		}
+	}
+
+	return false;
+}
+
+function isLogSelectionActive(element) {
+	return Boolean(element && (activeLogSelectionElementId === element.id || selectedTextTouchesElement(element)));
+}
+
+function applyLogText(element, text, scrollToBottom = false) {
+	element.textContent = text ?? "";
+
+	if (scrollToBottom) {
+		element.scrollTop = element.scrollHeight;
+	}
+}
+
+function setLogText(logElementId, text, options = {}) {
+	const element = $(`#${logElementId}`);
+
+	if (!element) {
+		return;
+	}
+
+	if (isLogSelectionActive(element)) {
+		pendingLogText[logElementId] = {
+			scrollToBottom: Boolean(options.scrollToBottom),
+			text: text ?? "",
+		};
+		return;
+	}
+
+	pendingLogText[logElementId] = null;
+	applyLogText(element, text, Boolean(options.scrollToBottom));
+}
+
+function currentOrPendingLogText(logElementId) {
+	const pending = pendingLogText[logElementId];
+
+	if (pending) {
+		return pending.text;
+	}
+
+	const element = $(`#${logElementId}`);
+	return element?.textContent || "";
+}
+
+function flushPendingLogText() {
+	for (const [logElementId, pending] of Object.entries(pendingLogText)) {
+		const element = $(`#${logElementId}`);
+
+		if (!pending || !element || isLogSelectionActive(element)) {
+			continue;
+		}
+
+		pendingLogText[logElementId] = null;
+		applyLogText(element, pending.text, pending.scrollToBottom);
+	}
+}
+
+function schedulePendingLogFlush() {
+	if (logSelectionResumeTimer) {
+		clearTimeout(logSelectionResumeTimer);
+	}
+
+	logSelectionResumeTimer = setTimeout(() => {
+		logSelectionResumeTimer = null;
+		flushPendingLogText();
+	}, 120);
+}
+
+function clearLogText(logElementId) {
+	pendingLogText[logElementId] = null;
+	setText(`#${logElementId}`, "");
 }
 
 function setInputValue(selector, value) {
@@ -226,53 +590,150 @@ function repositoryBranchLabel(repository) {
 	return `Branch: ${repository.currentBranch || "Unknown"}`;
 }
 
-function remoteRuntimeLabel(remote) {
-	const settings = remote?.settings || {};
-	const target = settings.host ? `${settings.username || "user"}@${settings.host}` : "Remote not configured";
-	const remotePath = settings.remotePath ? ` | ${settings.remotePath}` : "";
-	return `${target}${remotePath}`;
-}
-
-function activeTargetPathLabel(nextState) {
-	if (nextState?.runtimeTarget === "remote") {
-		return `Remote: ${remoteRuntimeLabel(nextState.remote)}`;
-	}
-
-	return `Local: ${nextState?.installPath || "Not set"}`;
-}
-
 function updateTargetLabel(updates) {
 	return updates?.updateTarget || state?.repository?.updateTarget || "origin/main";
 }
 
-function updateMetaLabel(updates, repository, scan) {
-	const version = scan?.packageVersion || "Unknown";
-
+// Update panels report check context only; app/version identity lives in About
+// and troubleshooting details live in Diagnostics.
+function updateMetaLabel(updates, repository) {
 	if (!updates?.checkedAt) {
 		return repository?.isGit ?
-			`Branch: ${repository.currentBranch || "Unknown"} | Target: ${repository.updateTarget || "origin/main"} | Version: ${version}` :
-			`Not checked | Version: ${version}`;
+			`Branch: ${repository.currentBranch || "Unknown"} | Target: ${repository.updateTarget || "origin/main"}` :
+			"Not checked";
 	}
 
 	const checkedAt = new Date(updates.checkedAt).toLocaleString();
 	const branch = updates.currentBranch || repository?.currentBranch || "Unknown";
 	const target = updateTargetLabel(updates);
-	return `Last checked: ${checkedAt} | Branch: ${branch} | Target: ${target} | Version: ${version}`;
+	return `Last checked: ${checkedAt} | Branch: ${branch} | Target: ${target}`;
 }
 
-function hachiGenUpdateMetaLabel(update, hachiGenVersion) {
-	const version = update?.currentVersion || hachiGenVersion || "Unknown";
-
+function hachiGenUpdateMetaLabel(update) {
 	if (!update?.checkedAt) {
-		return `Not checked | HachiGen version: ${version}`;
+		return "Not checked";
 	}
 
 	const checkedAt = new Date(update.checkedAt).toLocaleString();
-	const current = update.currentTag || "Not recorded";
-	const latest = update.latestTag || "Unknown";
-	const size = update.assetSize ? ` | Asset: ${formatFileSize(update.assetSize)}` : "";
+	const assetSize = update.assetSize ? ` | Download size: ${formatFileSize(update.assetSize)}` : "";
 
-	return `Last checked: ${checkedAt} | HachiGen version: ${version} | Installed release: ${current} | Latest HachiGen release: ${latest}${size}`;
+	return `Last checked: ${checkedAt}${assetSize}`;
+}
+
+function updateSummaryText(update) {
+	if (!update || update.status === "unchecked") {
+		return "Not checked";
+	}
+
+	if (update.status === "available" || update.updateAvailable || update.canInstall) {
+		return "Update available";
+	}
+
+	if (update.status === "current") {
+		return "Current";
+	}
+
+	if (update.status === "error") {
+		return "Needs attention";
+	}
+
+	return formatStatusLabel(update.status || "checked");
+}
+
+function hachiCurrentVersionLabel() {
+	return hachiVersionUpdate?.currentVersion || state?.scan?.packageVersion || "Unknown";
+}
+
+function hachiAvailableVersionLabel() {
+	if (!hachiVersionUpdate) {
+		if (state?.updates?.available) {
+			return "Available";
+		}
+
+		if (state?.updates?.status === "current") {
+			return "None";
+		}
+
+		return "Not checked";
+	}
+
+	if (hachiVersionUpdate.updateAvailable) {
+		return hachiVersionUpdate.repositoryVersion || "Available";
+	}
+
+	return hachiVersionUpdate.repositoryVersion || "None";
+}
+
+function hachiStatusMessage() {
+	if (hachiVersionUpdate?.message) {
+		return hachiVersionUpdate.message;
+	}
+
+	return state?.updates?.message || "Check for Hachi updates.";
+}
+
+function hachiDashboardUpdateLabel() {
+	const current = hachiCurrentVersionLabel();
+
+	if (hachiVersionUpdate?.updateAvailable) {
+		return `${current} -> ${hachiVersionUpdate.repositoryVersion || "available"}`;
+	}
+
+	return updateSummaryText(state?.updates);
+}
+
+function hachiGenCurrentVersionLabel(update = state?.hachiGenUpdate) {
+	return update?.currentVersion || state?.hachiGenVersion || "Unknown";
+}
+
+function hachiGenAvailableVersionLabel(update = state?.hachiGenUpdate) {
+	if (!update?.checkedAt) {
+		return "Not checked";
+	}
+
+	if (update.updateAvailable || update.canInstall) {
+		return update.latestTag || "Available";
+	}
+
+	return update.latestTag || "None";
+}
+
+function hachiGenDashboardUpdateLabel(update = state?.hachiGenUpdate) {
+	const current = hachiGenCurrentVersionLabel(update);
+
+	if (update?.updateAvailable || update?.canInstall) {
+		return `${current} -> ${update.latestTag || "available"}`;
+	}
+
+	return updateSummaryText(update);
+}
+
+function dashboardTargetModeLabel(nextState) {
+	return nextState?.runtimeTarget === "remote" ? "Remote server" : "Local";
+}
+
+function dashboardTargetLocationLabel(nextState) {
+	if (nextState?.runtimeTarget === "remote") {
+		const settings = nextState?.remote?.settings || {};
+		const host = settings.host ? `${settings.username || "user"}@${settings.host}` : "Remote not configured";
+		return settings.remotePath ? `${host}:${settings.remotePath}` : host;
+	}
+
+	return nextState?.installPath || "Not set";
+}
+
+function dashboardActivitySummary(events = []) {
+	const visibleEvents = [...events].reverse().filter(event => event?.uiVisible !== false);
+	const lastError = visibleEvents.find(event => event.type === "error");
+	const latest = lastError || visibleEvents[0];
+
+	if (!latest) {
+		return "No recent activity loaded.";
+	}
+
+	const prefix = lastError ? "Last error" : "Latest";
+	const time = latest.time ? new Date(latest.time).toLocaleTimeString() : "recently";
+	return `${prefix} ${time}: ${latest.message || "Activity recorded."}`;
 }
 
 // Disable action buttons while a backend action is running. Sidebar navigation
@@ -290,6 +751,26 @@ function rendererLogMessage(message, fallback = "HachiGen event recorded without
 	return String(message || fallback)
 		.replace(/((?:TOKEN|clientId|twitchClientId|twitchSecret|kickClientId|kickSecret|HACHI_DB_KEY|HACHI_SECRETS_KEY)=)(?:"[^"]*"|'[^']*'|\S+)/giu, "$1[redacted]")
 		.replace(/(client(?:ID|Id|id|Secret)|token|secret)(["':=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/giu, "$1$2[redacted]");
+}
+
+function readableErrorMessage(error, fallback = "Unexpected HachiGen error.") {
+	return rendererLogMessage(error?.message || error, fallback)
+		.replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/u, "")
+		.replace(/^ShellError:\s*/u, "");
+}
+
+function escapeRegExp(value) {
+	return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function actionErrorMessage(label, error) {
+	const reason = readableErrorMessage(error, `${label} failed.`);
+
+	if (new RegExp(`^${escapeRegExp(label)}\\b`, "iu").test(reason) || (label === "Update" && /\bupdate failed\b/iu.test(reason))) {
+		return reason;
+	}
+
+	return `${label} failed: ${reason}`;
 }
 
 function recordRendererEvent(type, message, details = {}) {
@@ -371,9 +852,11 @@ function appendEvent(event) {
 		return;
 	}
 
-	const current = output.textContent === "No manager activity yet." ? "" : output.textContent;
-	output.textContent = `${current}${current ? "\n" : ""}${eventLine(event)}`.split("\n").slice(-220).join("\n");
-	output.scrollTop = output.scrollHeight;
+	const currentText = currentOrPendingLogText("eventLogs");
+	const current = currentText === "No manager activity yet." ? "" : currentText;
+	const nextText = `${current}${current ? "\n" : ""}${eventLine(event)}`.split("\n").slice(-220).join("\n");
+
+	setLogText("eventLogs", nextText, { scrollToBottom: true });
 }
 
 // Apply the current tab selection to the sidebar and content panels. This is
@@ -402,6 +885,53 @@ function showView(viewName) {
 	if (activeView === "database" && state?.database?.exists && !databaseView) {
 		loadDatabaseViewer();
 	}
+
+	if (activeView === "diagnostics") {
+		loadDiagnostics().catch(error => {
+			toast(error.message || "Diagnostics refresh failed.", "error", { label: "Diagnostics" });
+		});
+	}
+}
+
+function handleLogSelectionPointerDown(event) {
+	const logOutput = event.target.closest?.("#pm2Logs, #eventLogs");
+	activeLogSelectionElementId = logOutput?.id || "";
+
+	if (!logOutput) {
+		schedulePendingLogFlush();
+	}
+}
+
+function handleLogSelectionPointerUp() {
+	if (!activeLogSelectionElementId) {
+		return;
+	}
+
+	activeLogSelectionElementId = "";
+	schedulePendingLogFlush();
+}
+
+function handleLogSelectionChange() {
+	schedulePendingLogFlush();
+}
+
+function installRendererDiagnosticsHooks() {
+	window.addEventListener("error", event => {
+		recordRendererEvent("error", event.message || "Renderer error.", {
+			filename: event.filename || "",
+			label: "Renderer error",
+			lineno: event.lineno || 0,
+			source: "renderer",
+		});
+	});
+
+	window.addEventListener("unhandledrejection", event => {
+		const reason = event.reason instanceof Error ? event.reason.message : String(event.reason || "Unhandled rejection.");
+		recordRendererEvent("error", reason, {
+			label: "Unhandled renderer promise rejection",
+			source: "renderer",
+		});
+	});
 }
 
 function installHealth(scan) {
@@ -523,6 +1053,243 @@ function botHealth(pm2) {
 	return { label: formatStatusLabel(pm2.status), dot: "warn", detail: pm2.message || "PM2 status loaded" };
 }
 
+function setupStepStatus(done, current) {
+	if (done) {
+		return "done";
+	}
+
+	return current ? "current" : "waiting";
+}
+
+const UPDATE_SETUP_READY_STATUSES = new Set(["current", "branch_current", "history_current", "branch_mismatch", "diverged", "not_git"]);
+
+function updateSetupStepStatus(nextState, configurationReady) {
+	const updateStatus = nextState?.updates?.status || "unchecked";
+	const updateAvailable = Boolean(nextState?.updates?.available);
+	const updatesReady = Boolean(configurationReady && nextState?.updates && !updateAvailable && UPDATE_SETUP_READY_STATUSES.has(updateStatus));
+
+	if (!configurationReady) {
+		return {
+			action: "check-updates",
+			actionLabel: "Check Updates",
+			detail: "Save configuration before checking updates.",
+			done: false,
+			dot: "info",
+			label: "Check updates",
+		};
+	}
+
+	if (updateAvailable) {
+		return {
+			action: "show-updates",
+			actionLabel: "View Updates",
+			detail: nextState.updates.message || "A Hachi update is available.",
+			done: false,
+			dot: "warn",
+			label: "Review updates",
+		};
+	}
+
+	if (updateStatus === "unchecked") {
+		return {
+			action: "check-updates",
+			actionLabel: "Check Updates",
+			detail: "Check updates before starting Hachi.",
+			done: false,
+			dot: "info",
+			label: "Check updates",
+		};
+	}
+
+	if (updateStatus === "error") {
+		return {
+			action: "check-updates",
+			actionLabel: "Check Updates",
+			detail: nextState.updates?.message || "Update check needs attention.",
+			done: false,
+			dot: "bad",
+			label: "Check updates",
+		};
+	}
+
+	if (!updatesReady) {
+		return {
+			action: "show-updates",
+			actionLabel: "View Updates",
+			detail: nextState.updates?.message || "Update check needs attention.",
+			done: false,
+			dot: "warn",
+			label: "Review updates",
+		};
+	}
+
+	return {
+		action: "show-updates",
+		actionLabel: "Open Updates",
+		detail: nextState.updates?.message || "Updates checked.",
+		done: true,
+		dot: "good",
+		label: "Check updates",
+	};
+}
+
+function setupProgress(nextState) {
+	const scan = nextState?.scan || {};
+	const remote = nextState?.remote || {};
+	const usingRemote = nextState?.runtimeTarget === "remote";
+	const remoteConfigured = !usingRemote || remote.configured;
+	const installReady = Boolean(remoteConfigured && scan.projectFound);
+	const dependenciesReady = Boolean(installReady && scan.hasNodeModules && scan.dependenciesReady !== false);
+	const configurationReady = Boolean(installReady && scan.configurationReady);
+	const updateStep = updateSetupStepStatus(nextState, configurationReady);
+	const botOnline = nextState?.pm2?.status === "online";
+	const steps = [
+		{
+			action: usingRemote && !remote.configured ? "show-remote" : "show-setup",
+			actionLabel: usingRemote ? "Open Remote" : "Open Setup",
+			detail: usingRemote && !remote.configured ?
+				remote.errors?.[0] || "Remote connection details are not saved yet." :
+				installReady ? "Hachi project files were found." : "Select or install a Hachi folder.",
+			done: installReady,
+			id: "install",
+			label: usingRemote ? "Connect to Hachi" : "Find Hachi install",
+		},
+		{
+			action: "install-validate",
+			actionLabel: "Install / Validate",
+			detail: dependenciesReady ?
+				"Required packages are available." :
+				"Install or repair dependencies before starting Hachi.",
+			done: dependenciesReady,
+			id: "dependencies",
+			label: "Validate dependencies",
+		},
+		{
+			action: "show-setup",
+			actionLabel: "Open Setup",
+			detail: configurationReady ?
+				"Required configuration fields are saved." :
+				`${scan.configurationMissing?.length || 0} required configuration fields need values.`,
+			done: configurationReady,
+			id: "configuration",
+			label: "Save configuration",
+		},
+		{
+			...updateStep,
+			id: "updates",
+		},
+		{
+			action: "start",
+			actionLabel: "Start Hachi",
+			detail: botOnline ? "Hachi is online." : nextState?.pm2?.message || "Start Hachi after updates are checked.",
+			done: botOnline,
+			id: "runtime",
+			label: "Start runtime",
+		},
+	];
+	const currentIndex = steps.findIndex(step => !step.done);
+
+	return {
+		complete: currentIndex === -1,
+		currentStep: currentIndex === -1 ? null : steps[currentIndex],
+		steps: steps.map((step, index) => ({
+			...step,
+			status: setupStepStatus(step.done, index === currentIndex),
+		})),
+	};
+}
+
+function setupRecommendation(nextState) {
+	const progress = setupProgress(nextState);
+
+	if (!progress.complete) {
+		const step = progress.currentStep;
+		return {
+			action: step.action,
+			actionLabel: step.actionLabel,
+			detail: step.detail,
+			dot: step.dot || (step.id === "install" ? "warn" : "info"),
+			id: step.id,
+			setupIncomplete: true,
+			title: step.label,
+		};
+	}
+
+	if (nextState?.database?.audit?.migrationAvailable) {
+		return {
+			action: "show-database",
+			actionLabel: "Open Database",
+			detail: nextState.database.audit.detail || "Database schema can be migrated safely.",
+			dot: "warn",
+			id: "database-migration",
+			setupIncomplete: false,
+			title: "Review database",
+		};
+	}
+
+	if (nextState?.database?.audit?.forceMigrationAvailable) {
+		return {
+			action: "show-database",
+			actionLabel: "Open Database",
+			detail: nextState.database.audit.detail || "Database schema needs review before Hachi continues.",
+			dot: "bad",
+			id: "database-force-migration",
+			setupIncomplete: false,
+			title: "Database attention needed",
+		};
+	}
+
+	if (nextState?.updates?.available) {
+		return {
+			action: "show-updates",
+			actionLabel: "View Updates",
+			detail: nextState.updates.message || "A Hachi update is available.",
+			dot: "warn",
+			id: "updates",
+			setupIncomplete: false,
+			title: "Review available update",
+		};
+	}
+
+	if (!nextState?.updates || nextState.updates.status === "unchecked") {
+		return {
+			action: "show-updates",
+			actionLabel: "Check Updates",
+			detail: "No Hachi update check has run yet.",
+			dot: "info",
+			id: "check-updates",
+			setupIncomplete: false,
+			title: "Check for updates",
+		};
+	}
+
+	return {
+		action: "show-logs",
+		actionLabel: "Open Logs",
+		detail: nextState?.pm2?.message || "Hachi is ready. Logs are available if you want to watch runtime output.",
+		dot: "good",
+		id: "ready",
+		setupIncomplete: false,
+		title: "Hachi is ready",
+	};
+}
+
+function onboardingDismissed() {
+	try {
+		return window.localStorage?.getItem(ONBOARDING_DISMISSED_KEY) === "true";
+	} catch {
+		return false;
+	}
+}
+
+function dismissOnboardingGuide() {
+	try {
+		window.localStorage?.setItem(ONBOARDING_DISMISSED_KEY, "true");
+	} catch {
+		// Ignore storage errors; the guide can still close for this session.
+	}
+}
+
 function renderInstallChecks(scan) {
 	// Convert quickScan() output into the checklist under Setup -> Install.
 	// Each row answers one setup question: are project files, config, packages,
@@ -631,6 +1398,10 @@ function renderRemote(remote, runtimeTarget = "local") {
 	const target = settings.host ? `${settings.username || "user"}@${settings.host}` : "Not configured";
 	const portLabel = portMode === "custom" ? String(settings.port || "") : "22 (default)";
 	const errors = remote?.errors || [];
+	const lastTest = remote?.lastTest;
+	const lastTestLabel = lastTest?.checkedAt ?
+		`${lastTest.ok ? "Passed" : "Failed"} ${formatDateTime(lastTest.checkedAt)}${lastTest.message ? ` - ${lastTest.message}` : ""}` :
+		"Not tested";
 
 	setInputValue("#remoteHostInput", settings.host || "");
 	setInputValue("#remoteUsernameInput", settings.username || "");
@@ -652,10 +1423,15 @@ function renderRemote(remote, runtimeTarget = "local") {
 	setText("#remotePreviewPort", portLabel);
 	setText("#remotePreviewPath", settings.remotePath || "Not configured");
 	setText("#remotePreviewPm2", settings.pm2Name || "Hachi");
+	setText("#remotePreviewLastTest", lastTestLabel);
 }
 
 function formatRemoteTestOutput(result) {
-	const lines = [`Exit code: ${result.code}`];
+	const lines = [
+		`Status: ${result.ok ? "Validated" : "Failed"}`,
+		`Checked: ${formatDateTime(result.checkedAt)}`,
+		`Exit code: ${result.code}`,
+	];
 	const stdout = String(result.stdout || "").trim();
 	const stderr = String(result.stderr || "").trim();
 
@@ -766,101 +1542,16 @@ function renderGroupedChangesList(selector, changes, emptyText) {
 	}
 }
 
-function renderIncomingUpdates(updates) {
-	// Render commits that exist on the update target but not in the local install.
-	// This lets the Updates panel show what an update would actually bring in.
-	const commits = updates?.incomingCommits || [];
-	const summary = $("#incomingSummary");
-	const target = updateTargetLabel(updates);
-
-	if (!summary) {
-		return;
-	}
-
-	if (!updates || updates.status === "unchecked") {
-		summary.textContent = "No update check has run yet.";
-		renderSimpleList("#incomingCommitsList", [], "Check updates to see incoming commits.", () => document.createElement("li"));
-		return;
-	}
-
-	if (updates.status === "not_git") {
-		summary.textContent = "This install is not a Git checkout, so incoming changes cannot be shown.";
-		renderSimpleList("#incomingCommitsList", [], "Manual update mode.", () => document.createElement("li"));
-		return;
-	}
-
-	if (updates.status === "branch_current" || updates.status === "history_current") {
-		summary.textContent = `Files match ${target}. No update is needed for this build.`;
-	} else if (updates.status === "branch_mismatch") {
-		summary.textContent = updates.message || `Current branch differs from ${target}. Use Git to update manually.`;
-	} else if (updates.diverged) {
-		summary.textContent = `Local and ${target} history have diverged. Review with Git before updating.`;
-	} else if (commits.length) {
-		summary.textContent = `${pluralize(commits.length, "incoming commit")} available from ${target}.`;
-	} else {
-		summary.textContent = "No incoming commits. Hachi is up to date.";
-	}
-
-	const visibleCommits = commits.slice(0, 12);
-	const hiddenCount = Math.max(0, commits.length - visibleCommits.length);
-	// Keep the panel readable by showing the first 12 commits plus a summary row.
-	const listItems = hiddenCount ?
-		[...visibleCommits, { hash: "", message: `${pluralize(hiddenCount, "more commit")} not shown.`, text: "" }] :
-		visibleCommits;
-
-	renderSimpleList("#incomingCommitsList", listItems, "No incoming commits.", commit => {
-		const item = document.createElement("li");
-		item.className = "update-list-row";
-
-		if (commit.hash) {
-			const hash = document.createElement("code");
-			hash.textContent = commit.hash;
-			item.append(hash);
-		}
-
-		const message = document.createElement("span");
-		message.textContent = commit.message || commit.text;
-		item.append(message);
-		return item;
-	});
-}
-
-function renderLocalChanges(updates) {
-	// Render files changed in the selected install folder. These files do not
-	// block updates anymore, but HachiGen shows them before stashing/updating.
-	const changes = updates?.localChangeDetails || [];
-	const summary = $("#localChangesSummary");
-	const list = $("#localChangesList");
-	const sourceLabel = updates?.source === "remote" ? "Remote" : "Local";
-
-	if (!summary || !list) {
-		return;
-	}
-
-	if (!updates || updates.status === "unchecked") {
-		summary.textContent = "Local changes have not been checked yet.";
-		renderSimpleList("#localChangesList", [], "Check updates to see local changes.", () => document.createElement("li"));
-		return;
-	}
-
-	if (!changes.length) {
-		summary.textContent = `Clean working tree. ${sourceLabel} files will not block updates.`;
-		renderSimpleList("#localChangesList", [], "No local changes.", () => document.createElement("li"));
-		return;
-	}
-
-	summary.textContent = updates?.available ?
-		`${pluralize(changes.length, `${sourceLabel.toLowerCase()} file`)} changed. These files will be saved to a recoverable stash before updating.` :
-		`${pluralize(changes.length, `${sourceLabel.toLowerCase()} file`)} changed.`;
-
-	renderGroupedChangesList("#localChangesList", changes, "No local changes.");
-}
-
 function renderStashedChanges(updates) {
 	// Render the active HachiGen-created stash and enable Restore/Delete only
 	// when there is actually a saved stash available.
 	const stash = updates?.stash || null;
 	const changes = stash?.changes || [];
+	const panel = $("#savedChangesPanel");
+
+	if (panel) {
+		panel.hidden = !stash;
+	}
 
 	setDisabled("#restoreChangesButton", !stash);
 	setDisabled("#deleteChangesButton", !stash);
@@ -879,12 +1570,288 @@ function renderStashedChanges(updates) {
 	renderGroupedChangesList("#stashChangesList", changes, "No file list available for this stash.");
 }
 
+function renderHachiUpdateSummary() {
+	const canUpdate = Boolean(state?.updates?.available);
+
+	setText("#updatesMeta", updateMetaLabel(state?.updates, state?.repository));
+	setText("#hachiCurrentVersion", hachiCurrentVersionLabel());
+	setText("#hachiAvailableVersion", hachiAvailableVersionLabel());
+	setText("#updateMessage", hachiStatusMessage());
+	setDisabled("#hachiUpdateButton", !canUpdate);
+}
+
 function renderHachiGenUpdate(update) {
 	// HachiGen updates come from GitHub release assets rather than the Hachi Git
-	// checkout, so they have their own status text and install button.
-	setText("#hachigenUpdateMeta", hachiGenUpdateMetaLabel(update, state?.hachiGenVersion));
-	setText("#hachigenUpdateMessage", update?.message || "Check for the latest HachiGen release.");
-	setDisabled("#installHachiGenUpdateButton", !update?.canInstall);
+	// checkout, so the page keeps its install action separate from check-all.
+	const updateButton = $("#checkHachiGenUpdateButton");
+	const canUpdate = Boolean(update?.canInstall);
+
+	setText("#hachigenUpdateMeta", hachiGenUpdateMetaLabel(update));
+	setText("#hachigenUpdateMessage", update?.message || "Check for HachiGen updates.");
+	setText("#hachigenCurrentVersion", hachiGenCurrentVersionLabel(update));
+	setText("#hachigenAvailableVersion", hachiGenAvailableVersionLabel(update));
+
+	if (updateButton) {
+		updateButton.className = "button primary";
+		updateButton.disabled = !canUpdate;
+		setElementText(updateButton, "Update HachiGen");
+	}
+}
+
+function diagnosticSnapshotFromState(nextState) {
+	return {
+		app: {
+			hachiGenVersion: nextState?.hachiGenVersion || "",
+		},
+		generatedAt: new Date().toISOString(),
+		paths: {
+			installPath: nextState?.installPath || "",
+		},
+		pm2: {
+			message: nextState?.pm2?.message || "",
+			status: nextState?.pm2?.status || "unknown",
+			target: nextState?.pm2?.target || nextState?.runtimeTarget || "local",
+		},
+		recovery: diagnosticsState?.recovery || {
+			crashCount: 0,
+			recentCrashEvents: [],
+		},
+		repository: nextState?.repository || {},
+		scan: nextState?.scan || {},
+		settings: {
+			runtimeTarget: nextState?.runtimeTarget || "local",
+		},
+		updates: {
+			hachi: nextState?.updates || {},
+			hachiGen: nextState?.hachiGenUpdate || {},
+		},
+	};
+}
+
+function updateStateLabel(update) {
+	const status = update?.status || "unchecked";
+	const message = update?.message || "";
+
+	if (message) {
+		return `${formatStatusLabel(status)}: ${message}`;
+	}
+
+	return formatStatusLabel(status);
+}
+
+function updateVerificationLabel(verification) {
+	if (!verification?.sha256) {
+		return "No downloaded update verified yet";
+	}
+
+	return `SHA-256 ${verification.sha256.slice(0, 12)}... | ${formatFileSize(verification.bytes)}`;
+}
+
+function renderDiagnostics(diagnostics = diagnosticsState || diagnosticSnapshotFromState(state)) {
+	const runtimeTarget = diagnostics?.settings?.runtimeTarget || diagnostics?.pm2?.target || state?.runtimeTarget || "unknown";
+	const recoveryEvents = diagnostics?.recovery?.recentCrashEvents || [];
+	const lastRecoveryEvent = recoveryEvents[recoveryEvents.length - 1];
+	const summary = [
+		`Generated: ${diagnostics?.generatedAt || "Not loaded"}`,
+		`Install: ${diagnostics?.paths?.installPath || "Unknown"}`,
+		`Repository: ${diagnostics?.repository?.currentBranch || "unknown"} -> ${diagnostics?.repository?.updateTarget || "origin/main"}`,
+		`Missing config: ${(diagnostics?.scan?.configurationMissing || []).join(", ") || "none"}`,
+		`Missing packages: ${(diagnostics?.scan?.missingDependencies || []).join(", ") || "none"}`,
+	].join("\n");
+
+	setText("#diagnosticsMeta", diagnostics?.generatedAt ? `Last refreshed ${formatDateTime(diagnostics.generatedAt)}` : "Diagnostics have not been refreshed yet.");
+	setText("#diagnosticsHachiGenVersion", diagnostics?.app?.hachiGenVersion || state?.hachiGenVersion || "Unknown");
+	setText("#diagnosticsHachiVersion", diagnostics?.scan?.packageVersion || "Unknown");
+	setText("#diagnosticsRuntimeTarget", formatStatusLabel(runtimeTarget));
+	setText("#diagnosticsPm2Status", updateStateLabel(diagnostics?.pm2));
+	setText("#diagnosticsHachiUpdate", updateStateLabel(diagnostics?.updates?.hachi));
+	setText("#diagnosticsHachiGenUpdate", updateStateLabel(diagnostics?.updates?.hachiGen));
+	setText("#diagnosticsUpdateVerification", updateVerificationLabel(diagnostics?.updates?.hachiGen?.verification));
+	setText("#diagnosticsCrashLog", diagnostics?.recovery?.crashLog?.exists ? "Available" : "No crash log");
+	setText("#diagnosticsCrashCount", String(diagnostics?.recovery?.crashCount || 0));
+	setText("#diagnosticsRecoveryEvent", lastRecoveryEvent ? `${formatDateTime(lastRecoveryEvent.time)} | ${lastRecoveryEvent.message}` : "No recovery events");
+	setText("#diagnosticsSummaryOutput", summary);
+}
+
+async function loadDiagnostics() {
+	const diagnostics = await api.getDiagnostics();
+	diagnosticsState = diagnostics;
+	renderDiagnostics(diagnostics);
+	return diagnostics;
+}
+
+function createSetupGuideSteps(progress) {
+	const list = document.createElement("div");
+	list.className = "setup-guide-steps";
+
+	for (const step of progress.steps) {
+		const item = document.createElement("div");
+		item.className = `setup-guide-step ${step.status}`;
+
+		const marker = document.createElement("span");
+		marker.className = "setup-guide-marker";
+		item.append(marker);
+
+		const body = document.createElement("span");
+		body.className = "setup-guide-step-body";
+
+		const title = document.createElement("strong");
+		title.textContent = step.label;
+		body.append(title);
+
+		const detail = document.createElement("span");
+		detail.textContent = step.detail;
+		body.append(detail);
+
+		item.append(body);
+		list.append(item);
+	}
+
+	return list;
+}
+
+function createAboutDetails(info) {
+	const list = document.createElement("dl");
+	list.className = "detail-list about-details";
+
+	for (const [label, value] of [
+		["HachiGen", info?.hachiGenVersion || state?.hachiGenVersion || "Unknown"],
+		["Hachi", info?.hachiVersion || state?.scan?.packageVersion || "Unknown"],
+		["Updates", info?.updateChannel || "Stable releases"],
+		["User Data", info?.paths?.userDataPath || "Unknown"],
+		["Logs", info?.paths?.logFolder || "Unknown"],
+		["Settings", info?.paths?.settingsPath || "Unknown"],
+	]) {
+		const wrapper = document.createElement("div");
+		const term = document.createElement("dt");
+		const description = document.createElement("dd");
+
+		term.textContent = label;
+		description.textContent = value;
+		wrapper.append(term, description);
+		list.append(wrapper);
+	}
+
+	return list;
+}
+
+function createAboutLinks() {
+	const wrapper = document.createElement("div");
+	wrapper.className = "about-links";
+
+	for (const [label, href] of [
+		["README", ABOUT_LINKS.readme],
+		["Release Notes", ABOUT_LINKS.patchNotes],
+		["Changelog", ABOUT_LINKS.changelog],
+		["Releases", ABOUT_LINKS.releases],
+	]) {
+		const link = document.createElement("a");
+
+		link.href = href;
+		link.rel = "noreferrer";
+		link.target = "_blank";
+		link.textContent = label;
+		wrapper.append(link);
+	}
+
+	return wrapper;
+}
+
+function createReleaseNotesList(notes = []) {
+	const list = document.createElement("ul");
+	list.className = "modal-details about-release-notes";
+
+	if (!notes.length) {
+		const item = document.createElement("li");
+
+		item.textContent = "No bundled release notes were found for this build.";
+		list.append(item);
+		return list;
+	}
+
+	for (const note of notes) {
+		const item = document.createElement("li");
+
+		item.textContent = note;
+		list.append(item);
+	}
+
+	return list;
+}
+
+async function showAboutModal() {
+	let info = null;
+
+	try {
+		info = await api.getAboutInfo();
+	} catch (error) {
+		recordRendererEvent("error", `About info failed: ${readableErrorMessage(error)}`, {
+			label: "About HachiGen",
+		});
+	}
+
+	showSharedModal({
+		actions: [
+			{ action: "show-diagnostics", label: "Diagnostics", variant: "info" },
+			{ action: "about-close", label: "Close", variant: "primary" },
+		],
+		content: [
+			createModalSummary("HachiGen is the desktop manager for Hachi. Releases are unsigned by choice; use the published SHA-256 checksums to verify downloads."),
+			createAboutDetails(info || {}),
+			createAboutLinks(),
+			createModalSummary("Bundled release notes"),
+			createReleaseNotesList(info?.releaseNotes || []),
+		],
+		meta: `HachiGen ${info?.hachiGenVersion || state?.hachiGenVersion || "Unknown"}`,
+		title: "About HachiGen",
+	});
+}
+
+function showSetupGuideModal() {
+	const progress = setupProgress(state);
+	const recommendation = setupRecommendation(state);
+	const doneCount = progress.steps.filter(step => step.done).length;
+	const summary = createModalSummary(progress.complete ?
+		"Hachi setup is complete." :
+		"Finish the current setup checks to get Hachi running.");
+
+	setupGuidePrimaryAction = recommendation.action;
+	setupGuideOpen = showSharedModal({
+		actions: [
+			{ action: "setup-guide-close", label: progress.complete ? "Close" : "Not Now", variant: "secondary" },
+			{ action: "setup-guide-primary", label: recommendation.actionLabel, variant: progress.complete ? "primary" : "warning" },
+		],
+		content: [summary, createSetupGuideSteps(progress)],
+		meta: progress.complete ? "Ready" : `${doneCount} of ${progress.steps.length} complete`,
+		title: "Hachi setup guide",
+	});
+}
+
+function closeSetupGuideModal({ dismiss = false } = {}) {
+	setupGuideOpen = false;
+
+	if (dismiss) {
+		dismissOnboardingGuide();
+	}
+
+	closeSharedModal();
+}
+
+function maybeShowSetupGuide() {
+	const modal = $("#sharedModal");
+
+	if (setupGuideAutoShown || setupGuideOpen || onboardingDismissed() || setupProgress(state).complete || (modal && !modal.hidden)) {
+		return;
+	}
+
+	setupGuideAutoShown = true;
+	showSetupGuideModal();
+}
+
+function runSetupGuidePrimaryAction() {
+	const action = setupGuidePrimaryAction || "show-setup";
+	closeSetupGuideModal();
+	runInlineAction(action);
 }
 
 function formatDateTime(value) {
@@ -1037,7 +2004,6 @@ function renderDatabase(database) {
 	setText("#databaseAuditStatus", audit ? `${audit.label}: ${audit.detail}` : "Not checked");
 	setDisabled("#migrateDatabaseButton", !audit?.migrationAvailable);
 	setDisabled("#forceMigrateDatabaseButton", !(audit?.forceMigrationAvailable || forceMigrationUnlocked));
-	setDisabled("button[data-action=\"restore-database\"]", database?.source === "remote");
 	setDisabled("#rotateDatabaseBackupsButton", !keyReady || !backups.length);
 	renderDatabaseProtection(database?.protection);
 
@@ -1309,6 +2275,7 @@ function createModalButton({ action, disabled = false, id, label, variant = "sec
 		button.id = id;
 	}
 
+	decorateControlIcon(button, iconNameForControl(button));
 	return button;
 }
 
@@ -1503,6 +2470,339 @@ function confirmDatabaseMigration(force) {
 	});
 }
 
+function databaseTransferRemoteLabel() {
+	const settings = state?.remote?.settings || {};
+	const host = settings.host ? `${settings.username || "user"}@${settings.host}` : "remote profile";
+	return settings.remotePath ? `${host}:${settings.remotePath}` : host;
+}
+
+function localDatabasePathLabel() {
+	if (state?.installPath) {
+		return `${state.installPath}\\database\\database.sqlite`;
+	}
+
+	return state?.database?.source === "local" && state?.database?.path ?
+		state.database.path :
+		"selected local Hachi database";
+}
+
+function remoteDatabasePathLabel(relativePath = "database/database.sqlite") {
+	return `${databaseTransferRemoteLabel()}/${relativePath}`;
+}
+
+function createModalProgress(status = "working") {
+	const wrapper = document.createElement("div");
+	wrapper.className = `modal-progress modal-progress-${status}`;
+	const bar = document.createElement("span");
+	wrapper.append(bar);
+	return wrapper;
+}
+
+function showDatabaseTransferStatus({ details = [], meta, status = "working", summary, title }) {
+	showSharedModal({
+		actions: [
+			{
+				action: "database-transfer-close",
+				disabled: status === "working",
+				label: status === "working" ? "Working..." : "Close",
+				variant: status === "error" ? "warning" : "primary",
+			},
+		],
+		content: [
+			createModalProgress(status),
+			createModalSummary(summary),
+			createModalDetails(details),
+		],
+		meta,
+		title,
+	});
+}
+
+function databaseTransferResultDetails(result, fallbackDetails = []) {
+	const details = [...fallbackDetails];
+
+	if (result?.bytes) {
+		details.push(`Transferred: ${formatFileSize(result.bytes)}.`);
+	}
+
+	if (result?.localPath) {
+		details.push(`Local file: ${result.localPath}`);
+	}
+
+	if (result?.remotePath) {
+		details.push(`Remote file: ${remoteDatabasePathLabel(result.remotePath)}`);
+	}
+
+	if (result?.targetPath) {
+		details.push(`Restored to: ${result.targetPath}`);
+	}
+
+	if (result?.safetyBackup) {
+		details.push(`Safety backup: ${result.safetyBackup}`);
+	}
+
+	if (result?.transform) {
+		const transformLabel = result.transform === "rekeyed" ?
+			"Re-encrypted with the destination database key." :
+			result.transform === "encrypted" ?
+				"Encrypted with the destination database key." :
+				result.transform === "verified" ?
+					"Verified with the destination database key." :
+					"Copied without changing encryption.";
+		details.push(`Transfer encryption: ${transformLabel}`);
+	}
+
+	return details;
+}
+
+async function runDatabaseTransferAction({ action, details, label, successSummary, title, workingSummary }) {
+	showDatabaseTransferStatus({
+		details,
+		meta: "Transfer running",
+		status: "working",
+		summary: workingSummary,
+		title,
+	});
+
+	const result = await runAction(label, action, { returnError: true, toast: false });
+
+	if (result?.ok) {
+		databaseView = null;
+		refreshCurrentDatabaseViewer();
+		showDatabaseTransferStatus({
+			details: databaseTransferResultDetails(result, details),
+			meta: "Transfer complete",
+			status: "complete",
+			summary: result.message || successSummary,
+			title,
+		});
+		return result;
+	}
+
+	showDatabaseTransferStatus({
+		details,
+		meta: "Transfer needs attention",
+		status: "error",
+		summary: result?.message || `${label} failed.`,
+		title,
+	});
+	return result;
+}
+
+function showDatabaseBackupTransferModal() {
+	const remoteConfigured = Boolean(state?.remote?.configured);
+	const activeRemote = state?.runtimeTarget === "remote";
+	const currentSource = activeRemote ? "remote" : "local";
+	const summary = createModalSummary("Back up, restore, or move the Hachi database without leaving HachiGen.");
+	const details = createModalDetails([
+		`Current database view: ${currentSource}.`,
+		`Local database: ${localDatabasePathLabel()}.`,
+		remoteConfigured ? `Remote database: ${remoteDatabasePathLabel()}.` : "Remote database: remote profile is not configured.",
+		"Pull moves the configured remote database into the selected local Hachi folder.",
+		"Push moves the selected local database to the configured remote Hachi folder.",
+		"Encrypted transfers are re-encrypted with the destination database key; keys are not copied between installs.",
+		"Transfer actions create a backup on the destination side before replacing an existing database.",
+	]);
+
+	showSharedModal({
+		actions: [
+			{ action: "database-transfer-close", label: "Close", variant: "secondary" },
+			{
+				action: "database-transfer-backup",
+				disabled: !state?.database?.exists,
+				label: "Backup Current",
+				variant: "info",
+			},
+			{
+				action: "database-transfer-restore",
+				disabled: activeRemote,
+				label: "Restore Backup",
+				variant: "warning",
+			},
+			{
+				action: "database-transfer-pull",
+				disabled: !remoteConfigured,
+				label: "Pull From Remote",
+				variant: "primary",
+			},
+			{
+				action: "database-transfer-push",
+				disabled: !remoteConfigured,
+				label: "Push To Remote",
+				variant: "warning",
+			},
+		],
+		content: [summary, details],
+		meta: remoteConfigured ? `Remote: ${databaseTransferRemoteLabel()}` : "Remote profile is not configured",
+		title: "Backup / Transfer Database",
+	});
+}
+
+function runDatabaseBackupFlow() {
+	// Make a dated copy of database/database.sqlite in manager/backups.
+	// If today's backup already exists, ask with the themed confirmation modal.
+	runAction("Backup database", () => api.backupDatabase(), { toast: false })
+		.then(async result => {
+			if (!result) {
+				return;
+			}
+
+			if (result.needsOverwrite) {
+				const confirmed = await showConfirmModal({
+					confirmText: "Overwrite",
+					details: ["The existing backup file will be replaced.", "Manual restore backups are not affected."],
+					meta: "Database backup already exists",
+					summary: `${result.fileName} already exists. Overwrite today's database backup?`,
+					title: "Overwrite database backup?",
+					variant: "warning",
+				});
+
+				if (!confirmed) {
+					toast("Database backup canceled.");
+					return;
+				}
+
+				await runAction("Overwrite database backup", () => api.backupDatabase({ overwrite: true }));
+				return;
+			}
+
+			toast(result.message || "Database backup created.");
+		});
+}
+
+function runDatabaseRestoreFlow() {
+	// Let the native picker choose a backup, then use a themed confirmation
+	// before the backend replaces the current database file.
+	runAction("Choose database backup", () => api.chooseDatabaseBackup(), { toast: false })
+		.then(async selection => {
+			if (!selection?.ok) {
+				if (selection?.message) {
+					toast(selection.message);
+				}
+				return;
+			}
+
+			const confirmed = await showConfirmModal({
+				confirmText: "Restore",
+				details: [
+					`Selected backup: ${selection.fileName}`,
+					`Destination: ${localDatabasePathLabel()}`,
+					"HachiGen will create a pre-restore safety backup first.",
+					"Stop Hachi before restoring if it is currently running.",
+				],
+				meta: "Database restore confirmation",
+				summary: "The current local database will be overwritten with the selected backup.",
+				title: "Restore this database backup?",
+				variant: "warning",
+			});
+
+			if (!confirmed) {
+				toast("Database restore canceled.");
+				return;
+			}
+
+			const details = [
+				`Selected backup: ${selection.fileName}`,
+				`Destination: ${localDatabasePathLabel()}`,
+				"Pre-restore safety backup is created before replacement when a database exists.",
+			];
+			showDatabaseTransferStatus({
+				details,
+				meta: "Restore running",
+				status: "working",
+				summary: "Restoring the selected local database backup...",
+				title: "Restore database backup",
+			});
+			const result = await runAction("Restore database", () => api.restoreDatabase(selection.backupPath), { returnError: true, toast: false });
+
+			if (result?.ok) {
+				databaseView = null;
+				refreshCurrentDatabaseViewer();
+				showDatabaseTransferStatus({
+					details: databaseTransferResultDetails(result, details),
+					meta: "Restore complete",
+					status: "complete",
+					summary: result.message || "Database backup restored.",
+					title: "Restore database backup",
+				});
+			} else {
+				showDatabaseTransferStatus({
+					details,
+					meta: "Restore needs attention",
+					status: "error",
+					summary: result?.message || "Restore database failed.",
+					title: "Restore database backup",
+				});
+			}
+		});
+}
+
+function runDatabasePullFlow() {
+	const details = [
+		`Remote source: ${remoteDatabasePathLabel()}`,
+		`Local destination: ${localDatabasePathLabel()}`,
+		"HachiGen will re-encrypt the transferred copy with the local database key.",
+		"HachiGen will create a local pre-pull backup if a local database already exists.",
+		"Stop local and remote Hachi before transferring if either is currently running.",
+	];
+
+	showConfirmModal({
+		confirmText: "Pull Database",
+		details,
+		meta: "Remote to local database transfer",
+		summary: "Pull the remote database into the selected local Hachi folder?",
+		title: "Pull database from remote?",
+		variant: "warning",
+	}).then(async confirmed => {
+		if (!confirmed) {
+			toast("Database pull canceled.");
+			return;
+		}
+
+		await runDatabaseTransferAction({
+			action: () => api.pullRemoteDatabase(),
+			details,
+			label: "Pull database from remote",
+			successSummary: "Remote database pulled to the selected local Hachi folder.",
+			title: "Pull database from remote",
+			workingSummary: "Pulling the remote database into the selected local Hachi folder...",
+		});
+	});
+}
+
+function runDatabasePushFlow() {
+	const details = [
+		`Local source: ${localDatabasePathLabel()}`,
+		`Remote destination: ${remoteDatabasePathLabel()}`,
+		"HachiGen will re-encrypt the transferred copy with the remote database key.",
+		"HachiGen will create a remote pre-push backup if a remote database already exists.",
+		"Stop local and remote Hachi before transferring if either is currently running.",
+	];
+
+	showConfirmModal({
+		confirmText: "Push Database",
+		details,
+		meta: "Local to remote database transfer",
+		summary: "Push the selected local database to the configured remote Hachi folder?",
+		title: "Push database to remote?",
+		variant: "warning",
+	}).then(async confirmed => {
+		if (!confirmed) {
+			toast("Database push canceled.");
+			return;
+		}
+
+		await runDatabaseTransferAction({
+			action: () => api.pushLocalDatabaseToRemote(),
+			details,
+			label: "Push database to remote",
+			successSummary: "Selected local database pushed to the configured remote Hachi folder.",
+			title: "Push database to remote",
+			workingSummary: "Pushing the selected local database to the configured remote Hachi folder...",
+		});
+	});
+}
+
 function closeConfirmModal(confirmed) {
 	// Resolve the promise created by showConfirmModal(). This keeps each caller
 	// free to decide what happens after the themed confirmation closes.
@@ -1615,7 +2915,7 @@ function renderHachiGenUpdateWizardFooter() {
 
 	footer.replaceChildren(
 		createModalButton({ action: "hachigen-update-close", label: "Cancel", variant: "secondary" }),
-		createModalButton({ action: "hachigen-update-start", label: "Install Latest", variant: "primary" }),
+		createModalButton({ action: "hachigen-update-start", label: "Update", variant: "primary" }),
 	);
 }
 
@@ -1665,10 +2965,9 @@ function renderHachiGenUpdateWizard() {
 
 function showHachiGenUpdateWizard() {
 	const update = state?.hachiGenUpdate || {};
-	const version = update.currentVersion || state?.hachiGenVersion || "Unknown";
-	const latest = update.latestTag || "the latest HachiGen release";
+	const latestVersion = String(update.latestTag || "").replace(/^hachigen-v/u, "") || "the latest version";
 	const assetSize = update.assetSize ? ` Asset size: ${formatFileSize(update.assetSize)}.` : "";
-	const summary = createModalSummary(`HachiGen ${version} will update from ${latest}.${assetSize}`);
+	const summary = createModalSummary(`Update HachiGen to Version ${latestVersion}.${assetSize}`);
 	const wizard = document.createElement("div");
 	const progress = document.createElement("div");
 	const progressBar = document.createElement("div");
@@ -1678,7 +2977,7 @@ function showHachiGenUpdateWizard() {
 	const note = document.createElement("div");
 
 	hachiGenUpdateWizard = {
-		message: "Ready to check, download, and install the latest HachiGen release.",
+		message: "Ready to update HachiGen.",
 		progress: 0,
 		running: false,
 		stage: "check",
@@ -1698,7 +2997,7 @@ function showHachiGenUpdateWizard() {
 	steps.className = "update-wizard-steps";
 	steps.id = "hachigenUpdateWizardSteps";
 	note.className = "update-wizard-note";
-	note.textContent = "Packaged Windows builds close, replace HachiGen.exe, and relaunch. Development builds open the release download instead.";
+	note.textContent = "HachiGen will close and reopen after the update. Development builds open the release download instead.";
 
 	wizard.append(summary, progress, message, steps, note);
 	showSharedModal({
@@ -1750,11 +3049,11 @@ async function startHachiGenUpdateWizard() {
 	} catch (error) {
 		hachiGenUpdateWizard = {
 			...hachiGenUpdateWizard,
-			message: error.message || "HachiGen update failed.",
+			message: actionErrorMessage("HachiGen update", error),
 			running: false,
 			status: "error",
 		};
-		toast(error.message || "HachiGen update failed.", "error", { label: "HachiGen update" });
+		toast(hachiGenUpdateWizard.message, "error", { label: "HachiGen update" });
 	} finally {
 		setBusy(false);
 		renderHachiGenUpdateWizard();
@@ -1803,7 +3102,7 @@ async function loadDatabaseViewer(tableName = "", sort = databaseSort) {
 		renderDatabaseViewer(result);
 		return result;
 	} catch (error) {
-		const message = error.message || "Database viewer failed.";
+		const message = actionErrorMessage("Database viewer", error);
 		setText("#databaseViewerMeta", message);
 		toast(message, "error", { label: "Database viewer" });
 		return null;
@@ -1842,6 +3141,11 @@ async function refreshCurrentView() {
 		return { message: "Setup refreshed." };
 	}
 
+	if (activeView === "diagnostics") {
+		await loadDiagnostics();
+		return { message: "Diagnostics refreshed." };
+	}
+
 	await refreshState();
 	return { message: "Current view refreshed." };
 }
@@ -1856,11 +3160,8 @@ function renderState(nextState) {
 	const bot = botHealth(state.pm2);
 	const updates = updateHealth(state.updates);
 	const database = databaseHealth(state.database);
-	const updateButtonText = state.updates?.available ? "Update" : "Check Updates";
-	const dashboardUpdateButtonText = state.updates?.available ? "View Updates" : "Check Updates";
 
 	// Sidebar.
-	setText("#activeInstallPath", activeTargetPathLabel(state));
 	setText("#sidebarInstallPath", shortPath(state.installPath));
 	setText("#sidebarRepoRemote", repositoryRemoteLabel(state.repository));
 	setText("#sidebarRepoBranch", repositoryBranchLabel(state.repository));
@@ -1890,18 +3191,19 @@ function renderState(nextState) {
 
 	// Dashboard/panel metadata.
 	setText("#runtimeMeta", state.pm2?.message || (state.runtimeTarget === "remote" ? "Remote PM2 process: Hachi" : "PM2 process: Hachi"));
-	setText("#updatesMeta", updateMetaLabel(state.updates, state.repository, scan));
-	setText("#incomingHeading", `Available from ${updateTargetLabel(state.updates)}`);
-	setText("#updateMessage", state.updates?.message || "");
-	setText("#dashboardUpdateButton", dashboardUpdateButtonText);
-	setText("#updatesButton", updateButtonText);
+	setText("#dashboardTargetMode", dashboardTargetModeLabel(state));
+	setText("#dashboardTargetLocation", dashboardTargetLocationLabel(state));
+	setText("#dashboardHachiUpdate", hachiDashboardUpdateLabel());
+	setText("#dashboardHachiGenUpdate", hachiGenDashboardUpdateLabel(state.hachiGenUpdate));
+	setText("#dashboardActivitySummary", dashboardActivitySummary(state.recentEvents));
+	setText("#combinedUpdatesMeta", state.updates?.checkedAt || state.hachiGenUpdate?.checkedAt ? "Last check loaded" : "No update check has run yet");
 	setDisabled("#openFolderButton", state.runtimeTarget === "remote");
 	setDisabled("#browseInstallButton", state.runtimeTarget === "remote");
 	setDisabled("#saveInstallPathButton", state.runtimeTarget === "remote");
-	renderIncomingUpdates(state.updates);
-	renderLocalChanges(state.updates);
+	renderHachiUpdateSummary();
 	renderStashedChanges(state.updates);
 	renderHachiGenUpdate(state.hachiGenUpdate);
+	renderDiagnostics(diagnosticsState || diagnosticSnapshotFromState(state));
 	if (!state.database?.audit?.migrationAvailable && !state.database?.audit?.forceMigrationAvailable) {
 		forceMigrationUnlocked = false;
 	}
@@ -1925,6 +3227,7 @@ function renderState(nextState) {
 	}
 
 	renderInstallChecks(scan);
+	maybeShowSetupGuide();
 }
 
 async function refreshState() {
@@ -1947,14 +3250,14 @@ async function refreshLogs() {
 	if (pm2LogBaseline !== null) {
 		// Clearing PM2 logs only clears the visible window. The baseline lets
 		// future refreshes show new lines without deleting real PM2 logs.
-		setText("#pm2Logs", pm2Text.startsWith(pm2LogBaseline) ? pm2Text.slice(pm2LogBaseline.length).trimStart() : "");
+		setLogText("pm2Logs", pm2Text.startsWith(pm2LogBaseline) ? pm2Text.slice(pm2LogBaseline.length).trimStart() : "");
 	} else {
-		setText("#pm2Logs", pm2Text);
+		setLogText("pm2Logs", pm2Text);
 	}
 
 	if (!hachiGenLogHistoryHidden && logs.events?.length) {
 		// Same idea for HachiGen logs: clearing hides old visible history only.
-		setText("#eventLogs", logs.events.map(eventLine).join("\n"));
+		setLogText("eventLogs", logs.events.map(eventLine).join("\n"));
 	}
 }
 
@@ -1997,7 +3300,7 @@ function clearPm2LogWindow() {
 	// Clear only the PM2 text currently visible in HachiGen. The baseline keeps
 	// future polling from immediately repopulating the old lines.
 	pm2LogBaseline = lastPm2LogText || $("#pm2Logs")?.textContent || "";
-	setText("#pm2Logs", "");
+	clearLogText("pm2Logs");
 	toast("PM2 log window cleared.");
 }
 
@@ -2005,7 +3308,7 @@ function clearHachiGenLogWindow() {
 	// Hide the currently visible HachiGen event history. The in-memory event log
 	// still exists so future actions can keep appending new events.
 	hachiGenLogHistoryHidden = true;
-	setText("#eventLogs", "");
+	clearLogText("eventLogs");
 	toast("HachiGen log window cleared.");
 }
 
@@ -2028,13 +3331,21 @@ async function runAction(label, action, options = {}) {
 		}
 		return result;
 	} catch (error) {
-		toast(error.message || `${label} failed.`, "error", { label });
+		const message = actionErrorMessage(label, error);
+		toast(message, "error", { label });
+		if (options.returnError) {
+			return {
+				message,
+				ok: false,
+			};
+		}
 		return null;
 	} finally {
 		setBusy(false);
 		// Buttons may have been disabled while busy; re-apply stash-specific
 		// and database-specific enable/disable rules after restoring button state.
 		renderStashedChanges(state?.updates);
+		renderHachiUpdateSummary();
 		renderHachiGenUpdate(state?.hachiGenUpdate);
 		renderDatabase(state?.database);
 		renderDatabaseViewer(databaseView);
@@ -2042,8 +3353,69 @@ async function runAction(label, action, options = {}) {
 		setDisabled("#openFolderButton", state?.runtimeTarget === "remote");
 		setDisabled("#browseInstallButton", state?.runtimeTarget === "remote");
 		setDisabled("#saveInstallPathButton", state?.runtimeTarget === "remote");
-		setDisabled("button[data-action=\"restore-database\"]", state?.database?.source === "remote");
 	}
+}
+
+async function runCombinedUpdateCheck() {
+	await runAction("Check updates", async () => {
+		const hachiVersion = await api.checkVersionUpdates();
+		hachiVersionUpdate = hachiVersion;
+		const hachi = await api.checkUpdates();
+		const hachiGen = await api.checkHachiGenUpdates();
+
+		return {
+			hachi,
+			hachiGen,
+			hachiVersion,
+			message: "Update check complete.",
+			ok: true,
+		};
+	});
+}
+
+function localChangeReviewDetails(changes = []) {
+	const visibleChanges = changes.slice(0, 30).map(change => change.description || `${change.label || "Changed"}: ${change.path || change.raw || "unknown file"}`);
+	const hiddenCount = Math.max(0, changes.length - visibleChanges.length);
+
+	if (hiddenCount) {
+		visibleChanges.push(`${pluralize(hiddenCount, "more file")} not shown.`);
+	}
+
+	return [
+		"HachiGen will save these changes to a recoverable stash before updating Hachi.",
+		"After updating, the saved changes panel will let you restore or delete that stash.",
+		...visibleChanges,
+	];
+}
+
+function runHachiUpdateFlow() {
+	if (!state?.updates?.available) {
+		runCombinedUpdateCheck();
+		return;
+	}
+
+	const changes = state.updates.localChangeDetails || [];
+
+	if (!changes.length) {
+		runAction("Update Hachi", () => api.applyUpdate());
+		return;
+	}
+
+	showConfirmModal({
+		confirmText: "Save Changes and Update",
+		details: localChangeReviewDetails(changes),
+		meta: `${pluralize(changes.length, "changed file")} found`,
+		summary: "Hachi has local changes that need to be saved before updating.",
+		title: "Save local changes before updating?",
+		variant: "warning",
+	}).then(confirmed => {
+		if (!confirmed) {
+			toast("Hachi update canceled.");
+			return;
+		}
+
+		runAction("Update Hachi", () => api.applyUpdate());
+	});
 }
 
 function readConfigForm() {
@@ -2113,6 +3485,11 @@ function handleMenuAction(payload = {}) {
 		return;
 	}
 
+	if (action === "show-about") {
+		showAboutModal();
+		return;
+	}
+
 	if (action === "refresh-current-view") {
 		runAction("Refresh current view", refreshCurrentView);
 		return;
@@ -2120,21 +3497,78 @@ function handleMenuAction(payload = {}) {
 
 	if (action === "check-version-updates") {
 		showView("updates");
-		runAction("Check for updates", async () => {
-			const hachi = await api.checkVersionUpdates();
-			const hachiGen = await api.checkHachiGenUpdates();
-
-			return {
-				message: `${hachi.message || "Hachi check complete."} ${hachiGen.message || "HachiGen check complete."}`,
-				ok: true,
-			};
-		});
+		runCombinedUpdateCheck();
 		return;
 	}
 
 	if (action === "open-folder") {
 		runAction("Open folder", () => api.openInstallFolder());
 	}
+}
+
+function runInlineAction(action) {
+	if (action === "show-setup") {
+		showView("setup");
+		return;
+	}
+
+	if (action === "show-remote") {
+		showView("remote");
+		return;
+	}
+
+	if (action === "show-updates") {
+		showView("updates");
+		return;
+	}
+
+	if (action === "show-database") {
+		showView("database");
+		return;
+	}
+
+	if (action === "show-logs") {
+		showView("logs");
+		return;
+	}
+
+	if (action === "show-diagnostics") {
+		showView("diagnostics");
+		return;
+	}
+
+	if (action === "install-validate") {
+		runAction("Install / Validate", () => api.installOrValidate());
+		return;
+	}
+
+	if (action === "validate") {
+		runAction("Validate install", () => api.validateInstall());
+		return;
+	}
+
+	if (action === "start") {
+		runAction("Start Hachi", () => api.startBot());
+		return;
+	}
+
+	if (action === "deploy") {
+		runAction("Deploy commands", () => api.deployCommands());
+		return;
+	}
+
+	if (action === "update") {
+		runHachiUpdateFlow();
+		return;
+	}
+
+	if (action === "check-updates") {
+		showView("updates");
+		runCombinedUpdateCheck();
+		return;
+	}
+
+	toast("No setup action is available yet.", "error", { label: "Setup guide" });
 }
 
 function handleAction(event) {
@@ -2147,6 +3581,72 @@ function handleAction(event) {
 	}
 
 	const action = button.dataset.action;
+
+	if (action === "show-setup-guide") {
+		showSetupGuideModal();
+		return;
+	}
+
+	if (action === "show-about") {
+		showAboutModal();
+		return;
+	}
+
+	if (action === "about-close") {
+		closeSharedModal();
+		return;
+	}
+
+	if (action === "setup-guide-close") {
+		closeSetupGuideModal({ dismiss: true });
+		return;
+	}
+
+	if (action === "setup-guide-primary") {
+		runSetupGuidePrimaryAction();
+		return;
+	}
+
+	if (action === "show-remote" || action === "show-logs" || action === "show-diagnostics" || action === "check-updates") {
+		runInlineAction(action);
+		return;
+	}
+
+	if (action === "check-all-updates") {
+		showView("updates");
+		runCombinedUpdateCheck();
+		return;
+	}
+
+	if (action === "refresh-diagnostics") {
+		runAction("Refresh diagnostics", loadDiagnostics);
+		return;
+	}
+
+	if (action === "copy-diagnostic-info") {
+		runAction("Copy diagnostic info", () => api.copyDiagnosticInfo());
+		return;
+	}
+
+	if (action === "export-support-bundle") {
+		runAction("Export diagnostics bundle", async () => {
+			const result = await api.exportSupportBundle();
+
+			if (result?.ok) {
+				diagnosticsState = result.diagnostics || diagnosticsState;
+				renderDiagnostics(diagnosticsState);
+				setText("#supportBundleSummary", result.bundlePath || result.message || "Diagnostics bundle exported.");
+			}
+
+			return result;
+		});
+		return;
+	}
+
+	if (action === "open-hachigen-log-folder") {
+		runAction("Open HachiGen log folder", () => api.openHachiGenLogFolder());
+		return;
+	}
 
 	if (action === "browse") {
 		// Open the native folder picker, then redraw because the install path changed.
@@ -2227,25 +3727,22 @@ function handleAction(event) {
 	}
 
 	if (action === "update") {
-		// If an update is available, this button updates. The backend saves
-		// local changes to a recoverable stash first when needed.
-		runAction("Update", async () => {
-			if (state?.updates?.available) {
-				return api.applyUpdate();
-			}
+		runHachiUpdateFlow();
+		return;
+	}
 
-			return api.checkUpdates();
-		});
+	if (action === "update-hachi") {
+		runHachiUpdateFlow();
 		return;
 	}
 
 	if (action === "check-hachigen-update") {
-		runAction("Check HachiGen update", () => api.checkHachiGenUpdates());
-		return;
-	}
+		if (state?.hachiGenUpdate?.canInstall) {
+			showHachiGenUpdateWizard();
+			return;
+		}
 
-	if (action === "install-hachigen-update") {
-		showHachiGenUpdateWizard();
+		runAction("Check HachiGen updates", () => api.checkHachiGenUpdates());
 		return;
 	}
 
@@ -2398,75 +3895,41 @@ function handleAction(event) {
 	}
 
 	if (action === "backup-database") {
-		// Make a dated copy of database/database.sqlite in manager/backups.
-		// If today's backup already exists, ask with the themed confirmation modal.
-		runAction("Backup database", () => api.backupDatabase(), { toast: false })
-			.then(async result => {
-				if (!result) {
-					return;
-				}
-
-				if (result.needsOverwrite) {
-					const confirmed = await showConfirmModal({
-						confirmText: "Overwrite",
-						details: ["The existing backup file will be replaced.", "Manual restore backups are not affected."],
-						meta: "Database backup already exists",
-						summary: `${result.fileName} already exists. Overwrite today's database backup?`,
-						title: "Overwrite database backup?",
-						variant: "warning",
-					});
-
-					if (!confirmed) {
-						toast("Database backup canceled.");
-						return;
-					}
-
-					await runAction("Overwrite database backup", () => api.backupDatabase({ overwrite: true }));
-					return;
-				}
-
-				toast(result.message || "Database backup created.");
-			});
+		showDatabaseBackupTransferModal();
 		return;
 	}
 
 	if (action === "restore-database") {
-		// Let the native picker choose a backup, then use a themed confirmation
-		// before the backend replaces the current database file.
-		runAction("Choose database backup", () => api.chooseDatabaseBackup(), { toast: false })
-			.then(async selection => {
-				if (!selection?.ok) {
-					if (selection?.message) {
-						toast(selection.message);
-					}
-					return;
-				}
+		runDatabaseRestoreFlow();
+		return;
+	}
 
-				const confirmed = await showConfirmModal({
-					confirmText: "Restore",
-					details: [
-						`Selected backup: ${selection.fileName}`,
-						"HachiGen will create a pre-restore safety backup first.",
-						"Stop Hachi before restoring if it is currently running.",
-					],
-					meta: "Database restore confirmation",
-					summary: "The current database will be overwritten with the selected backup.",
-					title: "Restore this database backup?",
-					variant: "warning",
-				});
+	if (action === "database-transfer-close") {
+		closeSharedModal();
+		return;
+	}
 
-				if (!confirmed) {
-					toast("Database restore canceled.");
-					return;
-				}
+	if (action === "database-transfer-backup") {
+		closeSharedModal();
+		runDatabaseBackupFlow();
+		return;
+	}
 
-				const result = await runAction("Restore database", () => api.restoreDatabase(selection.backupPath));
+	if (action === "database-transfer-restore") {
+		closeSharedModal();
+		runDatabaseRestoreFlow();
+		return;
+	}
 
-				if (result?.ok) {
-					databaseView = null;
-					refreshCurrentDatabaseViewer();
-				}
-			});
+	if (action === "database-transfer-pull") {
+		closeSharedModal();
+		runDatabasePullFlow();
+		return;
+	}
+
+	if (action === "database-transfer-push") {
+		closeSharedModal();
+		runDatabasePushFlow();
 		return;
 	}
 
@@ -2608,6 +4071,21 @@ function handleAction(event) {
 	}
 }
 
+function handleKeyboardAction(event) {
+	if (event.key !== "Enter" && event.key !== " ") {
+		return;
+	}
+
+	const actionTarget = event.target.closest?.(".status-card-action[data-action]");
+
+	if (!actionTarget) {
+		return;
+	}
+
+	event.preventDefault();
+	actionTarget.click();
+}
+
 function handleConfigSubmit(event) {
 	// Save Config is a real form submit, so prevent page reload and send the
 	// collected field values to the backend writer.
@@ -2622,9 +4100,15 @@ function handleConfigSubmit(event) {
 async function init() {
 	// Wire up event listeners, perform the first data load, and then begin the
 	// background startup update check.
+	installRendererDiagnosticsHooks();
+	decorateStaticIcons();
 	document.addEventListener("click", handleNav);
 	document.addEventListener("click", handleAction);
+	document.addEventListener("keydown", handleKeyboardAction);
 	document.addEventListener("change", handleChange);
+	document.addEventListener("mousedown", handleLogSelectionPointerDown);
+	document.addEventListener("mouseup", handleLogSelectionPointerUp);
+	document.addEventListener("selectionchange", handleLogSelectionChange);
 	$("#configForm").addEventListener("submit", handleConfigSubmit);
 
 	api.onEvent(event => {

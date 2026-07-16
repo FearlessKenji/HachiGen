@@ -1,0 +1,6 @@
+# Keep repository text files on LF even when a contributor's global Git config
+# uses Windows autocrlf. This prevents noisy LF/CRLF warnings during checks.
+* text=auto eol=lf
+
+# Binary assets should never be line-ending normalized.
+*.ico binary

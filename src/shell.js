@@ -6,6 +6,7 @@
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { redactHachiGenLogText } = require("./hachigenLogger.js");
 
 const ALLOWED_COMMANDS = new Set([
 	"git",
@@ -41,12 +42,39 @@ class ShellError extends Error {
 // > npm install
 // This is display-only; command execution still passes args separately.
 function displayCommand(command, args) {
+	if (command === "ssh") {
+		return "ssh [remote command hidden]";
+	}
+
+	if (command === "node" && args[0] === "-e") {
+		return "node -e [inline script]";
+	}
+
 	const renderedArgs = args.map(arg => {
 		const text = String(arg);
 		return /\s/.test(text) ? `"${text.replaceAll('"', '\\"')}"` : text;
 	});
 
 	return [command, ...renderedArgs].join(" ");
+}
+
+function commandOutputExcerpt(stdout, stderr) {
+	const output = redactHachiGenLogText(stderr || stdout || "")
+		.replace(/\s+/gu, " ")
+		.trim();
+
+	if (!output) {
+		return "";
+	}
+
+	return output.length > 240 ? `${output.slice(0, 237)}...` : output;
+}
+
+function commandFailureMessage(command, args, code, stdout, stderr) {
+	const excerpt = commandOutputExcerpt(stdout, stderr);
+	const reason = excerpt ? `: ${excerpt}` : ".";
+
+	return `${displayCommand(command, args)} failed with code ${code}${reason}`;
 }
 
 // Decide whether a command should be launched through cmd.exe on Windows.
@@ -173,11 +201,11 @@ function resolveCommandPath(command, args = [], cwd = null) {
 	return commandPath;
 }
 
-function buildSpawnOptions({ cwd, env }) {
+function buildSpawnOptions({ cwd, env, input }) {
 	const options = {
 		cwd,
 		shell: false,
-		stdio: ["ignore", "pipe", "pipe"],
+		stdio: [input === null || input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 		windowsHide: true,
 	};
 
@@ -192,7 +220,7 @@ function buildSpawnOptions({ cwd, env }) {
 
 // Decide the real process and arguments passed to spawn().
 // Most commands run directly; Windows npm/npx/pm2 commands are translated to:
-// cmd.exe /d /s /c npm.cmd ...
+// cmd.exe /d /c call "C:\...\npm.cmd" ...
 function spawnTarget(command, args, cwd = null) {
 	const commandPath = resolveCommandPath(command, args, cwd);
 
@@ -203,11 +231,12 @@ function spawnTarget(command, args, cwd = null) {
 		};
 	}
 
-	const commandLine = [commandPath, ...args].map(quoteForCmd).join(" ");
+	const commandLine = ["call", commandPath, ...args].map(quoteForCmd).join(" ");
 
 	return {
 		command: WINDOWS_COMMAND_PROCESSOR,
-		args: ["/d", "/s", "/c", commandLine],
+		args: ["/d", "/c", commandLine],
+		windowsVerbatimArguments: true,
 	};
 }
 
@@ -234,6 +263,7 @@ function run(command, args = [], options = {}) {
 	const {
 		cwd,
 		env,
+		input,
 		timeoutMs = 120000,
 		allowFailure = false,
 		onLog,
@@ -259,14 +289,27 @@ function run(command, args = [], options = {}) {
 		let settled = false;
 
 		const target = spawnTarget(command, args, cwd);
-		const child = spawn(target.command, target.args, buildSpawnOptions({ cwd, env }));
+		const spawnOptions = buildSpawnOptions({ cwd, env, input });
+
+		if (target.windowsVerbatimArguments) {
+			spawnOptions.windowsVerbatimArguments = true;
+		}
+
+		const child = spawn(target.command, target.args, spawnOptions);
+
+		if (input !== null && input !== undefined) {
+			child.stdin.on("error", () => null);
+			child.stdin.end(String(input));
+		}
 
 		// Long-running installs can hang if another process is waiting for input.
 		// The timeout turns that into a visible error instead of a frozen app.
 		const timeout = setTimeout(() => {
 			child.kill();
 			const result = { command, args, cwd, code: 124, stdout, stderr };
-			const error = new ShellError(`${command} timed out.`, result);
+			const excerpt = commandOutputExcerpt(stdout, stderr);
+			const reason = excerpt ? ` Last output: ${excerpt}` : "";
+			const error = new ShellError(`${displayCommand(command, args)} timed out after ${Math.round(timeoutMs / 1000)} seconds.${reason}`, result);
 			settled = true;
 			reject(error);
 		}, timeoutMs);
@@ -291,7 +334,7 @@ function run(command, args = [], options = {}) {
 			clearTimeout(timeout);
 			settled = true;
 			const result = { command, args, cwd, code: 1, stdout, stderr: stderr || error.message };
-			reject(new ShellError(error.message, result));
+			reject(new ShellError(`${displayCommand(command, args)} could not start: ${error.message}`, result));
 		});
 
 		child.on("close", code => {
@@ -309,7 +352,7 @@ function run(command, args = [], options = {}) {
 				return;
 			}
 
-			reject(new ShellError(`${command} exited with code ${code}.`, result));
+			reject(new ShellError(commandFailureMessage(command, args, code, stdout, stderr), result));
 		});
 	});
 }

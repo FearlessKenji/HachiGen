@@ -13,6 +13,7 @@ const {
 	ipcMain,
 	dialog,
 	Menu,
+	screen,
 	shell,
 } = require("electron");
 const { HachiManager } = require("./src/manager.js");
@@ -25,6 +26,7 @@ const HELP_LINKS = {
 	readme: "https://github.com/FearlessKenji/HachiGen#readme",
 	releases: "https://github.com/FearlessKenji/HachiGen/releases",
 };
+const ALLOWED_GITHUB_REPOSITORIES = new Set(["/FearlessKenji/Hachi", "/FearlessKenji/HachiGen"]);
 
 // Electron apps have a "main process" and one or more windows.
 // This file is the main process: it creates the HachiGen window and
@@ -32,6 +34,8 @@ const HELP_LINKS = {
 let mainWindow;
 let manager;
 let clipboardClearTimer = null;
+let windowStateSaveTimer = null;
+const UI_SMOKE_MODE = process.env.HACHIGEN_UI_SMOKE === "1";
 
 // Forward backend activity to the window when it is available. Backend actions
 // can outlive a particular BrowserWindow, so this checks before sending.
@@ -69,22 +73,59 @@ function scheduleClipboardClear(secret, ttlMs) {
 	}
 }
 
+function isAllowedExternalUrl(url) {
+	try {
+		const parsed = new URL(String(url || ""));
+
+		if (parsed.protocol !== "https:") {
+			return false;
+		}
+
+		if (parsed.hostname === "github.com") {
+			return Array.from(ALLOWED_GITHUB_REPOSITORIES).some(repoPath => parsed.pathname === repoPath || parsed.pathname.startsWith(`${repoPath}/`));
+		}
+
+		if (parsed.hostname === "fearlesskenji.github.io") {
+			return parsed.pathname === "/Hachi/" || parsed.pathname.startsWith("/Hachi/");
+		}
+
+		return parsed.hostname === "crontab.guru" && (parsed.pathname === "/" || parsed.pathname === "");
+	} catch {
+		return false;
+	}
+}
+
 function openExternal(url) {
-	shell.openExternal(url);
+	if (!isAllowedExternalUrl(url)) {
+		manager?.event("error", `Blocked external link: ${String(url || "unknown")}`, {
+			area: "external-link",
+		});
+		return false;
+	}
+
+	shell.openExternal(url).catch(error => {
+		manager?.event("error", `Could not open external link: ${error.message || error}`, {
+			area: "external-link",
+		});
+	});
+	return true;
 }
 
 async function openHachiGenLogFolder() {
 	const logFolder = manager?.logger?.logsPath;
 
 	if (!logFolder) {
-		return;
+		return { ok: false, message: "HachiGen log folder is not available yet." };
 	}
 
 	const result = await shell.openPath(logFolder);
 
 	if (result) {
 		dialog.showErrorBox("Open HachiGen Log Folder", result);
+		return { ok: false, message: result };
 	}
+
+	return { ok: true, message: "Opened HachiGen log folder." };
 }
 
 function readLogSection(label, filePath) {
@@ -130,36 +171,255 @@ async function exportHachiGenLogs() {
 }
 
 async function copyDiagnosticInfo() {
-	const scan = manager ? await manager.getQuickScan().catch(() => null) : null;
-	const repository = manager ? await manager.getRepositoryInfo().catch(() => null) : null;
+	const diagnostics = manager ? await manager.getDiagnostics().catch(() => null) : null;
 	const lines = [
-		`HachiGen: ${managerPackage.version}`,
-		`Hachi: ${scan?.packageVersion || "unknown"}`,
-		`Runtime target: ${manager?.getRuntimeTarget?.() || "unknown"}`,
-		`Install path: ${manager?.getInstallPath?.() || "unknown"}`,
-		`Branch: ${repository?.currentBranch || "unknown"}`,
-		`Update target: ${repository?.updateTarget || "origin/main"}`,
-		`Git remote: ${repository?.originUrl || "unknown"}`,
-		`Project found: ${scan?.projectFound === undefined ? "unknown" : scan.projectFound}`,
+		`HachiGen: ${diagnostics?.app?.hachiGenVersion || managerPackage.version}`,
+		`Hachi: ${diagnostics?.scan?.packageVersion || "unknown"}`,
+		`Runtime target: ${diagnostics?.settings?.runtimeTarget || manager?.getRuntimeTarget?.() || "unknown"}`,
+		`Install path: ${diagnostics?.paths?.installPath || manager?.getInstallPath?.() || "unknown"}`,
+		`Branch: ${diagnostics?.repository?.currentBranch || "unknown"}`,
+		`Update target: ${diagnostics?.repository?.updateTarget || "origin/main"}`,
+		`Project found: ${diagnostics?.scan?.projectFound === undefined ? "unknown" : diagnostics.scan.projectFound}`,
+		`PM2: ${diagnostics?.pm2?.status || "unknown"}`,
+		`Crash count: ${diagnostics?.recovery?.crashCount ?? "unknown"}`,
 	].join("\n");
 
 	clipboard.writeText(lines);
 	manager?.log("Diagnostic info copied to clipboard.");
+	return { ok: true, message: "Diagnostic info copied to clipboard." };
 }
 
-async function showAboutDialog() {
-	const scan = manager ? await manager.getQuickScan().catch(() => null) : null;
+async function exportSupportBundle() {
+	if (!manager) {
+		return { ok: false, message: "HachiGen is still starting." };
+	}
 
-	dialog.showMessageBox(mainWindow, {
-		buttons: ["OK"],
-		message: "HachiGen",
-		detail: [
-			`HachiGen version: ${managerPackage.version}`,
-			`Hachi version: ${scan?.packageVersion || "unknown"}`,
-			`Runtime target: ${manager?.getRuntimeTarget?.() || "unknown"}`,
-		].join("\n"),
-		type: "info",
+	const stamp = new Date().toISOString().replace(/\D/gu, "").slice(0, 14);
+	const result = await dialog.showSaveDialog(mainWindow, {
+		defaultPath: `hachigen-diagnostics-${stamp}.tar.gz`,
+		filters: [
+			{ name: "Diagnostics bundle", extensions: ["gz"] },
+			{ name: "All files", extensions: ["*"] },
+		],
+		title: "Export Diagnostics Bundle",
 	});
+
+	if (result.canceled || !result.filePath) {
+		return { ok: false, message: "Diagnostics export canceled." };
+	}
+
+	return manager.exportSupportBundle(result.filePath);
+}
+
+function showMenuActionError(title, error) {
+	const message = error?.message || String(error || "Unknown error.");
+
+	manager?.event("error", `${title}: ${message}`, {
+		area: "menu-action",
+	});
+	dialog.showErrorBox(title, message);
+}
+
+function runtimeArchiveSourceLabel() {
+	if (manager?.getRuntimeTarget?.() !== "remote") {
+		return `Local: ${manager?.getInstallPath?.() || "selected Hachi folder"}`;
+	}
+
+	const remote = manager.getRemoteSettings();
+	const host = remote.username && remote.host ? `${remote.username}@${remote.host}` : remote.host || "remote profile";
+	return `Remote: ${host}${remote.remotePath ? `:${remote.remotePath}` : ""}`;
+}
+
+async function exportRuntimeArchive() {
+	if (!manager) {
+		return { ok: false, message: "HachiGen is still starting." };
+	}
+
+	const targetPath = manager.runtimeArchiveDefaultPath();
+	const result = await dialog.showMessageBox(mainWindow, {
+		buttons: ["Export Runtime Archive", "Cancel"],
+		cancelId: 1,
+		defaultId: 1,
+		detail: [
+			"This archive includes Hachi project files and can include .env, database files, configured database keys, and configured secret-encryption keys.",
+			"Anyone with the archive may be able to run this Hachi runtime or read its data.",
+			"",
+			`Source: ${runtimeArchiveSourceLabel()}`,
+			`Destination: ${targetPath}`,
+			"",
+			"HachiGen saves runtime archives in the Hachi exports folder, which is ignored by git.",
+		].join("\n"),
+		message: "Export a secrets-bearing runtime archive?",
+		type: "warning",
+	});
+
+	if (result.response !== 0) {
+		return { ok: false, message: "Runtime archive export canceled." };
+	}
+
+	try {
+		const exported = await manager.exportRuntimeArchive({ targetPath });
+		await dialog.showMessageBox(mainWindow, {
+			buttons: ["OK"],
+			detail: `${exported.archivePath}\n\nFiles: ${exported.fileCount}`,
+			message: "Runtime archive exported.",
+			type: "info",
+		});
+		return exported;
+	} catch (error) {
+		showMenuActionError("Export Runtime Archive", error);
+		return { ok: false, message: error?.message || String(error) };
+	}
+}
+
+async function restoreRuntimeArchive() {
+	if (!manager) {
+		return { ok: false, message: "HachiGen is still starting." };
+	}
+
+	const selection = await dialog.showOpenDialog(mainWindow, {
+		defaultPath: manager.getRuntimeExportsDir(),
+		filters: [
+			{ name: "Runtime archives", extensions: ["gz"] },
+			{ name: "All files", extensions: ["*"] },
+		],
+		properties: ["openFile"],
+		title: "Choose Runtime Archive",
+	});
+
+	if (selection.canceled || !selection.filePaths.length) {
+		return { ok: false, message: "Runtime archive restore canceled." };
+	}
+
+	try {
+		const preview = manager.previewRuntimeArchive(selection.filePaths[0]);
+		const result = await dialog.showMessageBox(mainWindow, {
+			buttons: ["Restore Runtime Archive", "Cancel"],
+			cancelId: 1,
+			defaultId: 1,
+			detail: [
+				`Archive: ${preview.archivePath}`,
+				`Destination: ${manager.getInstallPath()}`,
+				`Files: ${preview.fileCount}`,
+				`Project files: ${preview.projectFileCount}`,
+				`Key files: ${preview.keyFileCount}`,
+				`Source: ${preview.source?.type || "unknown"}${preview.source?.host ? ` (${preview.source.host})` : ""}`,
+				"",
+				"Restore writes into the selected local Hachi folder and updates restored key-file paths to this computer.",
+				"Existing matching files are copied to manager/backups before they are replaced.",
+				"Stop Hachi before restoring if it is currently running.",
+			].join("\n"),
+			message: "Restore this runtime archive?",
+			type: "warning",
+		});
+
+		if (result.response !== 0) {
+			return { ok: false, message: "Runtime archive restore canceled." };
+		}
+
+		const restored = await manager.restoreRuntimeArchive(preview.archivePath);
+		await dialog.showMessageBox(mainWindow, {
+			buttons: ["OK"],
+			detail: restored.backupDir ?
+				`Restored files: ${restored.fileCount}\nSafety backup: ${restored.backupDir}` :
+				`Restored files: ${restored.fileCount}`,
+			message: "Runtime archive restored.",
+			type: "info",
+		});
+		return restored;
+	} catch (error) {
+		showMenuActionError("Restore Runtime Archive", error);
+		return { ok: false, message: error?.message || String(error) };
+	}
+}
+
+function focusMainWindow() {
+	if (!mainWindow || mainWindow.isDestroyed()) {
+		return;
+	}
+
+	if (mainWindow.isMinimized()) {
+		mainWindow.restore();
+	}
+
+	mainWindow.show();
+	mainWindow.focus();
+}
+
+function recordProcessRecovery(message, details = {}) {
+	manager?.event("error", message, {
+		area: "process-recovery",
+		...details,
+	});
+}
+
+function savedWindowOptions() {
+	const saved = manager?.getWindowState?.();
+
+	if (!saved?.bounds) {
+		return {};
+	}
+
+	const bounds = saved.bounds;
+	const visible = screen.getAllDisplays().some(display => {
+		const area = display.workArea;
+		return bounds.x < area.x + area.width &&
+			bounds.x + bounds.width > area.x &&
+			bounds.y < area.y + area.height &&
+			bounds.y + bounds.height > area.y;
+	});
+
+	return visible ? bounds : {};
+}
+
+function saveMainWindowState() {
+	if (!mainWindow || mainWindow.isDestroyed() || !manager?.saveWindowState) {
+		return;
+	}
+
+	manager.saveWindowState({
+		bounds: mainWindow.getBounds(),
+		maximized: mainWindow.isMaximized(),
+	});
+}
+
+function scheduleWindowStateSave() {
+	if (windowStateSaveTimer) {
+		clearTimeout(windowStateSaveTimer);
+	}
+
+	windowStateSaveTimer = setTimeout(() => {
+		windowStateSaveTimer = null;
+		saveMainWindowState();
+	}, 400);
+}
+
+async function showRecoveryNoticeIfNeeded() {
+	if (UI_SMOKE_MODE || !mainWindow || mainWindow.isDestroyed() || !manager?.getPendingRecoveryEvent) {
+		return;
+	}
+
+	const recoveryEvent = manager.getPendingRecoveryEvent();
+
+	if (!recoveryEvent) {
+		return;
+	}
+
+	manager.markRecoveryEventNotified(recoveryEvent.time);
+	const result = await dialog.showMessageBox(mainWindow, {
+		buttons: ["Open Diagnostics", "Export Diagnostics", "Dismiss"],
+		cancelId: 2,
+		defaultId: 0,
+		detail: `${new Date(recoveryEvent.time).toLocaleString()}\n${recoveryEvent.message}\n\nHachiGen saved diagnostics and logs for review.`,
+		message: "HachiGen recovered from a previous problem.",
+		type: "warning",
+	});
+
+	if (result.response === 0) {
+		sendMenuAction("show-view", { view: "diagnostics" });
+	} else if (result.response === 1) {
+		await exportSupportBundle();
+	}
 }
 
 function formatFileSize(bytes) {
@@ -198,15 +458,11 @@ function quitForHachiGenUpdate() {
 		manager.stopLogCleanup();
 	}
 
-	app.quit();
-
-	const forceExitTimer = setTimeout(() => {
-		app.exit(0);
-	}, 3000);
-
-	if (typeof forceExitTimer.unref === "function") {
-		forceExitTimer.unref();
+	for (const window of BrowserWindow.getAllWindows()) {
+		window.destroy();
 	}
+
+	app.exit(0);
 }
 
 function emitHachiGenUpdateProgress(step, message, details = {}) {
@@ -295,6 +551,11 @@ async function installHachiGenUpdate() {
 		"try {",
 		"	Write-UpdateLog \"Waiting for HachiGen process $ParentPid to exit.\"",
 		"	Wait-Process -Id $ParentPid -Timeout 30 -ErrorAction SilentlyContinue",
+		"	if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {",
+		"		Write-UpdateLog \"HachiGen process $ParentPid did not exit in time; stopping it.\"",
+		"		Stop-Process -Id $ParentPid -Force -ErrorAction SilentlyContinue",
+		"		Wait-Process -Id $ParentPid -Timeout 10 -ErrorAction SilentlyContinue",
+		"	}",
 		"	$deadline = (Get-Date).AddSeconds(60)",
 		"	$copied = $false",
 		"	do {",
@@ -310,8 +571,12 @@ async function installHachiGenUpdate() {
 		"		throw \"Timed out replacing HachiGen.exe.\"",
 		"	}",
 		"	Write-UpdateLog \"HachiGen.exe replaced successfully.\"",
-		"	Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target)",
-		"	Write-UpdateLog \"Relaunched HachiGen.\"",
+		"	$started = Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target) -PassThru",
+		"	if ($started) {",
+		"		Write-UpdateLog \"Relaunched HachiGen with PID $($started.Id).\"",
+		"	} else {",
+		"		Write-UpdateLog \"Relaunch command completed without a process handle.\"",
+		"	}",
 		"	Remove-Item -LiteralPath $Update -Force -ErrorAction SilentlyContinue",
 		"	Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
 		"} catch {",
@@ -383,6 +648,18 @@ function buildApplicationMenu() {
 					label: "Export HachiGen Logs",
 					click: () => exportHachiGenLogs(),
 				},
+				{
+					label: "Export Diagnostics Bundle",
+					click: () => exportSupportBundle(),
+				},
+				{
+					label: "Export Runtime Archive...",
+					click: () => exportRuntimeArchive(),
+				},
+				{
+					label: "Restore Runtime Archive...",
+					click: () => restoreRuntimeArchive(),
+				},
 				{ type: "separator" },
 				{
 					label: "Exit",
@@ -416,6 +693,10 @@ function buildApplicationMenu() {
 				{
 					label: "Logs",
 					click: () => sendMenuAction("show-view", { view: "logs" }),
+				},
+				{
+					label: "Diagnostics",
+					click: () => sendMenuAction("show-view", { view: "diagnostics" }),
 				},
 				{ type: "separator" },
 				{
@@ -465,10 +746,14 @@ function buildApplicationMenu() {
 					label: "Copy Diagnostic Info",
 					click: () => copyDiagnosticInfo(),
 				},
+				{
+					label: "Export Diagnostics Bundle",
+					click: () => exportSupportBundle(),
+				},
 				{ type: "separator" },
 				{
 					label: "About HachiGen",
-					click: () => showAboutDialog(),
+					click: () => sendMenuAction("show-about"),
 				},
 			],
 		},
@@ -478,30 +763,110 @@ function buildApplicationMenu() {
 // Create the visible desktop window and load the renderer files. Security
 // options here keep the web page isolated from raw Node.js access.
 function createWindow() {
+	const windowState = manager?.getWindowState?.();
 	mainWindow = new BrowserWindow({
 		width: 1240,
 		height: 820,
 		minWidth: 1040,
 		minHeight: 720,
+		...savedWindowOptions(),
+		show: !UI_SMOKE_MODE,
 		title: "HachiGen",
 		backgroundColor: "#000000",
 		webPreferences: {
 			// preload.js is the controlled doorway between the UI and this backend.
 			preload: path.join(__dirname, "preload.js"),
-			// These two settings keep Node.js APIs out of the web page itself.
-			// The UI can only call the safe functions exposed by preload.js.
+			// These settings keep Node.js APIs out of the web page itself.
+			// sandbox also limits preload.js to Electron's safe renderer bridge.
 			contextIsolation: true,
 			nodeIntegration: false,
+			sandbox: true,
 		},
 	});
 
+	if (windowState?.maximized) {
+		mainWindow.maximize();
+	}
+
 	mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+
+	mainWindow.webContents.once("did-finish-load", () => {
+		if (UI_SMOKE_MODE) {
+			manager?.log("Packaged UI smoke mode loaded the renderer.");
+			setTimeout(() => app.exit(0), 150);
+			return;
+		}
+
+		showRecoveryNoticeIfNeeded();
+	});
+
+	mainWindow.webContents.once("did-fail-load", (_event, errorCode, errorDescription) => {
+		recordProcessRecovery(`Renderer failed to load: ${errorDescription || errorCode}`, {
+			errorCode,
+			errorDescription,
+		});
+
+		if (UI_SMOKE_MODE) {
+			app.exit(1);
+		}
+	});
+
+	mainWindow.webContents.on("render-process-gone", (_event, details) => {
+		recordProcessRecovery(`Renderer process exited: ${details.reason || "unknown"}.`, details);
+
+		if (UI_SMOKE_MODE) {
+			app.exit(1);
+			return;
+		}
+
+		dialog.showMessageBox(mainWindow, {
+			buttons: ["Reload", "Close"],
+			defaultId: 0,
+			detail: "The interface stopped unexpectedly. HachiGen saved the event to Diagnostics and can reload the window now.",
+			message: "HachiGen needs to reload this window.",
+			type: "warning",
+		}).then(result => {
+			if (result.response === 0 && mainWindow && !mainWindow.isDestroyed()) {
+				mainWindow.reload();
+			}
+		});
+	});
+
+	mainWindow.on("unresponsive", () => {
+		recordProcessRecovery("HachiGen window became unresponsive.");
+	});
+
+	mainWindow.on("responsive", () => {
+		manager?.log("HachiGen window became responsive again.", {
+			area: "process-recovery",
+		});
+	});
+
+	mainWindow.on("move", scheduleWindowStateSave);
+	mainWindow.on("resize", scheduleWindowStateSave);
+	mainWindow.on("maximize", scheduleWindowStateSave);
+	mainWindow.on("unmaximize", scheduleWindowStateSave);
+
+	mainWindow.on("closed", () => {
+		if (windowStateSaveTimer) {
+			clearTimeout(windowStateSaveTimer);
+			windowStateSaveTimer = null;
+		}
+		mainWindow = null;
+	});
 
 	// Links such as Cron Guru should open in the user's browser instead of
 	// creating a second Electron window inside HachiGen.
 	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-		shell.openExternal(url);
+		openExternal(url);
 		return { action: "deny" };
+	});
+
+	mainWindow.webContents.on("will-navigate", (event, url) => {
+		if (url !== mainWindow.webContents.getURL()) {
+			event.preventDefault();
+			openExternal(url);
+		}
 	});
 }
 
@@ -528,6 +893,8 @@ function registerIpc() {
 	// State and install-path channels. These read or update the Hachi install
 	// folder that every later operation uses as its root.
 	ipcMain.handle("manager:get-state", () => manager.getState());
+	ipcMain.handle("manager:get-diagnostics", () => manager.getDiagnostics());
+	ipcMain.handle("manager:get-about-info", () => manager.getAboutInfo());
 
 	ipcMain.handle("manager:choose-install-path", async () => {
 		const result = await dialog.showOpenDialog(mainWindow, {
@@ -605,8 +972,11 @@ function registerIpc() {
 	ipcMain.handle("manager:install-hachigen-update", () => installHachiGenUpdate());
 	ipcMain.handle("manager:open-hachigen-release", () => {
 		const releaseUrl = manager.hachiGenUpdateState?.releaseUrl || HELP_LINKS.releases;
-		openExternal(releaseUrl);
-		return { ok: true, message: "Opened HachiGen releases." };
+		const opened = openExternal(releaseUrl);
+		return {
+			ok: opened,
+			message: opened ? "Opened HachiGen releases." : "Blocked HachiGen release link.",
+		};
 	});
 	ipcMain.handle("manager:apply-update", () => manager.applyUpdate());
 	ipcMain.handle("manager:restore-stashed-changes", () => manager.restoreStashedChanges());
@@ -618,6 +988,9 @@ function registerIpc() {
 	ipcMain.handle("manager:get-logs", () => manager.getLogs());
 	ipcMain.handle("manager:get-pm2-status", () => manager.getPm2Status());
 	ipcMain.handle("manager:record-renderer-event", (_event, payload) => manager.recordRendererEvent(payload));
+	ipcMain.handle("manager:copy-diagnostic-info", () => copyDiagnosticInfo());
+	ipcMain.handle("manager:export-support-bundle", () => exportSupportBundle());
+	ipcMain.handle("manager:open-hachigen-log-folder", () => openHachiGenLogFolder());
 
 	// Database viewer and maintenance channels. The renderer controls what the
 	// user sees and confirms; HachiManager owns actual file/database mutations.
@@ -658,6 +1031,8 @@ function registerIpc() {
 	});
 
 	ipcMain.handle("manager:restore-database", (_event, backupPath) => manager.restoreDatabaseFromBackup(backupPath));
+	ipcMain.handle("manager:pull-remote-database", () => manager.pullRemoteDatabase());
+	ipcMain.handle("manager:push-local-database-to-remote", () => manager.pushLocalDatabaseToRemote());
 
 	ipcMain.handle("manager:apply-database-sanitation", (_event, actionIds) => manager.applyDatabaseSanitation(actionIds));
 
@@ -699,35 +1074,49 @@ function registerIpc() {
 
 // Once Electron is ready, decide the default Hachi install folder, create the
 // backend manager, register IPC routes, and show the first window.
-app.whenReady().then(() => {
-	// In development, HachiGen is normally cloned beside Hachi. In the packaged
-	// exe, the safest default is beside HachiGen.exe until the user picks Hachi.
-	const defaultInstallPath = app.isPackaged ?
-		path.dirname(process.execPath) :
-		resolveDevelopmentInstallPath();
+const singleInstanceLock = app.requestSingleInstanceLock();
 
-	manager = new HachiManager({
-		managerRoot: __dirname,
-		defaultInstallPath,
-		userDataPath: app.getPath("userData"),
-		sendEvent,
+if (!singleInstanceLock) {
+	app.quit();
+} else {
+	app.on("second-instance", focusMainWindow);
+
+	app.whenReady().then(() => {
+		// In development, HachiGen is normally cloned beside Hachi. In the packaged
+		// exe, the safest default is beside HachiGen.exe until the user picks Hachi.
+		const defaultInstallPath = app.isPackaged ?
+			path.dirname(process.execPath) :
+			resolveDevelopmentInstallPath();
+
+		manager = new HachiManager({
+			managerRoot: __dirname,
+			defaultInstallPath,
+			userDataPath: app.getPath("userData"),
+			sendEvent,
+		});
+		manager.startLogCleanup({ runImmediately: true });
+		manager.initCrashHandlers();
+
+		app.on("child-process-gone", (_event, details) => {
+			recordProcessRecovery(`Electron child process exited: ${details.type || "unknown"} ${details.reason || "unknown"}.`, details);
+		});
+
+		registerIpc();
+		Menu.setApplicationMenu(buildApplicationMenu());
+		createWindow();
+
+		app.on("activate", () => {
+			// macOS convention: clicking the app icon should reopen a window.
+			if (BrowserWindow.getAllWindows().length === 0) {
+				createWindow();
+			}
+		});
 	});
-	manager.startLogCleanup({ runImmediately: true });
-	manager.initCrashHandlers();
-
-	registerIpc();
-	Menu.setApplicationMenu(buildApplicationMenu());
-	createWindow();
-
-	app.on("activate", () => {
-		// macOS convention: clicking the app icon should reopen a window.
-		if (BrowserWindow.getAllWindows().length === 0) {
-			createWindow();
-		}
-	});
-});
+}
 
 app.on("before-quit", () => {
+	saveMainWindowState();
+
 	if (manager) {
 		manager.stopLogCleanup();
 	}

@@ -1,18 +1,25 @@
 {
   "name": "hachigen",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Desktop manager for installing, configuring, updating, and running Hachi.",
-  "author": "FearlessKenji",
+  "author": {
+    "name": "FearlessKenji",
+    "url": "https://github.com/FearlessKenji"
+  },
+  "license": "MIT",
   "private": true,
   "main": "main.js",
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
     "check": "node --check main.js && node --check preload.js && node --check src/shell.js && node --check src/hachigenLogger.js && node --check src/manager.js && node --check src/database-worker.js && node --check renderer/app.js",
-    "dist": "electron-builder --win portable",
+    "dist": "electron-builder --win && node scripts/copyRootInstaller.js",
+    "dist:installer": "electron-builder --win nsis && node scripts/copyRootInstaller.js",
+    "dist:portable": "electron-builder --win portable",
     "lint": "eslint . --config config/eslint.config.js",
     "lint:fix": "eslint . --config config/eslint.config.js --fix",
-    "smoke": "node scripts/smokeTest.js"
+    "smoke": "node scripts/smokeTest.js",
+    "smoke:packaged-ui": "node scripts/packagedUiSmoke.js"
   },
   "devDependencies": {
     "electron": "^42.4.1",
@@ -23,6 +30,7 @@
   "build": {
     "appId": "com.hachi.hachigen",
     "productName": "HachiGen",
+    "copyright": "Copyright (c) 2026 FearlessKenji",
     "artifactName": "HachiGen.${ext}",
     "directories": {
       "output": "dist"
@@ -31,13 +39,30 @@
       "main.js",
       "preload.js",
       "src/**/*",
+      "docs/patch-notes.md",
       "renderer/**/*",
       "package.json",
       "icon.ico"
     ],
     "win": {
+      "executableName": "HachiGen",
       "icon": "icon.ico",
+      "legalTrademarks": "HachiGen is an independent Hachi desktop manager.",
+      "requestedExecutionLevel": "asInvoker",
+      "signtoolOptions": {
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com",
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "timeStampServer": "http://timestamp.digicert.com"
+      },
       "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
         {
           "target": "portable",
           "arch": [
@@ -45,6 +70,22 @@
           ]
         }
       ]
+    },
+    "nsis": {
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "HachiGen-Setup-${version}.${ext}",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "menuCategory": "Hachi",
+      "oneClick": false,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "shortcutName": "HachiGen",
+      "uninstallDisplayName": "HachiGen ${version}"
+    },
+    "portable": {
+      "artifactName": "HachiGen.${ext}",
+      "requestExecutionLevel": "user"
     }
   },
   "repository": {

@@ -4,6 +4,18 @@ HachiGen is the desktop manager for [Hachi](https://github.com/FearlessKenji/Hac
 
 HachiGen is split from the Hachi bot repository so manager updates can ship independently from bot releases.
 
+## Install From A Clone
+
+Run the installer in the repository root:
+
+```text
+HachiGen-Setup-X.X.X.exe
+```
+
+It is a standard Windows install wizard. It installs per user by default under AppData, lets you choose another install folder, and offers the desktop shortcut option.
+
+The installer creates an app folder that includes `HachiGen.exe` and `Uninstall HachiGen.exe`.
+
 ## What It Manages
 
 - Local and remote Hachi install paths
@@ -35,13 +47,22 @@ npm run smoke
 npm start
 ```
 
-Build the portable Windows executable:
+Build the Windows release artifacts:
 
 ```console
 npm run dist
 ```
 
-The executable is created at `dist/HachiGen.exe` and is uploaded by the release workflow.
+The release build creates:
+
+- `HachiGen-Setup-X.X.X.exe` in the repository root for the assisted Windows installer.
+- `dist/HachiGen.exe` for the portable executable and HachiGen self-updates.
+- `dist/HachiGen-Setup-X.X.X.exe` as Electron Builder's installer output copy.
+- `dist/SHA256SUMS.txt` in GitHub releases so downloads can be checked against published SHA-256 hashes.
+
+For one-off builds, use `npm run dist:installer` or `npm run dist:portable`.
+
+Release builds are unsigned by default. If a maintainer chooses to sign artifacts in GitHub Actions, add `HACHIGEN_WIN_CSC_LINK` and `HACHIGEN_WIN_CSC_KEY_PASSWORD` repository secrets; they are passed to electron-builder as `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD`.
 
 ## Release Track
 

@@ -3,6 +3,7 @@
 	<head>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none';">
 		<title>HachiGen</title>
 		<link rel="stylesheet" href="styles.css">
 	</head>
@@ -31,6 +32,7 @@
 					<button class="nav-item" type="button" data-view="database">Database</button>
 					<button class="nav-item" type="button" data-view="remote">Remote</button>
 					<button class="nav-item" type="button" data-view="logs">Logs</button>
+					<button class="nav-item" type="button" data-view="diagnostics">Diagnostics</button>
 				</nav>
 
 				<!-- These values are filled by renderState() in app.js. -->
@@ -51,7 +53,6 @@
 				<header class="topbar">
 					<div>
 						<h1 id="viewTitle">Dashboard</h1>
-						<div class="path-line" id="activeInstallPath">Install path loading...</div>
 					</div>
 					<div class="topbar-actions">
 						<button class="button secondary" type="button" data-action="open-folder" id="openFolderButton">Open Folder</button>
@@ -71,7 +72,7 @@
 							<div class="card-detail" id="botDetail">PM2 status</div>
 						</article>
 
-						<article class="status-card status-card-action" data-action="show-setup">
+						<article class="status-card status-card-action" data-action="show-setup" role="button" tabindex="0">
 							<div class="card-label">Install</div>
 							<div class="status-value">
 								<span class="dot" id="installDot"></span>
@@ -80,7 +81,7 @@
 							<div class="card-detail" id="installDetail">Project files</div>
 						</article>
 
-						<article class="status-card status-card-action" data-action="show-updates">
+						<article class="status-card status-card-action" data-action="show-updates" role="button" tabindex="0">
 							<div class="card-label">Updates</div>
 							<div class="status-value">
 								<span class="dot" id="updateDot"></span>
@@ -98,7 +99,7 @@
 							<div class="card-detail" id="deployDetail">Global and guild commands</div>
 						</article>
 
-						<article class="status-card status-card-action" data-action="show-database">
+						<article class="status-card status-card-action" data-action="show-database" role="button" tabindex="0">
 							<div class="card-label">Database</div>
 							<div class="status-value">
 								<span class="dot" id="dashboardDatabaseDot"></span>
@@ -108,22 +109,69 @@
 						</article>
 					</div>
 
-					<div class="panel runtime-panel">
-						<div>
-							<h2>Runtime</h2>
-							<div class="panel-meta" id="runtimeMeta">PM2 process: Hachi</div>
+					<div class="dashboard-grid">
+						<div class="panel dashboard-panel dashboard-panel-wide">
+							<div class="split-panel">
+								<div>
+									<h2>Runtime</h2>
+									<div class="panel-meta" id="runtimeMeta">PM2 process: Hachi</div>
+								</div>
+								<div class="button-row">
+									<button class="button primary" type="button" data-action="start">Start</button>
+									<button class="button danger" type="button" data-action="stop">Stop</button>
+									<button class="button warning" type="button" data-action="restart">Restart</button>
+								</div>
+							</div>
 						</div>
-						<div class="button-row">
-							<button class="button primary" type="button" data-action="start">Start</button>
-							<button class="button danger" type="button" data-action="stop">Stop</button>
-							<button class="button warning" type="button" data-action="restart">Restart</button>
-						</div>
-					</div>
 
-					<div class="panel action-panel">
-						<button class="button secondary" type="button" data-action="validate">Validate Install</button>
-						<button class="button info" type="button" data-action="show-updates" id="dashboardUpdateButton">Check Updates</button>
-						<button class="button primary" type="button" data-action="deploy">Deploy Commands</button>
+						<div class="panel dashboard-panel">
+							<h2>Target</h2>
+							<dl class="detail-list compact-detail-list">
+								<div>
+									<dt>Mode</dt>
+									<dd id="dashboardTargetMode">Local</dd>
+								</div>
+								<div>
+									<dt>Location</dt>
+									<dd id="dashboardTargetLocation">Not set</dd>
+								</div>
+							</dl>
+							<div class="button-row wrap dashboard-panel-actions">
+								<button class="button secondary compact" type="button" data-action="show-remote">Remote Settings</button>
+							</div>
+						</div>
+
+						<div class="panel dashboard-panel">
+							<h2>Updates</h2>
+							<dl class="detail-list compact-detail-list">
+								<div>
+									<dt>Hachi</dt>
+									<dd id="dashboardHachiUpdate">Not checked</dd>
+								</div>
+								<div>
+									<dt>HachiGen</dt>
+									<dd id="dashboardHachiGenUpdate">Not checked</dd>
+								</div>
+							</dl>
+							<div class="button-row wrap dashboard-panel-actions">
+								<button class="button info compact" type="button" data-action="check-all-updates" id="dashboardCheckUpdatesButton">Check Updates</button>
+							</div>
+						</div>
+
+						<div class="panel dashboard-panel">
+							<h2>Activity</h2>
+							<div class="update-summary" id="dashboardActivitySummary">No recent activity loaded.</div>
+							<div class="button-row wrap dashboard-panel-actions">
+								<button class="button secondary compact" type="button" data-action="show-logs">Open Logs</button>
+								<button class="button secondary compact" type="button" data-action="show-diagnostics">Diagnostics</button>
+							</div>
+						</div>
+
+						<div class="panel action-panel dashboard-actions">
+							<button class="button secondary" type="button" data-action="validate">Validate Install</button>
+							<button class="button primary" type="button" data-action="deploy">Deploy Commands</button>
+							<button class="button secondary" type="button" data-action="show-setup-guide">Setup Guide</button>
+						</div>
 					</div>
 				</section>
 
@@ -343,60 +391,93 @@
 									<dt>PM2</dt>
 									<dd id="remotePreviewPm2">Hachi</dd>
 								</div>
+								<div>
+									<dt>Last Test</dt>
+									<dd id="remotePreviewLastTest">Not tested</dd>
+								</div>
 							</dl>
 							<pre class="output compact-output" id="remoteTestOutput">No remote test has run yet.</pre>
 						</div>
 					</div>
 				</section>
 
-				<!-- Updates: remote commits, local changes, and HachiGen-created stashes. -->
+				<!-- Updates: version summaries plus saved-change recovery when needed. -->
 				<section class="view" data-view-panel="updates">
 					<div class="panel split-panel">
 						<div>
-							<h2>Hachi</h2>
-							<div class="panel-meta" id="updatesMeta">Not checked</div>
-							<div class="update-message" id="updateMessage"></div>
+							<h2>Updates</h2>
+							<div class="panel-meta" id="combinedUpdatesMeta">Hachi and HachiGen update status</div>
 						</div>
 						<div class="button-row">
-							<button class="button info" type="button" data-action="update" id="updatesButton">Check Updates</button>
-							<button class="button warning" type="button" data-action="restore-stash" id="restoreChangesButton" disabled>Restore Changes</button>
-							<button class="button danger" type="button" data-action="delete-stash" id="deleteChangesButton" disabled>Delete Changes</button>
-						</div>
-					</div>
-
-					<div class="panel split-panel">
-						<div>
-							<h2>HachiGen</h2>
-							<div class="panel-meta" id="hachigenUpdateMeta">Not checked</div>
-							<div class="update-message" id="hachigenUpdateMessage">Check for the latest HachiGen release.</div>
-						</div>
-						<div class="button-row">
-							<button class="button info" type="button" data-action="check-hachigen-update" id="checkHachiGenUpdateButton">Check HachiGen</button>
-							<button class="button primary" type="button" data-action="install-hachigen-update" id="installHachiGenUpdateButton" disabled>Install Latest</button>
-							<button class="button secondary" type="button" data-action="open-hachigen-release" id="openHachiGenReleaseButton">Open Releases</button>
-						</div>
-					</div>
-
-					<!-- Restore/Delete buttons operate only on auto-stashes created by HachiGen before updates. -->
-					<div class="panel stash-panel">
-						<div class="stash-content">
-							<h2>Stashed changes</h2>
-							<div class="update-summary" id="stashSummary">No saved HachiGen stash.</div>
-							<ul class="update-list" id="stashChangesList"></ul>
+							<button class="button info" type="button" data-action="check-all-updates" id="checkAllUpdatesButton">Check Updates</button>
 						</div>
 					</div>
 
 					<div class="updates-grid">
-						<div class="panel">
-							<h2 id="incomingHeading">Available from origin/main</h2>
-							<div class="update-summary" id="incomingSummary">No update check has run yet.</div>
-							<ul class="update-list" id="incomingCommitsList"></ul>
+						<div class="panel update-version-panel">
+							<div class="split-panel">
+								<div>
+									<h2>Hachi</h2>
+									<div class="panel-meta" id="updatesMeta">Not checked</div>
+								</div>
+								<button class="button primary" type="button" data-action="update-hachi" id="hachiUpdateButton" disabled>Update Hachi</button>
+							</div>
+							<dl class="detail-list">
+								<div>
+									<dt>Current</dt>
+									<dd id="hachiCurrentVersion">Unknown</dd>
+								</div>
+								<div>
+									<dt>Available</dt>
+									<dd id="hachiAvailableVersion">Not checked</dd>
+								</div>
+								<div>
+									<dt>Status</dt>
+									<dd id="updateMessage">Check for Hachi updates.</dd>
+								</div>
+							</dl>
 						</div>
 
-						<div class="panel">
-							<h2>Local changes</h2>
-							<div class="update-summary" id="localChangesSummary">No local changes loaded.</div>
-							<ul class="update-list" id="localChangesList"></ul>
+						<div class="panel update-version-panel">
+							<div class="split-panel">
+								<div>
+									<h2>HachiGen</h2>
+									<div class="panel-meta" id="hachigenUpdateMeta">Not checked</div>
+								</div>
+								<div class="button-row">
+									<button class="button primary" type="button" data-action="check-hachigen-update" id="checkHachiGenUpdateButton" disabled>Update HachiGen</button>
+									<button class="button secondary" type="button" data-action="open-hachigen-release" id="openHachiGenReleaseButton">Open Releases</button>
+								</div>
+							</div>
+							<dl class="detail-list">
+								<div>
+									<dt>Current</dt>
+									<dd id="hachigenCurrentVersion">Unknown</dd>
+								</div>
+								<div>
+									<dt>Available</dt>
+									<dd id="hachigenAvailableVersion">Not checked</dd>
+								</div>
+								<div>
+									<dt>Status</dt>
+									<dd id="hachigenUpdateMessage">Check for HachiGen updates.</dd>
+								</div>
+							</dl>
+						</div>
+					</div>
+
+					<!-- Restore/Delete buttons operate only on auto-stashes created by HachiGen before updates. -->
+					<div class="panel stash-panel" id="savedChangesPanel" hidden>
+						<div class="stash-header">
+							<h2>Saved changes</h2>
+							<div class="button-row wrap">
+								<button class="button warning" type="button" data-action="restore-stash" id="restoreChangesButton" disabled>Restore Changes</button>
+								<button class="button danger" type="button" data-action="delete-stash" id="deleteChangesButton" disabled>Delete Changes</button>
+							</div>
+						</div>
+						<div class="stash-content">
+							<div class="update-summary" id="stashSummary">No saved Hachi changes.</div>
+							<ul class="update-list" id="stashChangesList"></ul>
 						</div>
 					</div>
 				</section>
@@ -410,8 +491,7 @@
 							<div class="update-message" id="databaseMessage"></div>
 						</div>
 						<div class="button-row">
-							<button class="button info" type="button" data-action="backup-database">Backup</button>
-							<button class="button warning" type="button" data-action="restore-database">Restore</button>
+							<button class="button info" type="button" data-action="backup-database">Backup / Transfer</button>
 							<button class="button warning" type="button" data-action="migrate-database" id="migrateDatabaseButton" disabled>Migrate</button>
 							<button class="button danger" type="button" data-action="force-migrate-database" id="forceMigrateDatabaseButton" disabled>Force Migrate</button>
 							<button class="button primary" type="button" data-action="sanitize-database">Sanitize</button>
@@ -555,6 +635,88 @@
 						<div class="panel log-panel">
 							<h2>HachiGen</h2>
 							<pre class="output" id="eventLogs">No manager activity yet.</pre>
+						</div>
+					</div>
+				</section>
+
+				<section class="view" data-view-panel="diagnostics">
+					<div class="panel split-panel">
+						<div>
+							<h2>Diagnostics</h2>
+							<div class="panel-meta" id="diagnosticsMeta">System summary loading...</div>
+							<div class="update-message" id="diagnosticsMessage"></div>
+						</div>
+						<div class="button-row wrap">
+							<button class="button primary" type="button" data-action="export-support-bundle">Export Diagnostics</button>
+							<button class="button secondary" type="button" data-action="copy-diagnostic-info">Copy Info</button>
+							<button class="button secondary" type="button" data-action="open-hachigen-log-folder">Open Logs</button>
+							<button class="button info" type="button" data-action="refresh-diagnostics">Refresh</button>
+						</div>
+					</div>
+
+					<div class="diagnostics-grid">
+						<div class="panel diagnostics-card">
+							<h2>Runtime</h2>
+							<dl class="detail-list">
+								<div>
+									<dt>HachiGen</dt>
+									<dd id="diagnosticsHachiGenVersion">Unknown</dd>
+								</div>
+								<div>
+									<dt>Hachi</dt>
+									<dd id="diagnosticsHachiVersion">Unknown</dd>
+								</div>
+								<div>
+									<dt>Target</dt>
+									<dd id="diagnosticsRuntimeTarget">Unknown</dd>
+								</div>
+								<div>
+									<dt>PM2</dt>
+									<dd id="diagnosticsPm2Status">Unknown</dd>
+								</div>
+							</dl>
+						</div>
+
+						<div class="panel diagnostics-card">
+							<h2>Update Verification</h2>
+							<dl class="detail-list">
+								<div>
+									<dt>Hachi</dt>
+									<dd id="diagnosticsHachiUpdate">Not checked</dd>
+								</div>
+								<div>
+									<dt>HachiGen</dt>
+									<dd id="diagnosticsHachiGenUpdate">Not checked</dd>
+								</div>
+								<div>
+									<dt>Download</dt>
+									<dd id="diagnosticsUpdateVerification">Not verified</dd>
+								</div>
+							</dl>
+						</div>
+
+						<div class="panel diagnostics-card">
+							<h2>Recovery</h2>
+							<dl class="detail-list">
+								<div>
+									<dt>Crash log</dt>
+									<dd id="diagnosticsCrashLog">Not checked</dd>
+								</div>
+								<div>
+									<dt>Crash count</dt>
+									<dd id="diagnosticsCrashCount">0</dd>
+								</div>
+								<div>
+									<dt>Last event</dt>
+									<dd id="diagnosticsRecoveryEvent">No recovery events</dd>
+								</div>
+							</dl>
+						</div>
+
+						<div class="panel diagnostics-card diagnostics-card-wide">
+							<h2>Diagnostics Bundle</h2>
+							<div class="update-summary" id="supportBundleSummary">No diagnostics bundle exported this session.</div>
+							<pre class="output compact-output" id="diagnosticsSummaryOutput">Diagnostics have not loaded yet.</pre>
 						</div>
 					</div>
 				</section>
