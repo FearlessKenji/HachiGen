@@ -29,6 +29,9 @@ const HACHIGEN_RELEASE_API = "https://api.github.com/repos/FearlessKenji/HachiGe
 const HACHIGEN_RELEASES_URL = "https://github.com/FearlessKenji/HachiGen/releases";
 const HACHIGEN_ASSET_NAME = "HachiGen.exe";
 const DEFAULT_SSH_PORT = 22;
+const DIAGNOSTIC_RUNTIME_LOG_LIMIT = 5;
+const DIAGNOSTIC_RUNTIME_LOG_MAX_BYTES = 256 * 1024;
+const DIAGNOSTIC_PM2_LOG_LINES = 240;
 
 function createUncheckedUpdateState(message = "Updates have not been checked yet.") {
 	return {
@@ -513,6 +516,59 @@ function readTextFile(filePath, fallback = "") {
 	} catch {
 		return fallback;
 	}
+}
+
+function readTextFileTail(filePath, maxBytes = DIAGNOSTIC_RUNTIME_LOG_MAX_BYTES) {
+	try {
+		const stats = fs.statSync(filePath);
+
+		if (!stats.isFile()) {
+			return {
+				error: "Path is not a file.",
+				size: 0,
+				text: "",
+				truncated: false,
+			};
+		}
+
+		const start = Math.max(0, stats.size - maxBytes);
+		const length = stats.size - start;
+		const fd = fs.openSync(filePath, "r");
+
+		try {
+			const buffer = Buffer.alloc(length);
+			fs.readSync(fd, buffer, 0, length, start);
+			const text = buffer.toString("utf8");
+
+			return {
+				modifiedAt: stats.mtime.toISOString(),
+				size: stats.size,
+				text: start > 0 ?
+					`[HachiGen diagnostics: showing the last ${formatFileSize(maxBytes)} of ${formatFileSize(stats.size)}]\n${text.replace(/^[^\n]*(?:\r?\n)?/u, "")}` :
+					text,
+				truncated: start > 0,
+			};
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch (error) {
+		return {
+			error: readableCause(error),
+			size: 0,
+			text: "",
+			truncated: false,
+		};
+	}
+}
+
+function safeDiagnosticFileName(value, fallback = "log.txt") {
+	const baseName = path.basename(String(value || "").trim())
+		.split("")
+		.map(char => (char.charCodeAt(0) < 32 || "<>:\"/\\|?*".includes(char) ? "_" : char))
+		.join("")
+		.replace(/^\.+$/u, "");
+
+	return (baseName || fallback).slice(0, 80);
 }
 
 function writeJsonFile(filePath, value) {
@@ -2483,15 +2539,28 @@ class HachiManager {
 		return this.getRemotePm2Status();
 	}
 
-	async readRemoteLogs() {
+	async readRemoteLogs(lines = 160) {
 		const settings = await this.requireRemoteRuntime();
 		const remoteCommand = [
 			`cd ${quoteRemotePath(settings.remotePath)}`,
-			`pm2 logs ${quotePosix(settings.pm2Name)} --lines 160 --nostream --no-color`,
+			`pm2 logs ${quotePosix(settings.pm2Name)} --lines ${Number.parseInt(String(lines), 10) || 160} --nostream --no-color`,
 		].join(" && ");
 		const result = await this.runRemoteCommand(remoteCommand, {
 			allowFailure: true,
 			log: false,
+			timeoutMs: 30000,
+		});
+
+		return [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+	}
+
+	async readLocalPm2Snapshot(lines = 160) {
+		if (!await commandExists("pm2")) {
+			return "";
+		}
+
+		const result = await run("pm2", ["logs", PROCESS_NAME, "--lines", String(lines), "--nostream"], {
+			allowFailure: true,
 			timeoutMs: 30000,
 		});
 
@@ -6035,6 +6104,271 @@ process.stdout.write(JSON.stringify({
 		};
 	}
 
+	readLocalRuntimeLogFiles({ limit = DIAGNOSTIC_RUNTIME_LOG_LIMIT, maxBytes = DIAGNOSTIC_RUNTIME_LOG_MAX_BYTES } = {}) {
+		const paths = this.getPaths();
+		const result = {
+			errors: [],
+			exists: fileExists(paths.logs),
+			files: [],
+			folder: paths.logs,
+		};
+
+		if (!result.exists) {
+			return result;
+		}
+
+		try {
+			if (!fs.statSync(paths.logs).isDirectory()) {
+				result.errors.push(`${displayPath(paths.logs)} exists but is not a directory.`);
+				return result;
+			}
+		} catch (error) {
+			result.errors.push(`Could not inspect ${displayPath(paths.logs)}: ${readableCause(error)}`);
+			return result;
+		}
+
+		result.files = fs.readdirSync(paths.logs)
+			.filter(file => /\.(log|txt)$/iu.test(file))
+			.flatMap(file => {
+				try {
+					const fullPath = path.join(paths.logs, file);
+					const stats = fs.statSync(fullPath);
+
+					if (!stats.isFile()) {
+						return [];
+					}
+
+					return [{
+						file,
+						fullPath,
+						modified: stats.mtimeMs,
+					}];
+				} catch (error) {
+					return [{
+						error: readableCause(error),
+						file,
+						modified: 0,
+					}];
+				}
+			})
+			.sort((a, b) => b.modified - a.modified)
+			.slice(0, limit)
+			.map(file => file.error ?
+				{
+					error: file.error,
+					name: file.file,
+				} :
+				{
+					name: file.file,
+					path: file.fullPath,
+					...readTextFileTail(file.fullPath, maxBytes),
+				});
+
+		return result;
+	}
+
+	async readRemoteRuntimeLogFiles({
+		limit = DIAGNOSTIC_RUNTIME_LOG_LIMIT,
+		maxBytes = DIAGNOSTIC_RUNTIME_LOG_MAX_BYTES,
+	} = {}) {
+		const safeLimit = Math.max(1, Math.min(20, Number.parseInt(String(limit), 10) || DIAGNOSTIC_RUNTIME_LOG_LIMIT));
+		const safeMaxBytes = Math.max(4096, Math.min(1024 * 1024, Number.parseInt(String(maxBytes), 10) || DIAGNOSTIC_RUNTIME_LOG_MAX_BYTES));
+		const script = `
+const fs = require("node:fs");
+const path = require("node:path");
+const logsDir = "logs";
+const limit = ${JSON.stringify(safeLimit)};
+const maxBytes = ${JSON.stringify(safeMaxBytes)};
+
+function readTail(filePath, stats) {
+	const start = Math.max(0, stats.size - maxBytes);
+	const length = stats.size - start;
+	const fd = fs.openSync(filePath, "r");
+
+	try {
+		const buffer = Buffer.alloc(length);
+		fs.readSync(fd, buffer, 0, length, start);
+		return {
+			text: start > 0 ? buffer.toString("utf8").replace(/^[^\\n]*(?:\\r?\\n)?/u, "") : buffer.toString("utf8"),
+			truncated: start > 0,
+		};
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+const payload = {
+	exists: fs.existsSync(logsDir),
+	files: [],
+};
+
+if (payload.exists) {
+	for (const entry of fs.readdirSync(logsDir, { withFileTypes: true })) {
+		if (!entry.isFile() || !/\\.(log|txt)$/iu.test(entry.name)) {
+			continue;
+		}
+
+		const filePath = path.join(logsDir, entry.name);
+
+		try {
+			const stats = fs.statSync(filePath);
+			payload.files.push({
+				modified: stats.mtimeMs,
+				modifiedAt: stats.mtime.toISOString(),
+				name: entry.name,
+				size: stats.size,
+				...readTail(filePath, stats),
+			});
+		} catch (error) {
+			payload.files.push({
+				error: error.message || String(error),
+				modified: 0,
+				name: entry.name,
+				size: 0,
+				text: "",
+				truncated: false,
+			});
+		}
+	}
+}
+
+payload.files = payload.files
+	.sort((a, b) => b.modified - a.modified)
+	.slice(0, limit);
+process.stdout.write(JSON.stringify(payload));
+`;
+
+		return this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Remote Hachi logs did not return valid JSON.",
+			timeoutMs: 45000,
+		});
+	}
+
+	writeDiagnosticLogFile(baseFolder, relativeFolder, requestedName, text, details = {}) {
+		const targetFolder = path.join(baseFolder, ...normalizeArchivePath(relativeFolder).split("/"));
+		const requestedFileName = safeDiagnosticFileName(requestedName);
+		const parsed = path.parse(requestedFileName);
+		let fileName = requestedFileName;
+		let targetPath = path.join(targetFolder, fileName);
+		let counter = 2;
+
+		ensureDir(targetFolder);
+
+		while (fileExists(targetPath)) {
+			fileName = `${parsed.name}-${counter}${parsed.ext}`;
+			targetPath = path.join(targetFolder, fileName);
+			counter += 1;
+		}
+
+		const redactedText = redactHachiGenLogText(text || "");
+		fs.writeFileSync(targetPath, redactedText, "utf8");
+
+		return {
+			...details,
+			bytes: Buffer.byteLength(redactedText, "utf8"),
+			file: path.relative(baseFolder, targetPath).replace(/\\/gu, "/"),
+		};
+	}
+
+	async writeRuntimeLogsToBundle(tempFolder) {
+		// Diagnostics bundles keep HachiGen logs and managed Hachi runtime logs
+		// separate so error reports can distinguish app failures from bot output.
+		const target = this.getRuntimeTarget();
+		const runtimeFolder = `logs/hachi-runtime/${target}`;
+		const summary = {
+			errors: [],
+			files: [],
+			target,
+		};
+
+		if (target === "remote") {
+			summary.source = remoteConnectionLabel(this.getRemoteSettings());
+
+			try {
+				const pm2Text = await this.readRemoteLogs(DIAGNOSTIC_PM2_LOG_LINES);
+
+				if (pm2Text) {
+					summary.files.push(this.writeDiagnosticLogFile(tempFolder, runtimeFolder, "pm2-snapshot.log", pm2Text, {
+						kind: "pm2",
+						source: "remote",
+					}));
+				}
+			} catch (error) {
+				summary.errors.push(`Remote PM2 logs unavailable: ${readableCause(error)}`);
+			}
+
+			try {
+				const remoteLogs = await this.readRemoteRuntimeLogFiles();
+				summary.logFolder = remoteLogs.exists ? "logs" : "not found";
+
+				for (const file of remoteLogs.files || []) {
+					if (file.error) {
+						summary.errors.push(`Remote log ${file.name}: ${redactHachiGenLogText(file.error)}`);
+						continue;
+					}
+
+					summary.files.push(this.writeDiagnosticLogFile(tempFolder, runtimeFolder, file.name, file.text, {
+						kind: "hachi-log",
+						modifiedAt: file.modifiedAt || "",
+						size: Number(file.size) || 0,
+						source: "remote",
+						truncated: Boolean(file.truncated),
+					}));
+				}
+			} catch (error) {
+				summary.errors.push(`Remote Hachi log files unavailable: ${readableCause(error)}`);
+			}
+		} else {
+			const localLogs = this.readLocalRuntimeLogFiles();
+			summary.logFolder = localLogs.folder;
+			summary.source = this.getInstallPath();
+			summary.errors.push(...localLogs.errors);
+
+			for (const file of localLogs.files) {
+				if (file.error) {
+					summary.errors.push(`Local log ${file.name}: ${file.error}`);
+					continue;
+				}
+
+				summary.files.push(this.writeDiagnosticLogFile(tempFolder, runtimeFolder, file.name, file.text, {
+					kind: "hachi-log",
+					modifiedAt: file.modifiedAt || "",
+					size: Number(file.size) || 0,
+					source: "local",
+					truncated: Boolean(file.truncated),
+				}));
+			}
+
+			try {
+				const pm2Text = await this.readLocalPm2Snapshot(DIAGNOSTIC_PM2_LOG_LINES);
+
+				if (pm2Text) {
+					summary.files.push(this.writeDiagnosticLogFile(tempFolder, runtimeFolder, "pm2-snapshot.log", pm2Text, {
+						kind: "pm2",
+						source: "local",
+					}));
+				}
+			} catch (error) {
+				summary.errors.push(`Local PM2 logs unavailable: ${readableCause(error)}`);
+			}
+		}
+
+		if (!summary.files.length && !summary.errors.length) {
+			summary.files.push(this.writeDiagnosticLogFile(
+				tempFolder,
+				runtimeFolder,
+				"no-runtime-logs-found.txt",
+				`No Hachi runtime logs were found for the ${target} target.`,
+				{
+					kind: "notice",
+					source: target,
+				},
+			));
+		}
+
+		return summary;
+	}
+
 	validateHachiGenUpdateFile(filePath, expectedBytes = 0) {
 		return verifyHachiGenUpdateFile(filePath, expectedBytes);
 	}
@@ -6056,7 +6390,13 @@ process.stdout.write(JSON.stringify({
 		ensureDir(tempFolder);
 
 		try {
-			const diagnostics = await this.getDiagnostics();
+			const baseDiagnostics = await this.getDiagnostics();
+			const runtimeLogs = await this.writeRuntimeLogsToBundle(tempFolder);
+			const diagnostics = {
+				...baseDiagnostics,
+				runtimeLogs,
+			};
+
 			writeJsonFile(path.join(tempFolder, "diagnostics.json"), diagnostics);
 			writeJsonFile(path.join(tempFolder, "settings-summary.json"), summarizeSettings(this.settings));
 			writeJsonFile(path.join(tempFolder, "recent-events.json"), this.logger.readRecentEvents(200, { includeHidden: true }));
@@ -6064,12 +6404,13 @@ process.stdout.write(JSON.stringify({
 				"HachiGen diagnostics bundle",
 				`Created: ${diagnostics.generatedAt}`,
 				"",
-				"This bundle contains redacted HachiGen diagnostics, recent HachiGen events, and HachiGen logs.",
+				"This bundle contains redacted HachiGen diagnostics, recent HachiGen events, HachiGen logs, and Hachi runtime logs.",
+				"Hachi runtime logs are capped to the newest files and latest log output so the archive stays readable.",
 				"It does not include .env, config.json, database files, SSH keys, or decrypted secrets.",
 				"",
 			].join("\n"), "utf8");
 
-			const logsFolder = path.join(tempFolder, "logs");
+			const logsFolder = path.join(tempFolder, "logs", "hachigen");
 			ensureDir(logsFolder);
 
 			for (const [label, sourcePath] of Object.entries({
@@ -7865,16 +8206,8 @@ process.stdout.write(JSON.stringify({ backupDir, copied }));
 		}
 
 		const local = this.readLocalLogs();
-		let pm2 = "";
-
-		if (await commandExists("pm2")) {
-			// --nostream takes a snapshot instead of leaving a live command running.
-			const result = await run("pm2", ["logs", PROCESS_NAME, "--lines", "160", "--nostream"], {
-				allowFailure: true,
-				timeoutMs: 30000,
-			});
-			pm2 = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-		}
+		// --nostream takes a snapshot instead of leaving a live command running.
+		const pm2 = await this.readLocalPm2Snapshot(160);
 
 		return {
 			local,
