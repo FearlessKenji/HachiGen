@@ -4,7 +4,14 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
-No unreleased changes yet.
+### Changed
+
+- Expanded diagnostics bundle export to include redacted Hachi runtime logs and PM2 snapshots alongside HachiGen logs.
+- Updated vulnerable transitive build dependencies to patched releases, clearing npm audit findings for `brace-expansion`, `fast-uri`, `tar`, and `undici`.
+
+### Fixed
+
+- Fixed the smoke-test CI workflow parser so split CI job assertions do not fail with an undefined helper.
 
 ## v1.1.0 - 2026-07-16
 

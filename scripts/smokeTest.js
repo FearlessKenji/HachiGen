@@ -428,6 +428,8 @@ async function validateDiagnosticsBundle() {
 			exists: false,
 			source: "local",
 		});
+		fs.mkdirSync(path.join(tempDir, "logs"), { recursive: true });
+		fs.writeFileSync(path.join(tempDir, "logs", "hachi.log"), "Hachi runtime TOKEN=smoke-hachi-token failed.", "utf8");
 		manager.log("TOKEN=smoke-secret-token failed during diagnostics bundle test.");
 
 		const diagnostics = await manager.getDiagnostics();
@@ -438,8 +440,42 @@ async function validateDiagnosticsBundle() {
 		assert(diagnostics.app.hachiGenVersion, "Diagnostics should include the HachiGen version.");
 		assert(result.ok === true && fs.existsSync(bundlePath), "Diagnostics bundle archive was not created.");
 		assert(bundleText.includes("diagnostics.json") && bundleText.includes("recent-events.json"), "Diagnostics bundle is missing diagnostics files.");
+		assert(bundleText.includes("logs/hachi-runtime/local/hachi.log"), "Diagnostics bundle is missing local Hachi logs.");
+		assert(bundleText.includes("Hachi runtime"), "Diagnostics bundle should include readable Hachi log output.");
 		assert(bundleText.includes("[redacted]"), "Diagnostics bundle should retain redaction markers.");
 		assert(!bundleText.includes("smoke-secret-token"), "Diagnostics bundle leaked a redacted secret.");
+		assert(!bundleText.includes("smoke-hachi-token"), "Diagnostics bundle leaked a redacted Hachi log secret.");
+
+		manager.settings.runtimeTarget = "remote";
+		manager.settings.remote = {
+			host: "example.invalid",
+			pm2Name: "Hachi",
+			remotePath: "~/Hachi",
+			username: "hachi",
+		};
+		manager.readRemoteLogs = async () => "Remote PM2 TOKEN=smoke-remote-pm2-token failed.";
+		manager.readRemoteRuntimeLogFiles = async () => ({
+			exists: true,
+			files: [
+				{
+					modifiedAt: "2026-07-16T00:00:00.000Z",
+					name: "remote-hachi.log",
+					size: 64,
+					text: "Remote Hachi TOKEN=smoke-remote-hachi-token failed.",
+					truncated: false,
+				},
+			],
+		});
+
+		const remoteBundleFolder = path.join(tempDir, "remote-diagnostics");
+		const remoteRuntimeLogs = await manager.writeRuntimeLogsToBundle(remoteBundleFolder);
+		const remotePm2Text = fs.readFileSync(path.join(remoteBundleFolder, "logs", "hachi-runtime", "remote", "pm2-snapshot.log"), "utf8");
+		const remoteHachiText = fs.readFileSync(path.join(remoteBundleFolder, "logs", "hachi-runtime", "remote", "remote-hachi.log"), "utf8");
+
+		assert(remoteRuntimeLogs.files.length === 2, "Remote diagnostics should include PM2 and Hachi log files.");
+		assert(remotePm2Text.includes("[redacted]") && remoteHachiText.includes("[redacted]"), "Remote Hachi logs should be redacted.");
+		assert(!remotePm2Text.includes("smoke-remote-pm2-token"), "Remote PM2 diagnostics leaked a redacted secret.");
+		assert(!remoteHachiText.includes("smoke-remote-hachi-token"), "Remote Hachi diagnostics leaked a redacted secret.");
 	} finally {
 		fs.rmSync(tempDir, { force: true, recursive: true });
 	}

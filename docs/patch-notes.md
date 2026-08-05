@@ -4,7 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
-No unreleased changes yet.
+- Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
+- Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 
 # v1.1.0 - 2026-07-16
 
