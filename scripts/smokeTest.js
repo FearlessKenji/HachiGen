@@ -37,6 +37,45 @@ async function test(name, fn) {
 		console.error(`       ${error.message}`);
 	}
 }
+
+async function validateBotRegistryFoundation() {
+	const {
+		NATIVE_HACHI_DEFINITION,
+		createLegacyFleet,
+		loadBotDefinitions,
+		validateExternalBotDefinition,
+	} = requireFresh("src", "botRegistry.js");
+	assert(NATIVE_HACHI_DEFINITION.id === "hachi" && NATIVE_HACHI_DEFINITION.source === "native", "Hachi should be the only native bot definition.");
+	const fleet = createLegacyFleet({ installPath: "C:\\Bots\\Hachi", runtimeTarget: "local" }, "C:\\Fallback");
+	assert(fleet.servers.length === 1 && fleet.deployments.length === 1, "Legacy settings should migrate to one local Hachi deployment.");
+	assert(fleet.deployments[0].botTypeId === "hachi", "Migrated deployment should use native Hachi.");
+	const external = validateExternalBotDefinition({
+		id: "paldeck",
+		displayName: "Paldeck",
+		runtime: { ecosystemFile: "config/ecosystem.config.js", pm2Name: "Paldeck" },
+		capabilities: { backups: true, databaseEncryption: true },
+	});
+	assert(external.source === "external" && external.capabilities.databaseEncryption, "Optional bots should load as external definitions.");
+	let rejectedNativeOverride = false;
+	try {
+		validateExternalBotDefinition({ id: "hachi", displayName: "Replacement", runtime: {} });
+	} catch {
+		rejectedNativeOverride = true;
+	}
+	assert(rejectedNativeOverride, "External definitions must not replace native Hachi.");
+	const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-bot-types-"));
+	try {
+		fs.writeFileSync(path.join(tempRoot, "paldeck.json"), JSON.stringify({
+			id: "paldeck",
+			displayName: "Paldeck",
+			runtime: { ecosystemFile: "ecosystem.config.js" },
+		}));
+		const loaded = loadBotDefinitions(tempRoot);
+		assert(loaded.errors.length === 0 && loaded.definitions.length === 2, "Registry should load native Hachi plus optional definitions.");
+	} finally {
+		fs.rmSync(tempRoot, { recursive: true, force: true });
+	}
+}
 function duplicateValues(values) {
 	const seen = new Set();
 	const duplicates = new Set();
@@ -121,7 +160,7 @@ function validateProjectFiles() {
 		"config/eslint.config.js", "docs/patch-notes.md", "icon.ico", "main.js", "package-lock.json",
 		"package.json", "preload.js", "renderer/app.js", "renderer/assets/KenjiBotProfile.svg",
 		"renderer/index.html", "renderer/styles.css", "scripts/copyRootInstaller.js", "scripts/packagedUiSmoke.js", "scripts/smokeTest.js",
-		"src/database-worker.js", "src/hachigenLogger.js", "src/manager.js", "src/shell.js",
+		"src/botRegistry.js", "src/database-worker.js", "src/hachigenLogger.js", "src/manager.js", "src/shell.js",
 	];
 	for (const file of requiredFiles) {
 		assert(fs.existsSync(resolveProject(file)), `Missing required project file: ${file}.`);
@@ -858,6 +897,7 @@ async function validateUpdateCheckDeduplication() {
 async function main() {
 	await test("package metadata and lockfile are consistent", validatePackageMetadata);
 	await test("required project files exist", validateProjectFiles);
+	await test("fleet registry keeps Hachi native and optional bots external", validateBotRegistryFoundation);
 	await test("standalone repository wiring is correct", validateStandaloneWiring);
 	await test("renderer, menu, and self-update wiring is correct", validateRendererAndMenuWiring);
 	await test("IPC surface is fully wired", validateIpcSurface);

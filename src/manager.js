@@ -13,6 +13,10 @@ const {
 	redactHachiGenLogText,
 } = require("./hachigenLogger.js");
 const { commandExists, run } = require("./shell.js");
+const {
+	loadBotDefinitions,
+	normalizeFleetRegistry,
+} = require("./botRegistry.js");
 
 // This file contains HachiGen's backend coordinator.
 // The renderer never edits files or runs commands directly; it asks this class
@@ -1915,6 +1919,8 @@ class HachiManager {
 		// development and packaged builds so settings/logs do not live in source.
 		this.userDataPath = userDataPath || getDefaultHachiGenUserDataPath();
 		this.settingsPath = path.join(this.userDataPath, "settings.json");
+		this.fleetPath = path.join(this.userDataPath, "fleet.json");
+		this.botDefinitionsDir = path.join(this.userDataPath, "bot-definitions");
 
 		// sendEvent comes from main.js and streams backend activity to the UI.
 		this.sendEvent = sendEvent || noop;
@@ -1938,6 +1944,39 @@ class HachiManager {
 
 		ensureDir(this.userDataPath);
 		this.settings = this.loadSettings();
+		this.fleet = this.loadFleetRegistry();
+	}
+
+	loadFleetRegistry() {
+		// The fleet registry is stored separately from legacy settings so the
+		// migration can be rolled back without destroying the working Hachi setup.
+		const saved = readJson(this.fleetPath, null);
+		const fleet = normalizeFleetRegistry(saved, this.settings, this.defaultInstallPath);
+		writeJsonFile(this.fleetPath, fleet);
+		return fleet;
+	}
+
+	getFleetState() {
+		const botTypes = loadBotDefinitions(this.botDefinitionsDir);
+		const servers = this.fleet.servers.map(server => ({
+			...server,
+			deploymentCount: this.fleet.deployments.filter(deployment => deployment.serverId === server.id).length,
+		}));
+
+		return {
+			activeDeploymentId: this.fleet.activeDeploymentId,
+			botDefinitionErrors: botTypes.errors,
+			botTypes: botTypes.definitions,
+			credentialProfiles: this.fleet.credentialProfiles.map(profile => ({
+				...profile,
+				// Secret material is never part of renderer-visible fleet state.
+				secrets: undefined,
+			})),
+			deployments: this.fleet.deployments,
+			policies: this.fleet.policies,
+			servers,
+			version: this.fleet.version,
+		};
 	}
 
 	loadSettings() {
@@ -2017,6 +2056,7 @@ class HachiManager {
 
 		return {
 			appName: "HachiGen",
+			fleet: this.getFleetState(),
 			hachiGenVersion: this.getHachiGenVersion(),
 			hachiVersion: scan?.packageVersion || "unknown",
 			installPath: this.getInstallPath(),

@@ -4,6 +4,11 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+### Added
+
+- Added the rollback-safe fleet registry foundation for multiple servers and bot deployments, with automatic migration of the current Hachi target.
+- Added a native Hachi bot definition and validated external JSON bot definitions for optional bots such as Paldeck; Hachi remains the only bundled bot type.
+
 ### Changed
 
 - Expanded diagnostics bundle export to include redacted Hachi runtime logs and PM2 snapshots alongside HachiGen logs.

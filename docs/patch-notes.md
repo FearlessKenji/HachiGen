@@ -4,6 +4,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Began the multi-server, multi-bot foundation while keeping existing Hachi management intact. Hachi remains the only built-in bot, and optional bots will be supplied through external definitions.
 - Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
 - Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 
