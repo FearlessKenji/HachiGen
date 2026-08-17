@@ -1925,7 +1925,6 @@ class HachiManager {
 		this.settingsPath = path.join(this.userDataPath, "settings.json");
 		this.fleetPath = path.join(this.userDataPath, "fleet.json");
 		this.botDefinitionsDir = path.join(this.userDataPath, "bot-definitions");
-		this.credentialVaultPath = path.join(this.userDataPath, "credential-vault.json");
 		this.protectSecret = protectSecret || null;
 		this.unprotectSecret = unprotectSecret || null;
 
@@ -2067,26 +2066,12 @@ class HachiManager {
 		if (!command) {
 			throw new Error(`${context.definition.displayName} does not define ${commandName}.`);
 		}
-		const credentialEnv = options.injectCredentials ? this.readCredentialForDeployment(deploymentId) : null;
-		if (credentialEnv && context.server.connection.type === "ssh") {
-			const script = [
-				"const fs=require('node:fs'),cp=require('node:child_process');",
-				"const p=JSON.parse(fs.readFileSync(0,'utf8'));",
-				"const r=cp.spawnSync(p.command,p.args,{env:{...process.env,...p.env},encoding:'utf8',shell:false});",
-				"process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status||0);",
-			].join("");
-			return this.runFleetRemoteCommand(
-				context.server,
-				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
-				{ input: JSON.stringify({ command: command.executable, args: command.args, env: credentialEnv }), timeoutMs: options.timeoutMs || 600000 },
-			);
-		}
 		const remoteCommand = [command.executable, ...command.args].map(quotePosix).join(" ");
 		return this.runFleetDeploymentCommand(
 			context,
 			{ command: command.executable, args: command.args },
 			remoteCommand,
-			{ timeoutMs: options.timeoutMs || 600000, env: credentialEnv ? { ...process.env, ...credentialEnv } : undefined },
+			{ timeoutMs: options.timeoutMs || 600000 },
 		);
 	}
 
@@ -2189,12 +2174,12 @@ class HachiManager {
 		await this.assertCredentialLeaseAvailable(deploymentId);
 		if (context.definition.id === "hachi") {
 			for (const commandName of ["deleteCommands", "deployGlobalCommands", "deployGuildCommands"]) {
-				await this.runFleetDefinitionCommand(deploymentId, commandName, { injectCredentials: true, timeoutMs: 300000 });
+				await this.runFleetDefinitionCommand(deploymentId, commandName, { timeoutMs: 300000 });
 			}
 		} else {
-			await this.runFleetDefinitionCommand(deploymentId, "deployCommands", { injectCredentials: true, timeoutMs: 300000 });
+			await this.runFleetDefinitionCommand(deploymentId, "deployCommands", { timeoutMs: 300000 });
 		}
-		this.log(`Discord commands deployed for ${context.deployment.name}.`, { area: "fleet-discord", deploymentId, credentialProfileId: context.deployment.credentialProfileId });
+		this.log(`Discord commands deployed for ${context.deployment.name}.`, { area: "fleet-discord", deploymentId });
 		return { deploymentId, ok: true, message: "Discord commands deployed." };
 	}
 
@@ -2297,8 +2282,6 @@ class HachiManager {
 		}
 		const status = await this.getFleetDeploymentStatus(deploymentId);
 		const ecosystem = context.definition.runtime.ecosystemFile;
-		const hasCredentialProfile = Boolean(context.deployment.credentialProfileId);
-		const credentialEnv = hasCredentialProfile && action !== "stop" ? this.readCredentialForDeployment(deploymentId) : null;
 		let localArgs;
 		let remoteCommand;
 		if (action === "start" && !status.registered) {
@@ -2309,36 +2292,9 @@ class HachiManager {
 			remoteCommand = `pm2 ${action === "start" ? "restart" : action} ${quotePosix(context.deployment.pm2Name)}`;
 		}
 		this.log(`${action[0].toUpperCase()}${action.slice(1)}ing fleet deployment ${context.deployment.name}.`, { area: "fleet-runtime", action, deploymentId, serverId: context.server.id });
-		if (credentialEnv && context.server.connection.type === "ssh") {
-			// Secrets travel over SSH stdin and never appear in the remote command
-			// line, shell history, repository, or a plaintext environment file.
-			const script = [
-				"const fs=require('node:fs');",
-				"const cp=require('node:child_process');",
-				"const p=JSON.parse(fs.readFileSync(0,'utf8'));",
-				"const r=cp.spawnSync('pm2',p.args,{env:{...process.env,...p.env},encoding:'utf8',shell:false});",
-				"process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status||0);",
-			].join("");
-			await this.runFleetRemoteCommand(
-				context.server,
-				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
-				{ input: JSON.stringify({ args: [...localArgs, "--update-env"], env: credentialEnv }), timeoutMs: 120000 },
-			);
-		} else {
-			await this.runFleetDeploymentCommand(
-				context,
-				{ command: "pm2", args: credentialEnv ? [...localArgs, "--update-env"] : localArgs },
-				remoteCommand,
-				credentialEnv ? { env: { ...process.env, ...credentialEnv } } : {},
-			);
-		}
+		await this.runFleetDeploymentCommand(context, { command: "pm2", args: localArgs }, remoteCommand);
 		if (action !== "stop") {
-			if (credentialEnv) {
-				this.log(`Skipped PM2 save for ${context.deployment.name} so injected credentials are not persisted in the PM2 dump.`, {
-					area: "credential-vault",
-					deploymentId,
-				});
-			} else if (context.server.connection.type === "ssh") {
+			if (context.server.connection.type === "ssh") {
 				await this.runFleetRemoteCommand(context.server, "pm2 save", { timeoutMs: 120000 });
 			} else {
 				await run("pm2", ["save"], { timeoutMs: 120000, onLog: entry => this.logShell(entry) });
@@ -2574,89 +2530,6 @@ class HachiManager {
 		}
 	}
 
-	loadCredentialVault() {
-		const vault = readJson(this.credentialVaultPath, { version: 1, records: {} });
-		return vault?.version === 1 && vault.records && typeof vault.records === "object" ? vault : { version: 1, records: {} };
-	}
-
-	saveCredentialVault(vault) {
-		ensureDir(path.dirname(this.credentialVaultPath));
-		const temporaryPath = `${this.credentialVaultPath}.${process.pid}.tmp`;
-		fs.writeFileSync(temporaryPath, `${JSON.stringify(vault, null, "\t")}\n`, { encoding: "utf8", mode: 0o600 });
-		fs.renameSync(temporaryPath, this.credentialVaultPath);
-	}
-
-	addCredentialProfile(values) {
-		if (!this.protectSecret) {
-			throw new Error("Operating-system credential encryption is unavailable.");
-		}
-		const name = String(values?.name || "").trim();
-		const token = String(values?.token || "").trim();
-		const clientId = String(values?.clientId || "").trim();
-		const environment = ["development", "test", "staging", "production"].includes(values?.environment) ? values.environment : "test";
-		if (!name || name.length > 80 || !token || !clientId) {
-			throw new Error("Credential name, Discord token, and application ID are required.");
-		}
-		const id = `credential-${crypto.randomUUID()}`;
-		const vault = this.loadCredentialVault();
-		vault.records[id] = {
-			token: this.protectSecret(token),
-			clientSecret: values.clientSecret ? this.protectSecret(String(values.clientSecret)) : "",
-			publicKey: values.publicKey ? this.protectSecret(String(values.publicKey)) : "",
-		};
-		this.saveCredentialVault(vault);
-		const profile = {
-			id,
-			name,
-			clientId,
-			environment,
-			guildIds: normalizeConfigIdList(values.guildIds),
-			allowConcurrent: Boolean(values.allowConcurrent),
-			tokenFingerprint: crypto.createHash("sha256").update(token).digest("hex").slice(0, 12),
-			createdAt: new Date().toISOString(),
-			lastVerifiedAt: null,
-		};
-		this.fleet.credentialProfiles.push(profile);
-		this.saveFleetRegistry();
-		this.log(`Credential profile added: ${profile.name}.`, { area: "credential-vault", credentialProfileId: id });
-		return this.getFleetState();
-	}
-
-	removeCredentialProfile(profileId) {
-		const profile = this.fleet.credentialProfiles.find(item => item.id === profileId);
-		if (!profile) {
-			throw new Error("Credential profile was not found.");
-		}
-		if (this.fleet.deployments.some(item => item.credentialProfileId === profileId)) {
-			throw new Error("Unassign this credential profile from every deployment first.");
-		}
-		const vault = this.loadCredentialVault();
-		delete vault.records[profileId];
-		this.saveCredentialVault(vault);
-		this.fleet.credentialProfiles = this.fleet.credentialProfiles.filter(item => item.id !== profileId);
-		this.saveFleetRegistry();
-		this.log(`Credential profile removed: ${profile.name}.`, { area: "credential-vault", credentialProfileId: profileId });
-		return this.getFleetState();
-	}
-
-	assignCredentialProfile(deploymentId, profileId) {
-		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
-		if (!deployment) {
-			throw new Error("Deployment was not found.");
-		}
-		if (profileId && !this.fleet.credentialProfiles.some(item => item.id === profileId)) {
-			throw new Error("Credential profile was not found.");
-		}
-		deployment.credentialProfileId = profileId || null;
-		this.saveFleetRegistry();
-		this.log(`Credential assignment changed for ${deployment.name}.`, {
-			area: "credential-vault",
-			deploymentId,
-			credentialProfileId: profileId || null,
-		});
-		return this.getFleetState();
-	}
-
 	setFleetDeploymentPolicies(deploymentId, values = {}) {
 		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
 		if (!deployment) {
@@ -2789,41 +2662,61 @@ class HachiManager {
 		return { deploymentId, deleted, ok: true };
 	}
 
-	readCredentialForDeployment(deploymentId) {
-		if (!this.unprotectSecret) {
-			throw new Error("Operating-system credential decryption is unavailable.");
-		}
-		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
-		const profile = this.fleet.credentialProfiles.find(item => item.id === deployment?.credentialProfileId);
-		if (!deployment || !profile) {
-			throw new Error("Deployment has no credential profile assigned.");
-		}
-		const record = this.loadCredentialVault().records[profile.id];
-		if (!record?.token) {
-			throw new Error("Credential vault record is missing.");
-		}
-		return {
-			TOKEN: this.unprotectSecret(record.token),
-			clientId: profile.clientId,
-			clientSecret: record.clientSecret ? this.unprotectSecret(record.clientSecret) : "",
-			publicKey: record.publicKey ? this.unprotectSecret(record.publicKey) : "",
-			guildIds: profile.guildIds,
-		};
-	}
-
 	async assertCredentialLeaseAvailable(deploymentId) {
 		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
-		const profile = this.fleet.credentialProfiles.find(item => item.id === deployment?.credentialProfileId);
-		if (!profile || profile.allowConcurrent) {
+		if (!deployment?.credentialFingerprint || deployment.allowConcurrentCredentials) {
 			return;
 		}
-		const conflicts = this.fleet.deployments.filter(item => item.id !== deploymentId && item.credentialProfileId === profile.id);
+		const conflicts = this.fleet.deployments.filter(item =>
+			item.id !== deploymentId && item.credentialFingerprint === deployment.credentialFingerprint,
+		);
 		for (const conflict of conflicts) {
 			const status = await this.getFleetDeploymentStatus(conflict.id);
 			if (status.status === "online" || status.status === "launching") {
-				throw new Error(`${profile.name} is already active on ${conflict.name}. Stop that deployment before starting this one.`);
+				throw new Error(`The same Discord identity is already active on ${conflict.name}. Stop that deployment before starting this one.`);
 			}
 		}
+	}
+
+	async saveFleetDeploymentCredentials(deploymentId, values) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		const token = String(values?.token || "").trim();
+		const clientId = String(values?.clientId || "").trim();
+		if (!token || !clientId) {
+			throw new Error("Discord token and application ID are required.");
+		}
+		const payload = {
+			token,
+			clientId,
+			clientSecret: String(values.clientSecret || ""),
+			publicKey: String(values.publicKey || ""),
+			guildIds: normalizeConfigIdList(values.guildIds),
+		};
+		if (context.definition.id === "hachi" && context.deployment.installPath === this.getActiveInstallIdentifier()) {
+			await this.writeConfiguration({ TOKEN: token, clientId });
+		} else {
+			const command = context.definition.commands?.credentialsWrite;
+			if (!command) {
+				throw new Error("External bot definition must declare credentialsWrite to encrypt credentials in its deployment folder.");
+			}
+			const remoteCommand = [command.executable, ...command.args].map(quotePosix).join(" ");
+			await this.runFleetDeploymentCommand(
+				context,
+				{ command: command.executable, args: command.args },
+				remoteCommand,
+				{ input: JSON.stringify(payload), timeoutMs: 120000 },
+			);
+		}
+		context.deployment.credentialFingerprint = crypto.createHash("sha256").update(token).digest("hex").slice(0, 24);
+		context.deployment.credentialsConfigured = true;
+		context.deployment.applicationId = clientId;
+		context.deployment.allowConcurrentCredentials = Boolean(values.allowConcurrent);
+		this.saveFleetRegistry();
+		this.log(`Deployment credentials updated in ${context.deployment.name}'s own storage.`, {
+			area: "deployment-credentials",
+			deploymentId,
+		});
+		return this.getFleetState();
 	}
 
 	getFleetState() {
@@ -2837,11 +2730,6 @@ class HachiManager {
 			activeDeploymentId: this.fleet.activeDeploymentId,
 			botDefinitionErrors: botTypes.errors,
 			botTypes: botTypes.definitions,
-			credentialProfiles: this.fleet.credentialProfiles.map(profile => ({
-				...profile,
-				// Secret material is never part of renderer-visible fleet state.
-				secrets: undefined,
-			})),
 			deployments: this.fleet.deployments,
 			policies: this.fleet.policies,
 			servers,

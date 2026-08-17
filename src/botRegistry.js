@@ -158,7 +158,8 @@ function createLegacyFleet(settings, defaultInstallPath) {
 		installPath,
 		pm2Name: activeServer.id === LOCAL_SERVER_ID ? "Hachi" : (remote.pm2Name || "Hachi"),
 		environment: "production",
-		credentialProfileId: null,
+		credentialFingerprint: null,
+		credentialsConfigured: false,
 		policies: {},
 	};
 	return {
@@ -166,7 +167,6 @@ function createLegacyFleet(settings, defaultInstallPath) {
 		activeDeploymentId: deployment.id,
 		servers,
 		deployments: [deployment],
-		credentialProfiles: [],
 		policies: { backup: [], security: [], logs: [] },
 	};
 }
@@ -176,10 +176,18 @@ function normalizeFleetRegistry(saved, settings, defaultInstallPath) {
 		return createLegacyFleet(settings, defaultInstallPath);
 	}
 	const deploymentIds = new Set(saved.deployments.map(item => item.id));
+	// Credential profiles were removed before release. Strip their metadata so
+	// each deployment folder remains the only credential source of truth.
+	const registry = { ...saved };
+	delete registry.credentialProfiles;
 	return {
-		...saved,
+		...registry,
 		activeDeploymentId: deploymentIds.has(saved.activeDeploymentId) ? saved.activeDeploymentId : (saved.deployments[0]?.id || null),
-		credentialProfiles: Array.isArray(saved.credentialProfiles) ? saved.credentialProfiles : [],
+		deployments: saved.deployments.map(item => {
+			const deployment = { ...item };
+			delete deployment.credentialProfileId;
+			return deployment;
+		}),
 		policies: saved.policies && typeof saved.policies === "object" ? saved.policies : { backup: [], security: [], logs: [] },
 	};
 }
@@ -254,7 +262,8 @@ function normalizeDeployment(input, fleet, definitions) {
 		installPath,
 		pm2Name,
 		environment: ["development", "test", "staging", "production"].includes(input.environment) ? input.environment : "production",
-		credentialProfileId: input.credentialProfileId || null,
+		credentialFingerprint: input.credentialFingerprint || null,
+		credentialsConfigured: Boolean(input.credentialsConfigured),
 		policies: input.policies && typeof input.policies === "object" ? input.policies : {},
 	};
 }

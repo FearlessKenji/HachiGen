@@ -900,6 +900,11 @@ async function validateFleetCredentialAndBackupSecurity() {
 	const userDataPath = path.join(tempDir, "userData");
 	const deploymentPath = path.join(tempDir, "optional-bot");
 	fs.mkdirSync(path.join(deploymentPath, "data"), { recursive: true });
+	fs.writeFileSync(path.join(deploymentPath, "credentials-write.js"), [
+		"const fs=require('node:fs'),crypto=require('node:crypto');",
+		"const p=JSON.parse(fs.readFileSync(0,'utf8'));",
+		"fs.writeFileSync('credentials.enc',JSON.stringify({clientId:p.clientId,tokenHash:crypto.createHash('sha256').update(p.token).digest('hex')}));",
+	].join(""));
 	const originalDatabase = Buffer.from("SQLite format 3\0smoke database contents");
 	fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), originalDatabase);
 	try {
@@ -916,6 +921,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 			runtime: { ecosystemFile: "ecosystem.config.js", pm2Name: "OptionalBot" },
 			paths: { database: "data/bot.sqlite" },
 			capabilities: { backups: true, databaseEncryption: true },
+			commands: { credentialsWrite: { executable: "node", args: ["credentials-write.js"] } },
 		}));
 		manager.addFleetDeployment({
 			name: "Optional Bot Test",
@@ -925,11 +931,9 @@ async function validateFleetCredentialAndBackupSecurity() {
 			environment: "test",
 		});
 		const deployment = manager.fleet.deployments.find(item => item.botTypeId === "optional-bot");
-		manager.addCredentialProfile({ name: "Shared test", token: "very-secret-token", clientId: "123", environment: "test" });
-		const profile = manager.fleet.credentialProfiles[0];
-		manager.assignCredentialProfile(deployment.id, profile.id);
-		const vaultText = fs.readFileSync(path.join(userDataPath, "credential-vault.json"), "utf8");
-		assert(!vaultText.includes("very-secret-token"), "Credential vault persisted a plaintext Discord token.");
+		await manager.saveFleetDeploymentCredentials(deployment.id, { token: "very-secret-token", clientId: "123" });
+		assert(!fs.existsSync(path.join(userDataPath, "credential-vault.json")), "HachiGen created a secondary credential vault.");
+		assert(!fs.readFileSync(path.join(deploymentPath, "credentials.enc"), "utf8").includes("very-secret-token"), "Bot credential adapter persisted a plaintext token.");
 		assert(!JSON.stringify(manager.getFleetState()).includes("very-secret-token"), "Renderer fleet state exposed a Discord token.");
 		const audit = await manager.auditFleetDeploymentSecurity(deployment.id);
 		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");

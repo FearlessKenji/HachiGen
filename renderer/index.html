@@ -677,36 +677,21 @@
 
 				<section class="view" data-view-panel="credentials">
 					<div class="panel split-panel">
-						<div><h2>Credential Vault</h2><div class="panel-meta">OS-encrypted Discord identities shared safely between deployments</div></div>
+						<div><h2>Deployment Credentials</h2><div class="panel-meta">Credentials are encrypted and stored only inside the selected bot's folder</div></div>
 						<button class="button info" type="button" data-action="refresh-fleet">Refresh</button>
 					</div>
-					<div class="fleet-grid">
-						<div class="panel">
-							<h2>Profiles</h2>
-							<div class="fleet-list" id="credentialProfileList">No credential profiles.</div>
-						</div>
-						<div class="panel">
-							<h2>Add encrypted profile</h2>
-							<form class="fleet-form" id="credentialProfileForm">
-								<label>Name<input name="name" required maxlength="80" placeholder="Shared test bot"></label>
-								<label>Environment<select name="environment"><option value="test">Test</option><option value="development">Development</option><option value="staging">Staging</option><option value="production">Production</option></select></label>
+					<div class="panel">
+						<form class="fleet-form" id="deploymentCredentialForm">
+							<label>Deployment<select name="deploymentId" id="credentialDeploymentSelect"></select></label>
 								<label>Application ID<input name="clientId" required spellcheck="false"></label>
 								<label>Bot token<input name="token" type="password" required autocomplete="new-password"></label>
 								<label>Public key<input name="publicKey" type="password" autocomplete="new-password"></label>
 								<label>Client secret<input name="clientSecret" type="password" autocomplete="new-password"></label>
 								<label>Test guild IDs<textarea name="guildIds" rows="3"></textarea></label>
 								<label><span>Advanced</span><span><input name="allowConcurrent" type="checkbox"> Allow concurrent use</span></label>
-								<button class="button primary" type="button" data-action="add-credential-profile">Encrypt and Save</button>
-							</form>
-						</div>
-					</div>
-					<div class="panel">
-						<h2>Assignments</h2>
-						<div class="fleet-form" id="credentialAssignmentForm">
-							<label>Deployment<select id="credentialDeploymentSelect"></select></label>
-							<label>Credential profile<select id="credentialProfileSelect"></select></label>
-							<button class="button primary" type="button" data-action="assign-credential-profile">Save Assignment</button>
-						</div>
+							<button class="button primary" type="button" data-action="save-deployment-credentials">Encrypt in Bot Folder</button>
+						</form>
+						<div class="update-message">HachiGen does not retain a token copy in its settings or AppData. External bots must provide a credentialsWrite adapter that encrypts the submitted values within their own deployment folder.</div>
 					</div>
 				</section>
 

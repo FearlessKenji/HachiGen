@@ -3215,17 +3215,6 @@ function renderFleet(nextFleet) {
 	replaceSelectOptions("#fleetBotTypeSelect", fleetState.botTypes, item => `${item.displayName}${item.source === "native" ? " (native)" : " (external)"}`);
 	replaceSelectOptions("#credentialDeploymentSelect", fleetState.deployments, item => item.name);
 	replaceSelectOptions("#securityDeploymentSelect", fleetState.deployments, item => item.name);
-	const credentialOptions = [{ id: "", name: "No credential profile" }, ...fleetState.credentialProfiles];
-	replaceSelectOptions("#credentialProfileSelect", credentialOptions, item => item.name);
-	const profileList = $("#credentialProfileList");
-	profileList?.replaceChildren(...(fleetState.credentialProfiles.length ? fleetState.credentialProfiles.map(profile => {
-		const assigned = fleetState.deployments.filter(item => item.credentialProfileId === profile.id).map(item => item.name);
-		return fleetEntry(
-			profile.name,
-			`${profile.environment} · Application ${profile.clientId} · fingerprint ${profile.tokenFingerprint} · ${assigned.length ? `Assigned: ${assigned.join(", ")}` : "Unassigned"}`,
-			[{ action: "remove-credential-profile", id: profile.id, label: "Remove" }],
-		);
-	}) : [fleetEntry("No profiles", "Add an encrypted Discord credential profile to begin.")]));
 	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
 }
 
@@ -3284,7 +3273,7 @@ function renderState(nextState) {
 	const fleetDeploymentCount = state.fleet?.deployments?.length || 0;
 	const fleetDefinitionErrorCount = state.fleet?.botDefinitionErrors?.length || 0;
 	setText("#fleetStatus", fleetDefinitionErrorCount ? "Needs attention" : `${fleetDeploymentCount} deployment${fleetDeploymentCount === 1 ? "" : "s"}`);
-	setText("#fleetDetail", `${state.fleet?.servers?.length || 0} server(s) · ${state.fleet?.credentialProfiles?.length || 0} credential profile(s)`);
+	setText("#fleetDetail", `${state.fleet?.servers?.length || 0} server(s) · deployment-local credentials`);
 	setDot("#fleetDot", fleetDefinitionErrorCount ? "warn" : "good");
 
 	// Dashboard status cards.
@@ -3754,42 +3743,15 @@ function handleAction(event) {
 		return;
 	}
 
-	if (action === "add-credential-profile") {
-		const form = $("#credentialProfileForm");
+	if (action === "save-deployment-credentials") {
+		const form = $("#deploymentCredentialForm");
 		const values = Object.fromEntries(new window.FormData(form));
 		values.allowConcurrent = Boolean(form.elements.allowConcurrent.checked);
-		runAction("Save credential profile", async () => {
-			const fleet = await api.addCredentialProfile(values);
+		runAction("Save deployment credentials", async () => {
+			const fleet = await api.saveFleetDeploymentCredentials(values.deploymentId, values);
 			renderFleet(fleet);
 			form.reset();
-			return { message: "Credential profile encrypted and saved." };
-		});
-		return;
-	}
-
-	if (action === "assign-credential-profile") {
-		runAction("Assign credential profile", async () => {
-			const fleet = await api.assignCredentialProfile($("#credentialDeploymentSelect").value, $("#credentialProfileSelect").value);
-			renderFleet(fleet);
-			return { message: "Credential assignment saved." };
-		});
-		return;
-	}
-
-	if (action === "remove-credential-profile") {
-		showConfirmModal({
-			title: "Remove credential profile?",
-			meta: "Encrypted credential deletion",
-			summary: "The encrypted vault record will be deleted. Assigned profiles must be unassigned first.",
-			confirmText: "Remove",
-			variant: "danger",
-		}).then(confirmed => {
-			if (!confirmed) return;
-			runAction("Remove credential profile", async () => {
-				const fleet = await api.removeCredentialProfile(button.dataset.itemId);
-				renderFleet(fleet);
-				return { message: "Credential profile removed." };
-			});
+			return { message: "Credentials encrypted in the bot folder." };
 		});
 		return;
 	}

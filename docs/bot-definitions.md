@@ -33,6 +33,7 @@ Hachi is the only bot type built into HachiGen. Paldeck and every other optional
     "install": { "executable": "npm", "args": ["install"] },
     "validate": { "executable": "npm", "args": ["run", "check"] },
     "deployCommands": { "executable": "npm", "args": ["run", "deploy"] },
+    "credentialsWrite": { "executable": "npm", "args": ["run", "credentials:write"] },
     "databaseEncrypt": { "executable": "npm", "args": ["run", "database:encrypt"] },
     "databaseVerify": { "executable": "npm", "args": ["run", "database:verify"] }
   }
@@ -49,9 +50,11 @@ An encrypted-looking file is reported as `encrypted-unverified` until `databaseV
 
 ## Credentials
 
-Credential profiles are encrypted through Electron's operating-system credential protection. When a profile is assigned, HachiGen injects it into the process environment without creating a plaintext `.env` file. Remote credentials travel through SSH standard input rather than command arguments. HachiGen does not run `pm2 save` for an injected profile because the PM2 dump could persist its environment.
+Credentials have exactly one source of truth: the deployment's own folder. HachiGen does not keep a credential vault or retain token ciphertext in AppData.
 
-Shared profiles are exclusive by default. Starting or restarting one deployment is blocked while another known deployment using the same profile is online. Enable concurrent use only for an intentional clustered or sharded bot.
+For external bots, `credentialsWrite` receives a JSON object through standard input containing `token`, `clientId`, `clientSecret`, `publicKey`, and `guildIds`. The bot's adapter must encrypt and save those values using its normal local credential format. It must not print the submitted values. Hachi uses its native encrypted secret-storage implementation.
+
+HachiGen retains only a one-way token fingerprint and application ID as non-secret deployment metadata. The fingerprint allows HachiGen to block two known deployments using the same Discord identity from running concurrently unless the user explicitly permits it.
 
 ## Backup format
 

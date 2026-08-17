@@ -906,9 +906,7 @@ function registerIpc() {
 	ipcMain.handle("manager:control-fleet-deployment", (_event, deploymentId, action) => manager.controlFleetDeployment(deploymentId, action));
 	ipcMain.handle("manager:get-fleet-deployment-logs", (_event, deploymentId, lines) => manager.getFleetDeploymentLogs(deploymentId, lines));
 	ipcMain.handle("manager:check-fleet-deployment-health", (_event, deploymentId) => manager.checkFleetDeploymentHealth(deploymentId));
-	ipcMain.handle("manager:add-credential-profile", (_event, values) => manager.addCredentialProfile(values));
-	ipcMain.handle("manager:remove-credential-profile", (_event, profileId) => manager.removeCredentialProfile(profileId));
-	ipcMain.handle("manager:assign-credential-profile", (_event, deploymentId, profileId) => manager.assignCredentialProfile(deploymentId, profileId));
+	ipcMain.handle("manager:save-fleet-deployment-credentials", (_event, deploymentId, values) => manager.saveFleetDeploymentCredentials(deploymentId, values));
 	ipcMain.handle("manager:run-fleet-definition-command", (_event, deploymentId, commandName) => manager.runFleetDefinitionCommand(deploymentId, commandName));
 	ipcMain.handle("manager:audit-fleet-deployment-security", (_event, deploymentId) => manager.auditFleetDeploymentSecurity(deploymentId));
 	ipcMain.handle("manager:backup-fleet-database", (_event, deploymentId) => manager.backupFleetDatabase(deploymentId));
@@ -1123,13 +1121,13 @@ if (!singleInstanceLock) {
 			sendEvent,
 			protectSecret: value => {
 				if (!safeStorage.isEncryptionAvailable()) {
-					throw new Error("Operating-system credential encryption is unavailable.");
+					throw new Error("Operating-system backup-key encryption is unavailable.");
 				}
 				return safeStorage.encryptString(String(value)).toString("base64");
 			},
 			unprotectSecret: value => {
 				if (!safeStorage.isEncryptionAvailable()) {
-					throw new Error("Operating-system credential encryption is unavailable.");
+					throw new Error("Operating-system backup-key decryption is unavailable.");
 				}
 				return safeStorage.decryptString(Buffer.from(String(value), "base64"));
 			},
