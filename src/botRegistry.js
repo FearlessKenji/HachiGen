@@ -5,6 +5,10 @@ const crypto = require("node:crypto");
 const REGISTRY_VERSION = 1;
 const LOCAL_SERVER_ID = "local";
 const NATIVE_HACHI_TYPE_ID = "hachi";
+const EXTERNAL_CAPABILITY_NAMES = new Set([
+	"backups", "configuration", "databaseEncryption", "databaseMaintenance",
+	"discordCommands", "gitUpdates", "logs", "pm2", "secretEncryption",
+]);
 
 // Hachi is intentionally the only definition bundled with HachiGen. Other bots
 // are loaded from user-owned JSON definitions and cannot replace native Hachi.
@@ -45,6 +49,13 @@ function stableId(prefix, value) {
 	return `${prefix}-${digest}`;
 }
 
+function definitionFingerprint(definition) {
+	const copy = { ...definition };
+	delete copy.sourcePath;
+	delete copy.fingerprint;
+	return crypto.createHash("sha256").update(JSON.stringify(copy)).digest("hex");
+}
+
 function assertSafeRelativePath(value, field) {
 	const normalized = String(value || "").replace(/\\/gu, "/").replace(/^\.\//u, "");
 	if (!normalized || path.posix.isAbsolute(normalized) || normalized.split("/").some(part => !part || part === "." || part === "..")) {
@@ -69,6 +80,10 @@ function validateExternalBotDefinition(input, sourcePath = "external definition"
 		throw new Error(`${sourcePath} has an invalid display name.`);
 	}
 	const runtime = input.runtime && typeof input.runtime === "object" ? input.runtime : {};
+	const credentialsMode = String(input.credentials?.mode || "external").trim();
+	if (!["external", "adapter"].includes(credentialsMode)) {
+		throw new Error(`${sourcePath} credentials.mode must be external or adapter.`);
+	}
 	const definition = {
 		id,
 		displayName,
@@ -83,9 +98,16 @@ function validateExternalBotDefinition(input, sourcePath = "external definition"
 			pm2Name: String(runtime.pm2Name || displayName).trim(),
 		},
 		paths: {},
-		capabilities: Object.fromEntries(Object.entries(input.capabilities || {}).map(([key, enabled]) => [key, enabled === true])),
+		capabilities: {},
 		commands: {},
+		credentials: { mode: credentialsMode },
 	};
+	for (const [key, enabled] of Object.entries(input.capabilities || {})) {
+		if (!EXTERNAL_CAPABILITY_NAMES.has(key)) {
+			throw new Error(`${sourcePath} requests unsupported capability ${key}.`);
+		}
+		definition.capabilities[key] = enabled === true;
+	}
 	for (const [name, command] of Object.entries(input.commands || {})) {
 		if (!command || typeof command !== "object" || Array.isArray(command)) {
 			throw new Error(`${sourcePath} command ${name} must be an object.`);
@@ -105,6 +127,13 @@ function validateExternalBotDefinition(input, sourcePath = "external definition"
 			definition.paths[key] = assertSafeRelativePath(value, `paths.${key}`);
 		}
 	}
+	if (credentialsMode === "adapter" && !definition.commands.credentialsWrite) {
+		throw new Error(`${sourcePath} uses adapter credentials but does not define credentialsWrite.`);
+	}
+	if (credentialsMode === "adapter" && !definition.capabilities.secretEncryption) {
+		throw new Error(`${sourcePath} uses adapter credentials but does not request secretEncryption.`);
+	}
+	definition.fingerprint = definitionFingerprint(definition);
 	return definition;
 }
 
@@ -254,6 +283,7 @@ function normalizeDeployment(input, fleet, definitions) {
 	if (!/^[a-z0-9][a-z0-9-]{1,63}$/u.test(id) || fleet.deployments.some(item => item.id === id)) {
 		throw new Error("Deployment id is invalid or already in use.");
 	}
+	const definition = definitions.find(item => item.id === botTypeId);
 	return {
 		id,
 		name,
@@ -264,6 +294,8 @@ function normalizeDeployment(input, fleet, definitions) {
 		environment: ["development", "test", "staging", "production"].includes(input.environment) ? input.environment : "production",
 		credentialFingerprint: input.credentialFingerprint || null,
 		credentialsConfigured: Boolean(input.credentialsConfigured),
+		approvedCapabilities: Object.fromEntries(Object.entries(definition?.capabilities || {}).filter(([, enabled]) => enabled)),
+		definitionFingerprint: definition?.fingerprint || "native-hachi",
 		policies: input.policies && typeof input.policies === "object" ? input.policies : {},
 	};
 }
@@ -280,6 +312,7 @@ module.exports = {
 	NATIVE_HACHI_DEFINITION,
 	REGISTRY_VERSION,
 	createLegacyFleet,
+	definitionFingerprint,
 	loadBotDefinitions,
 	normalizeDeployment,
 	normalizeFleetRegistry,

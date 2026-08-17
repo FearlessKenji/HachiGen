@@ -689,9 +689,9 @@
 								<label>Client secret<input name="clientSecret" type="password" autocomplete="new-password"></label>
 								<label>Test guild IDs<textarea name="guildIds" rows="3"></textarea></label>
 								<label><span>Advanced</span><span><input name="allowConcurrent" type="checkbox"> Allow concurrent use</span></label>
-							<button class="button primary" type="button" data-action="save-deployment-credentials">Encrypt in Bot Folder</button>
+							<button class="button primary" type="button" data-action="save-deployment-credentials" id="saveDeploymentCredentialsButton">Encrypt in Bot Folder</button>
 						</form>
-						<div class="update-message">HachiGen does not retain a token copy in its settings or AppData. External bots must provide a credentialsWrite adapter that encrypts the submitted values within their own deployment folder.</div>
+						<div class="update-message" id="deploymentCredentialsMode">Select a deployment to review its credential-management mode.</div>
 					</div>
 				</section>
 
@@ -703,8 +703,8 @@
 					<div class="panel">
 						<div class="button-row wrap">
 							<button class="button info" type="button" data-action="audit-fleet-security">Run Security Audit</button>
-							<button class="button secondary" type="button" data-action="backup-fleet-database">Encrypted Backup</button>
-							<button class="button primary" type="button" data-action="encrypt-fleet-database">Encrypt Database</button>
+							<button class="button secondary" type="button" data-action="backup-fleet-database" id="fleetBackupButton">Encrypted Backup</button>
+							<button class="button primary" type="button" data-action="encrypt-fleet-database" id="fleetEncryptButton">Encrypt Database</button>
 						</div>
 						<pre class="output compact-output" id="fleetSecurityOutput">Select a deployment and run a security audit.</pre>
 					</div>
@@ -712,7 +712,7 @@
 						<h2>Restore encrypted backup</h2>
 						<div class="fleet-form">
 							<label>Backup ID<input id="fleetBackupIdInput" spellcheck="false" placeholder="backup-..."></label>
-							<button class="button secondary" type="button" data-action="restore-fleet-database">Restore</button>
+							<button class="button secondary" type="button" data-action="restore-fleet-database" id="fleetRestoreButton">Restore</button>
 						</div>
 					</div>
 					<div class="panel">
@@ -723,8 +723,8 @@
 							<label>Log retention days<input id="fleetLogRetentionInput" type="number" min="1" max="3650" value="30"></label>
 							<button class="button primary" type="button" data-action="save-fleet-policies">Save Policies</button>
 							<button class="button secondary" type="button" data-action="list-fleet-backups">List Backups</button>
-							<button class="button secondary" type="button" data-action="prune-fleet-backups">Apply Backup Retention</button>
-							<button class="button secondary" type="button" data-action="prune-fleet-logs">Apply Log Retention</button>
+							<button class="button secondary" type="button" data-action="prune-fleet-backups" id="fleetPruneBackupsButton">Apply Backup Retention</button>
+							<button class="button secondary" type="button" data-action="prune-fleet-logs" id="fleetPruneLogsButton">Apply Log Retention</button>
 						</div>
 					</div>
 				</section>

@@ -12,10 +12,12 @@ Notable changes to HachiGen are documented here.
 - Added deployment-local credential fingerprints that block multiple ordinary deployments from starting the same Discord test identity concurrently without storing another token copy.
 - Added generic security audits, AES-256-GCM fleet database backups/restores, automatic backup and retention policies, log retention, and adapter-driven database encryption with rollback.
 - Added transactional fleet Git updates, external command adapters, Discord command deployment, and external bot-definition installation/removal.
+- Added preservation-first external-bot onboarding with a permission preview, immutable capability approval snapshots, definition fingerprints, and deployment repository origin/branch/ecosystem verification.
 
 ### Changed
 
 - Changed credential management so each bot folder is the sole credential store. HachiGen passes credentials to the bot's encrypted storage adapter over stdin and retains only non-secret identity metadata.
+- Changed external credentials to remain unmanaged by default. HachiGen can write them only when a reviewed definition explicitly opts into adapter mode and the `secretEncryption` capability.
 - Expanded diagnostics bundle export to include redacted Hachi runtime logs and PM2 snapshots alongside HachiGen logs.
 - Updated vulnerable transitive build dependencies to patched releases, clearing npm audit findings for `brace-expansion`, `fast-uri`, `tar`, and `undici`.
 

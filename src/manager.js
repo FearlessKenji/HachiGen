@@ -806,6 +806,17 @@ function redactUrlCredentials(value) {
 	}
 }
 
+function normalizeGitRepositoryIdentity(value) {
+	return String(value || "")
+		.trim()
+		.replace(/^git@([^:]+):/iu, "https://$1/")
+		.replace(/^git\+ssh:\/\/git@/iu, "https://")
+		.replace(/^ssh:\/\/git@/iu, "https://")
+		.replace(/\.git\/?$/iu, "")
+		.replace(/\/$/u, "")
+		.toLowerCase();
+}
+
 function summarizeRepository(repository = {}) {
 	return {
 		currentBranch: repository.currentBranch || "",
@@ -1992,14 +2003,35 @@ class HachiManager {
 		return this.getFleetState();
 	}
 
-	addFleetDeployment(values) {
+	async addFleetDeployment(values) {
 		const definitions = loadBotDefinitions(this.botDefinitionsDir).definitions;
 		const deployment = normalizeDeployment(values, this.fleet, definitions);
+		const server = this.fleet.servers.find(item => item.id === deployment.serverId);
+		const definition = definitions.find(item => item.id === deployment.botTypeId);
+		await this.verifyFleetDeploymentCandidate({ definition, deployment, server });
 		this.fleet.deployments.push(deployment);
 		this.fleet.activeDeploymentId = deployment.id;
 		this.saveFleetRegistry();
 		this.log(`Fleet deployment added: ${deployment.name}.`, { area: "fleet", deploymentId: deployment.id, serverId: deployment.serverId });
 		return this.getFleetState();
+	}
+
+	previewExternalBotDefinition(jsonText) {
+		const parsed = parseJsonText(jsonText, null);
+		if (!parsed) {
+			throw new Error("Bot definition is not valid JSON.");
+		}
+		const definition = validateExternalBotDefinition(parsed);
+		return {
+			id: definition.id,
+			displayName: definition.displayName,
+			repository: definition.repository,
+			credentialsMode: definition.credentials.mode,
+			capabilities: Object.entries(definition.capabilities).filter(([, enabled]) => enabled).map(([name]) => name),
+			commands: Object.keys(definition.commands),
+			paths: definition.paths,
+			fingerprint: definition.fingerprint,
+		};
 	}
 
 	setActiveFleetDeployment(deploymentId) {
@@ -2044,6 +2076,59 @@ class HachiManager {
 		return this.getFleetState();
 	}
 
+	async verifyFleetDeploymentCandidate(context) {
+		if (!context.definition.repository?.url) {
+			throw new Error("Bot definition must declare its repository URL.");
+		}
+		let origin;
+		let branch;
+		let ecosystemFound;
+		if (context.server.connection.type === "ssh") {
+			const result = await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && git remote get-url origin && git branch --show-current && test -f ${quotePosix(context.definition.runtime.ecosystemFile)}`,
+				{ allowFailure: true, log: false, timeoutMs: 30000 },
+			);
+			if (result.code !== 0) {
+				throw new Error(result.stderr || "Remote deployment is missing its Git origin or ecosystem file.");
+			}
+			const lines = result.stdout.trim().split(/\r?\n/u);
+			origin = lines[0];
+			branch = lines[1];
+			ecosystemFound = true;
+		} else {
+			if (!fileExists(context.deployment.installPath)) {
+				throw new Error("Deployment folder does not exist.");
+			}
+			const result = await run("git", ["remote", "get-url", "origin"], {
+				allowFailure: true,
+				cwd: context.deployment.installPath,
+				timeoutMs: 30000,
+			});
+			if (result.code !== 0) {
+				throw new Error("Deployment folder is not a Git checkout with an origin remote.");
+			}
+			origin = result.stdout.trim();
+			const branchResult = await run("git", ["branch", "--show-current"], {
+				allowFailure: true,
+				cwd: context.deployment.installPath,
+				timeoutMs: 30000,
+			});
+			branch = branchResult.stdout.trim();
+			ecosystemFound = fileExists(path.join(context.deployment.installPath, context.definition.runtime.ecosystemFile));
+		}
+		if (normalizeGitRepositoryIdentity(origin) !== normalizeGitRepositoryIdentity(context.definition.repository.url)) {
+			throw new Error(`Repository origin mismatch. Expected ${context.definition.repository.url}, found ${redactUrlCredentials(origin)}.`);
+		}
+		if (branch !== context.definition.repository.branch) {
+			throw new Error(`Repository branch mismatch. Expected ${context.definition.repository.branch}, found ${branch || "detached HEAD"}.`);
+		}
+		if (!ecosystemFound) {
+			throw new Error(`Required ecosystem file was not found: ${context.definition.runtime.ecosystemFile}.`);
+		}
+		return { branch, origin, ok: true };
+	}
+
 	removeExternalBotDefinition(botTypeId) {
 		if (botTypeId === "hachi") {
 			throw new Error("Native Hachi cannot be removed.");
@@ -2062,6 +2147,20 @@ class HachiManager {
 
 	async runFleetDefinitionCommand(deploymentId, commandName, options = {}) {
 		const context = this.getFleetDeploymentContext(deploymentId);
+		const capabilityByCommand = {
+			credentialsWrite: "secretEncryption",
+			databaseEncrypt: "databaseEncryption",
+			databaseVerify: "databaseEncryption",
+			deployCommands: "discordCommands",
+			deployGlobalCommands: "discordCommands",
+			deployGuildCommands: "discordCommands",
+			deleteCommands: "discordCommands",
+			install: "gitUpdates",
+			validate: "gitUpdates",
+		};
+		if (capabilityByCommand[commandName]) {
+			this.assertFleetCapability(context, capabilityByCommand[commandName]);
+		}
 		const command = context.definition.commands?.[commandName];
 		if (!command) {
 			throw new Error(`${context.definition.displayName} does not define ${commandName}.`);
@@ -2093,15 +2192,24 @@ class HachiManager {
 
 	async getFleetRepositoryStatus(deploymentId, options = {}) {
 		const context = this.getFleetDeploymentContext(deploymentId);
-		const [head, branch, changes] = await Promise.all([
+		if (options.fetch) {
+			this.assertFleetCapability(context, "gitUpdates");
+		}
+		const [head, branch, changes, origin] = await Promise.all([
 			this.runFleetGit(context, ["rev-parse", "HEAD"], { allowFailure: true, log: false }),
 			this.runFleetGit(context, ["branch", "--show-current"], { allowFailure: true, log: false }),
 			this.runFleetGit(context, ["status", "--porcelain"], { allowFailure: true, log: false }),
+			this.runFleetGit(context, ["remote", "get-url", "origin"], { allowFailure: true, log: false }),
 		]);
 		if (head.code !== 0) {
 			return { deploymentId, isGit: false, message: "Deployment is not a Git checkout." };
 		}
 		const targetBranch = context.definition.repository?.branch || branch.stdout.trim() || "main";
+		const originUrl = origin.stdout.trim();
+		const originMatches = origin.code === 0 && normalizeGitRepositoryIdentity(originUrl) === normalizeGitRepositoryIdentity(context.definition.repository?.url);
+		if (!originMatches && options.fetch) {
+			throw new Error(`Repository origin mismatch. Expected ${context.definition.repository?.url || "a declared URL"}, found ${redactUrlCredentials(originUrl) || "none"}.`);
+		}
 		let behind = null;
 		if (options.fetch) {
 			await this.runFleetGit(context, ["fetch", "origin", targetBranch], { timeoutMs: 300000 });
@@ -2113,6 +2221,8 @@ class HachiManager {
 			isGit: true,
 			head: head.stdout.trim(),
 			branch: branch.stdout.trim(),
+			originUrl: redactUrlCredentials(originUrl),
+			originMatches,
 			targetBranch,
 			dirty: Boolean(changes.stdout.trim()),
 			changes: changes.stdout.trim().split(/\r?\n/u).filter(Boolean).slice(0, 100),
@@ -2123,6 +2233,7 @@ class HachiManager {
 
 	async updateFleetDeployment(deploymentId) {
 		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "gitUpdates");
 		if (!context.definition.capabilities?.gitUpdates) {
 			throw new Error(`${context.definition.displayName} does not declare Git update capability.`);
 		}
@@ -2138,6 +2249,7 @@ class HachiManager {
 		}
 		let databaseBackup = null;
 		if (context.definition.paths?.database) {
+			this.assertFleetCapability(context, "backups");
 			databaseBackup = await this.backupFleetDatabase(deploymentId);
 		}
 		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
@@ -2168,6 +2280,7 @@ class HachiManager {
 
 	async deployFleetDiscordCommands(deploymentId) {
 		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "discordCommands");
 		if (!context.definition.capabilities?.discordCommands) {
 			throw new Error(`${context.definition.displayName} does not declare Discord command deployment capability.`);
 		}
@@ -2198,6 +2311,18 @@ class HachiManager {
 			throw new Error(`Bot type ${deployment.botTypeId} is not installed.`);
 		}
 		return { definition, deployment, server };
+	}
+
+	assertFleetCapability(context, capability) {
+		if (context.definition.source === "native") {
+			return;
+		}
+		if (context.deployment.definitionFingerprint !== context.definition.fingerprint) {
+			throw new Error(`${context.definition.displayName} definition changed after approval. Review and reapprove this deployment before modifying it.`);
+		}
+		if (!context.definition.capabilities?.[capability] || !context.deployment.approvedCapabilities?.[capability]) {
+			throw new Error(`${context.definition.displayName} deployment has not approved the ${capability} capability.`);
+		}
 	}
 
 	async runFleetRemoteCommand(server, command, options = {}) {
@@ -2274,6 +2399,7 @@ class HachiManager {
 			throw new Error("Unsupported runtime action.");
 		}
 		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "pm2");
 		if (action === "start" || action === "restart") {
 			await this.assertCredentialLeaseAvailable(deploymentId);
 		}
@@ -2305,6 +2431,7 @@ class HachiManager {
 
 	async getFleetDeploymentLogs(deploymentId, lines = 200) {
 		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "logs");
 		const safeLines = Math.min(1000, Math.max(20, Number.parseInt(String(lines), 10) || 200));
 		const result = await this.runFleetDeploymentCommand(
 			context,
@@ -2390,7 +2517,9 @@ class HachiManager {
 		const plaintext = database.header === SQLITE_HEADER.toString("hex");
 		let verified = false;
 		let verificationMessage = "Encrypted-looking header has not been verified with the database key.";
-		if (!plaintext && context.definition.commands?.databaseVerify) {
+		const databaseVerificationApproved = context.definition.native ||
+			(context.definition.capabilities?.databaseEncryption && context.deployment.approvedCapabilities?.databaseEncryption);
+		if (!plaintext && context.definition.commands?.databaseVerify && databaseVerificationApproved) {
 			const result = await this.runFleetDefinitionCommand(deploymentId, "databaseVerify", { timeoutMs: 120000 });
 			verified = result.code === 0;
 			verificationMessage = verified ? "Database opened successfully through the bot's declared verification command." : "Database verification command failed.";
@@ -2416,6 +2545,7 @@ class HachiManager {
 			throw new Error("Operating-system backup-key encryption is unavailable.");
 		}
 		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
 		const databaseRelativePath = context.definition.paths?.database;
 		if (!databaseRelativePath) {
 			throw new Error("This bot type does not declare a database.");
@@ -2472,6 +2602,7 @@ class HachiManager {
 			throw new Error("Operating-system backup-key decryption is unavailable.");
 		}
 		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
 		const record = this.getFleetBackupVault().records[backupId];
 		if (!record || record.deploymentId !== deploymentId || record.serverId !== context.server.id) {
 			throw new Error("Backup does not belong to this deployment and server.");
@@ -2509,6 +2640,7 @@ class HachiManager {
 
 	async encryptFleetDatabase(deploymentId) {
 		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "databaseEncryption");
 		if (context.definition.id === "hachi" && context.deployment.installPath === this.getActiveInstallIdentifier()) {
 			return this.convertDatabaseEncryption();
 		}
@@ -2577,13 +2709,19 @@ class HachiManager {
 			if (!context.definition.paths?.database) {
 				continue;
 			}
+			// Scheduled work must honor the same reviewed capability snapshot as manual actions.
+			if (!context.definition.native && !context.deployment.approvedCapabilities?.backups) {
+				continue;
+			}
 			const latest = this.listFleetBackups(deployment.id)[0];
 			const due = !latest || Date.now() - new Date(latest.createdAt).getTime() >= hours * 3600000;
 			if (!due) {
 				continue;
 			}
 			await this.backupFleetDatabase(deployment.id);
-			await this.pruneFleetLogs(deployment.id).catch(() => null);
+			if (context.definition.native || context.deployment.approvedCapabilities?.logs) {
+				await this.pruneFleetLogs(deployment.id).catch(() => null);
+			}
 		}
 		return { ok: true };
 	}
@@ -2597,6 +2735,7 @@ class HachiManager {
 
 	async pruneFleetBackups(deploymentId) {
 		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
 		const backups = this.listFleetBackups(deploymentId);
 		const expired = backups.slice(context.deployment.policies?.backupRetention || 14);
 		if (!expired.length) {
@@ -2629,6 +2768,7 @@ class HachiManager {
 
 	async pruneFleetLogs(deploymentId) {
 		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "logs");
 		const logsRelativePath = context.definition.paths?.logs;
 		if (!logsRelativePath) {
 			throw new Error("This bot type does not declare a log directory.");
@@ -2680,6 +2820,12 @@ class HachiManager {
 
 	async saveFleetDeploymentCredentials(deploymentId, values) {
 		const context = this.getFleetDeploymentContext(deploymentId);
+		if (context.definition.source !== "native") {
+			this.assertFleetCapability(context, "secretEncryption");
+			if (context.definition.credentials?.mode !== "adapter") {
+				throw new Error("This bot keeps credentials externally managed. HachiGen will not modify them.");
+			}
+		}
 		const token = String(values?.token || "").trim();
 		const clientId = String(values?.clientId || "").trim();
 		if (!token || !clientId) {

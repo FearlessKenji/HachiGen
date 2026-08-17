@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
+const childProcess = require("node:child_process");
 const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
@@ -56,6 +57,19 @@ async function validateBotRegistryFoundation() {
 		capabilities: { backups: true, databaseEncryption: true },
 	});
 	assert(external.source === "external" && external.capabilities.databaseEncryption, "Optional bots should load as external definitions.");
+	assert(external.credentials.mode === "external" && external.fingerprint, "External bots should default to unmanaged credentials and receive a definition fingerprint.");
+	let rejectedUnsafeCredentialAdapter = false;
+	try {
+		validateExternalBotDefinition({
+			id: "unsafe-adapter",
+			displayName: "Unsafe Adapter",
+			credentials: { mode: "adapter" },
+			runtime: {},
+		});
+	} catch {
+		rejectedUnsafeCredentialAdapter = true;
+	}
+	assert(rejectedUnsafeCredentialAdapter, "Credential adapters must declare both a write command and secret-encryption permission.");
 	let rejectedNativeOverride = false;
 	try {
 		validateExternalBotDefinition({ id: "hachi", displayName: "Replacement", runtime: {} });
@@ -900,11 +914,14 @@ async function validateFleetCredentialAndBackupSecurity() {
 	const userDataPath = path.join(tempDir, "userData");
 	const deploymentPath = path.join(tempDir, "optional-bot");
 	fs.mkdirSync(path.join(deploymentPath, "data"), { recursive: true });
+	fs.writeFileSync(path.join(deploymentPath, "ecosystem.config.js"), "module.exports = { apps: [] };\n");
 	fs.writeFileSync(path.join(deploymentPath, "credentials-write.js"), [
 		"const fs=require('node:fs'),crypto=require('node:crypto');",
 		"const p=JSON.parse(fs.readFileSync(0,'utf8'));",
 		"fs.writeFileSync('credentials.enc',JSON.stringify({clientId:p.clientId,tokenHash:crypto.createHash('sha256').update(p.token).digest('hex')}));",
 	].join(""));
+	childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: deploymentPath, stdio: "ignore" });
+	childProcess.execFileSync("git", ["remote", "add", "origin", "https://example.invalid/optional-bot.git"], { cwd: deploymentPath, stdio: "ignore" });
 	const originalDatabase = Buffer.from("SQLite format 3\0smoke database contents");
 	fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), originalDatabase);
 	try {
@@ -919,11 +936,13 @@ async function validateFleetCredentialAndBackupSecurity() {
 			id: "optional-bot",
 			displayName: "Optional Bot",
 			runtime: { ecosystemFile: "ecosystem.config.js", pm2Name: "OptionalBot" },
+			repository: { url: "https://example.invalid/optional-bot.git", branch: "main" },
 			paths: { database: "data/bot.sqlite" },
-			capabilities: { backups: true, databaseEncryption: true },
+			credentials: { mode: "adapter" },
+			capabilities: { backups: true, databaseEncryption: true, secretEncryption: true },
 			commands: { credentialsWrite: { executable: "node", args: ["credentials-write.js"] } },
 		}));
-		manager.addFleetDeployment({
+		await manager.addFleetDeployment({
 			name: "Optional Bot Test",
 			botTypeId: "optional-bot",
 			serverId: "local",

@@ -20,7 +20,7 @@ The installer creates an app folder that includes `HachiGen.exe` and `Uninstall 
 
 - Multiple local or SSH servers and bot deployments through the Fleet workspace
 - Native Hachi deployments plus validated external bot definitions for optional bots
-- Deployment-local encrypted Discord credentials with shared-test-bot concurrency protection and no secondary HachiGen credential vault
+- Bot-owned Discord credentials with no secondary HachiGen vault; external credential writes require an explicitly reviewed encrypted-storage adapter
 - Scoped PM2 runtime controls, Git updates, Discord command deployment, health checks, and redacted logs
 - Fleet-wide database security audits, encrypted backups/restores, retention, and adapter-driven encryption with rollback
 - Local and remote Hachi install paths
@@ -33,6 +33,8 @@ The installer creates an app folder that includes `HachiGen.exe` and `Uninstall 
 - HachiGen self-updates from `hachigen-vX.X.X` releases
 
 Hachi remains the only bot type bundled with HachiGen. See [External bot definitions](docs/bot-definitions.md) to add Paldeck or another optional bot.
+
+External deployments are linked to their repositories by the definition's expected Git URL, branch, ecosystem file, paths, and command adapters. HachiGen verifies that identity before registering a deployment and runs only capabilities approved when the definition was installed.
 
 ## Development
 

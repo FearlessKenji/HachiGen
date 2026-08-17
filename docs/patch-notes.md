@@ -7,6 +7,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 - Began the multi-server, multi-bot foundation while keeping existing Hachi management intact. Hachi remains the only built-in bot, and optional bots will be supplied through external definitions.
 - Added Fleet and Credentials pages for managing servers, bot deployments, deployment-local encrypted Discord identities, runtime controls, health checks, and logs. HachiGen does not retain a second token copy, while shared test identities remain protected from accidental concurrent use.
 - Added fleet security audits, encrypted database backups and restores, automatic retention, safe bot updates with rollback, and external bot definitions for optional projects such as Paldeck.
+- External bots are now preservation-first: HachiGen previews requested permissions before installing an adapter, verifies each deployment's Git origin, branch, and ecosystem file, and blocks actions if the definition changes after approval.
+- External credentials remain completely under the bot's control by default. Credential entry is available only for a deliberately approved encrypted-storage adapter; HachiGen never keeps a second token copy.
 - Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
 - Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 

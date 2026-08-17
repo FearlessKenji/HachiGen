@@ -3190,25 +3190,28 @@ function renderFleet(nextFleet) {
 		const server = fleetState.servers.find(item => item.id === deployment.serverId);
 		const type = fleetState.botTypes.find(item => item.id === deployment.botTypeId);
 		const active = deployment.id === fleetState.activeDeploymentId;
+		const capabilities = type?.source === "native" ? type.capabilities : (deployment.approvedCapabilities || {});
 		return fleetEntry(
 			`${deployment.name}${active ? " · Active" : ""}`,
 			`${type?.displayName || deployment.botTypeId} · ${server?.name || deployment.serverId} · ${deployment.environment} · ${deployment.installPath}`,
 			[
 				...(!active ? [{ action: "activate-fleet-deployment", id: deployment.id, label: "Select", kind: "info" }] : []),
-				{ action: "fleet-runtime-start", id: deployment.id, label: "Start", kind: "primary" },
-				{ action: "fleet-runtime-stop", id: deployment.id, label: "Stop" },
-				{ action: "fleet-runtime-restart", id: deployment.id, label: "Restart" },
+				...(capabilities.pm2 ? [
+					{ action: "fleet-runtime-start", id: deployment.id, label: "Start", kind: "primary" },
+					{ action: "fleet-runtime-stop", id: deployment.id, label: "Stop" },
+					{ action: "fleet-runtime-restart", id: deployment.id, label: "Restart" },
+				] : []),
 				{ action: "fleet-runtime-health", id: deployment.id, label: "Health", kind: "info" },
-				{ action: "fleet-runtime-logs", id: deployment.id, label: "Logs" },
-				{ action: "fleet-repository-check", id: deployment.id, label: "Updates", kind: "info" },
-				{ action: "fleet-deploy-commands", id: deployment.id, label: "Deploy" },
+				...(capabilities.logs ? [{ action: "fleet-runtime-logs", id: deployment.id, label: "Logs" }] : []),
+				...(capabilities.gitUpdates ? [{ action: "fleet-repository-check", id: deployment.id, label: "Updates", kind: "info" }] : []),
+				...(capabilities.discordCommands ? [{ action: "fleet-deploy-commands", id: deployment.id, label: "Deploy" }] : []),
 				{ action: "remove-fleet-deployment", id: deployment.id, label: "Remove" },
 			],
 		);
 	}));
 	botTypeList?.replaceChildren(...fleetState.botTypes.map(type => fleetEntry(
 		type.displayName,
-		`${type.source === "native" ? "Native" : "External"} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "runtime definition"}`,
+		`${type.source === "native" ? "Native" : "External"} · Credentials: ${type.source === "native" ? "native" : (type.credentials?.mode || "external")} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "observe only"}`,
 		type.source === "external" ? [{ action: "remove-bot-definition", id: type.id, label: "Remove" }] : [],
 	)));
 	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name);
@@ -3216,6 +3219,31 @@ function renderFleet(nextFleet) {
 	replaceSelectOptions("#credentialDeploymentSelect", fleetState.deployments, item => item.name);
 	replaceSelectOptions("#securityDeploymentSelect", fleetState.deployments, item => item.name);
 	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
+	renderDeploymentCredentialMode();
+	renderFleetSecurityCapabilities();
+}
+
+function renderDeploymentCredentialMode() {
+	const deployment = fleetState?.deployments?.find(item => item.id === $("#credentialDeploymentSelect")?.value);
+	const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
+	const native = definition?.source === "native";
+	const adapter = definition?.credentials?.mode === "adapter" && definition?.commands?.credentialsWrite;
+	const allowed = Boolean(native || (adapter && deployment?.approvedCapabilities?.secretEncryption));
+	setDisabled("#saveDeploymentCredentialsButton", !allowed);
+	setText("#deploymentCredentialsMode", allowed ?
+		`${definition.displayName} explicitly supports managed credential storage. Submitted values are sent only to its approved writer.` :
+		"Credentials are externally managed for this deployment. HachiGen will not read, rewrite, encrypt, or relocate them.");
+}
+
+function renderFleetSecurityCapabilities() {
+	const deployment = fleetState?.deployments?.find(item => item.id === $("#securityDeploymentSelect")?.value);
+	const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
+	const capabilities = definition?.source === "native" ? definition.capabilities : (deployment?.approvedCapabilities || {});
+	setDisabled("#fleetBackupButton", !capabilities?.backups);
+	setDisabled("#fleetRestoreButton", !capabilities?.backups);
+	setDisabled("#fleetPruneBackupsButton", !capabilities?.backups);
+	setDisabled("#fleetEncryptButton", !capabilities?.databaseEncryption);
+	setDisabled("#fleetPruneLogsButton", !capabilities?.logs);
 }
 
 async function refreshFleet() {
@@ -3566,6 +3594,14 @@ function handleChange(event) {
 		updateRemotePortMode();
 	}
 
+	if (event.target.id === "credentialDeploymentSelect") {
+		renderDeploymentCredentialMode();
+	}
+
+	if (event.target.id === "securityDeploymentSelect") {
+		renderFleetSecurityCapabilities();
+	}
+
 	if (event.target.name === "runtimeTarget") {
 		const nextTarget = event.target.value === "remote" ? "remote" : "local";
 
@@ -3713,11 +3749,24 @@ function handleAction(event) {
 
 	if (action === "install-bot-definition") {
 		const form = $("#botDefinitionForm");
-		runAction("Install bot definition", async () => {
-			const fleet = await api.installExternalBotDefinition(form.elements.definition.value);
-			renderFleet(fleet);
-			form.reset();
-			return { message: "External bot definition installed." };
+		const definitionText = form.elements.definition.value;
+		runAction("Review bot definition", () => api.previewExternalBotDefinition(definitionText), { toast: false }).then(preview => {
+			if (!preview) return;
+			const permissions = preview.capabilities.length ? preview.capabilities.join(", ") : "Observe only";
+			showConfirmModal({
+				title: `Install ${preview.displayName} adapter?`,
+				meta: "External adapter permission review",
+				summary: `Repository: ${preview.repository.url}\nBranch: ${preview.repository.branch}\nCredentials: ${preview.credentialsMode}\nRequested capabilities: ${permissions}\nCommands: ${preview.commands.join(", ") || "None"}`,
+				confirmText: "Approve Adapter",
+			}).then(confirmed => {
+				if (!confirmed) return;
+				runAction("Install bot definition", async () => {
+					const fleet = await api.installExternalBotDefinition(definitionText);
+					renderFleet(fleet);
+					form.reset();
+					return { message: "External bot definition installed." };
+				});
+			});
 		});
 		return;
 	}

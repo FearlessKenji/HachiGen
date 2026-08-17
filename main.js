@@ -901,6 +901,7 @@ function registerIpc() {
 	ipcMain.handle("manager:set-active-fleet-deployment", (_event, deploymentId) => manager.setActiveFleetDeployment(deploymentId));
 	ipcMain.handle("manager:remove-fleet-deployment", (_event, deploymentId) => manager.removeFleetDeployment(deploymentId));
 	ipcMain.handle("manager:install-external-bot-definition", (_event, jsonText) => manager.installExternalBotDefinition(jsonText));
+	ipcMain.handle("manager:preview-external-bot-definition", (_event, jsonText) => manager.previewExternalBotDefinition(jsonText));
 	ipcMain.handle("manager:remove-external-bot-definition", (_event, botTypeId) => manager.removeExternalBotDefinition(botTypeId));
 	ipcMain.handle("manager:get-fleet-deployment-status", (_event, deploymentId) => manager.getFleetDeploymentStatus(deploymentId));
 	ipcMain.handle("manager:control-fleet-deployment", (_event, deploymentId, action) => manager.controlFleetDeployment(deploymentId, action));

@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	setActiveFleetDeployment: deploymentId => invoke("manager:set-active-fleet-deployment", deploymentId),
 	removeFleetDeployment: deploymentId => invoke("manager:remove-fleet-deployment", deploymentId),
 	installExternalBotDefinition: jsonText => invoke("manager:install-external-bot-definition", jsonText),
+	previewExternalBotDefinition: jsonText => invoke("manager:preview-external-bot-definition", jsonText),
 	removeExternalBotDefinition: botTypeId => invoke("manager:remove-external-bot-definition", botTypeId),
 	getFleetDeploymentStatus: deploymentId => invoke("manager:get-fleet-deployment-status", deploymentId),
 	controlFleetDeployment: (deploymentId, action) => invoke("manager:control-fleet-deployment", deploymentId, action),
