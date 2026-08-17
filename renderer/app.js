@@ -14,6 +14,7 @@ const viewTitles = {
 	dashboard: "Dashboard",
 	fleet: "Fleet",
 	credentials: "Credentials",
+	security: "Security",
 	setup: "Setup",
 	remote: "Remote",
 	updates: "Updates",
@@ -135,6 +136,7 @@ const VIEW_ICONS = {
 	dashboard: "layoutDashboard",
 	fleet: "remote",
 	credentials: "key",
+	security: "shieldCheck",
 	database: "database",
 	diagnostics: "shieldCheck",
 	logs: "logs",
@@ -3198,6 +3200,8 @@ function renderFleet(nextFleet) {
 				{ action: "fleet-runtime-restart", id: deployment.id, label: "Restart" },
 				{ action: "fleet-runtime-health", id: deployment.id, label: "Health", kind: "info" },
 				{ action: "fleet-runtime-logs", id: deployment.id, label: "Logs" },
+				{ action: "fleet-repository-check", id: deployment.id, label: "Updates", kind: "info" },
+				{ action: "fleet-deploy-commands", id: deployment.id, label: "Deploy" },
 				{ action: "remove-fleet-deployment", id: deployment.id, label: "Remove" },
 			],
 		);
@@ -3205,10 +3209,12 @@ function renderFleet(nextFleet) {
 	botTypeList?.replaceChildren(...fleetState.botTypes.map(type => fleetEntry(
 		type.displayName,
 		`${type.source === "native" ? "Native" : "External"} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "runtime definition"}`,
+		type.source === "external" ? [{ action: "remove-bot-definition", id: type.id, label: "Remove" }] : [],
 	)));
 	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name);
 	replaceSelectOptions("#fleetBotTypeSelect", fleetState.botTypes, item => `${item.displayName}${item.source === "native" ? " (native)" : " (external)"}`);
 	replaceSelectOptions("#credentialDeploymentSelect", fleetState.deployments, item => item.name);
+	replaceSelectOptions("#securityDeploymentSelect", fleetState.deployments, item => item.name);
 	const credentialOptions = [{ id: "", name: "No credential profile" }, ...fleetState.credentialProfiles];
 	replaceSelectOptions("#credentialProfileSelect", credentialOptions, item => item.name);
 	const profileList = $("#credentialProfileList");
@@ -3275,6 +3281,11 @@ function renderState(nextState) {
 	setText("#sidebarRepoBranch", repositoryBranchLabel(state.repository));
 	setText("#sidebarStatusText", install.label);
 	setDot("#sidebarStatusDot", install.dot);
+	const fleetDeploymentCount = state.fleet?.deployments?.length || 0;
+	const fleetDefinitionErrorCount = state.fleet?.botDefinitionErrors?.length || 0;
+	setText("#fleetStatus", fleetDefinitionErrorCount ? "Needs attention" : `${fleetDeploymentCount} deployment${fleetDeploymentCount === 1 ? "" : "s"}`);
+	setText("#fleetDetail", `${state.fleet?.servers?.length || 0} server(s) · ${state.fleet?.credentialProfiles?.length || 0} credential profile(s)`);
+	setDot("#fleetDot", fleetDefinitionErrorCount ? "warn" : "good");
 
 	// Dashboard status cards.
 	setText("#botStatus", bot.label);
@@ -3711,6 +3722,26 @@ function handleAction(event) {
 		return;
 	}
 
+	if (action === "install-bot-definition") {
+		const form = $("#botDefinitionForm");
+		runAction("Install bot definition", async () => {
+			const fleet = await api.installExternalBotDefinition(form.elements.definition.value);
+			renderFleet(fleet);
+			form.reset();
+			return { message: "External bot definition installed." };
+		});
+		return;
+	}
+
+	if (action === "remove-bot-definition") {
+		runAction("Remove bot definition", async () => {
+			const fleet = await api.removeExternalBotDefinition(button.dataset.itemId);
+			renderFleet(fleet);
+			return { message: "External bot definition removed." };
+		});
+		return;
+	}
+
 	if (action === "add-fleet-deployment") {
 		const form = $("#fleetDeploymentForm");
 		const values = Object.fromEntries(new window.FormData(form));
@@ -3763,6 +3794,55 @@ function handleAction(event) {
 		return;
 	}
 
+	if (["audit-fleet-security", "backup-fleet-database", "encrypt-fleet-database", "restore-fleet-database"].includes(action)) {
+		const deploymentId = $("#securityDeploymentSelect").value;
+		const execute = async () => {
+			let result;
+			if (action === "audit-fleet-security") result = await api.auditFleetDeploymentSecurity(deploymentId);
+			else if (action === "backup-fleet-database") result = await api.backupFleetDatabase(deploymentId);
+			else if (action === "encrypt-fleet-database") result = await api.encryptFleetDatabase(deploymentId);
+			else result = await api.restoreFleetDatabaseBackup(deploymentId, $("#fleetBackupIdInput").value);
+			setText("#fleetSecurityOutput", JSON.stringify(result, null, 2));
+			if (result.backupId) $("#fleetBackupIdInput").value = result.backupId;
+			return { message: result.message || "Security operation completed." };
+		};
+		if (action === "audit-fleet-security" || action === "backup-fleet-database") {
+			runAction("Fleet security", execute);
+		} else {
+			showConfirmModal({
+				title: action === "encrypt-fleet-database" ? "Encrypt deployment database?" : "Restore deployment database?",
+				meta: "Database safety confirmation",
+				summary: "HachiGen will stop the selected deployment and retain or create a recovery copy. Verify the selected deployment before continuing.",
+				confirmText: action === "encrypt-fleet-database" ? "Encrypt" : "Restore",
+				variant: "danger",
+			}).then(confirmed => {
+				if (confirmed) runAction("Fleet database security", execute);
+			});
+		}
+		return;
+	}
+
+	if (["save-fleet-policies", "list-fleet-backups", "prune-fleet-backups", "prune-fleet-logs"].includes(action)) {
+		const deploymentId = $("#securityDeploymentSelect").value;
+		runAction("Fleet retention", async () => {
+			let result;
+			if (action === "save-fleet-policies") {
+				result = await api.setFleetDeploymentPolicies(deploymentId, {
+					backupRetention: $("#fleetBackupRetentionInput").value,
+					autoBackupHours: $("#fleetAutoBackupHoursInput").value,
+					logRetentionDays: $("#fleetLogRetentionInput").value,
+					requireEncryptedDatabase: true,
+				});
+				renderFleet(result);
+			} else if (action === "list-fleet-backups") result = await api.listFleetBackups(deploymentId);
+			else if (action === "prune-fleet-backups") result = await api.pruneFleetBackups(deploymentId);
+			else result = await api.pruneFleetLogs(deploymentId);
+			setText("#fleetSecurityOutput", JSON.stringify(result, null, 2));
+			return { message: "Retention operation completed." };
+		});
+		return;
+	}
+
 	if (action === "activate-fleet-deployment") {
 		runAction("Select deployment", async () => {
 			const fleet = await api.setActiveFleetDeployment(button.dataset.itemId);
@@ -3786,6 +3866,39 @@ function handleAction(event) {
 		return;
 	}
 
+	if (action === "fleet-repository-check" || action === "fleet-deploy-commands") {
+		const deploymentId = button.dataset.itemId;
+		if (action === "fleet-repository-check") {
+			runAction("Check deployment updates", async () => {
+				const result = await api.getFleetRepositoryStatus(deploymentId, { fetch: true });
+				setText("#fleetDeploymentOutput", JSON.stringify(result, null, 2));
+				return result;
+			}).then(result => {
+				if (!result?.updateAvailable) return;
+				showConfirmModal({
+					title: "Update deployment?",
+					meta: "Transactional fleet update",
+					summary: "HachiGen will create an encrypted database backup when applicable, stop the bot, update, validate, restart, and roll back on failure.",
+					confirmText: "Update",
+				}).then(confirmed => {
+					if (!confirmed) return;
+					runAction("Update deployment", async () => {
+						const updated = await api.updateFleetDeployment(deploymentId);
+						setText("#fleetDeploymentOutput", JSON.stringify(updated, null, 2));
+						return updated;
+					});
+				});
+			});
+		} else {
+			runAction("Deploy Discord commands", async () => {
+				const result = await api.deployFleetDiscordCommands(deploymentId);
+				setText("#fleetDeploymentOutput", JSON.stringify(result, null, 2));
+				return result;
+			});
+		}
+		return;
+	}
+
 	if (action === "remove-fleet-server" || action === "remove-fleet-deployment") {
 		showConfirmModal({
 			title: action === "remove-fleet-server" ? "Remove server?" : "Remove deployment?",
@@ -3806,6 +3919,11 @@ function handleAction(event) {
 
 	if (action === "show-setup-guide") {
 		showSetupGuideModal();
+		return;
+	}
+
+	if (action === "show-fleet") {
+		showView("fleet");
 		return;
 	}
 

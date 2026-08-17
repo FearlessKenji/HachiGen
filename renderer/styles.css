@@ -1453,6 +1453,10 @@ h2 {
 	align-self: end;
 }
 
+.fleet-form-wide {
+	grid-column: 1 / -1;
+}
+
 .fleet-entry {
 	display: flex;
 	justify-content: space-between;

@@ -31,6 +31,13 @@ const NATIVE_HACHI_DEFINITION = Object.freeze({
 		pm2: true,
 		secretEncryption: true,
 	},
+	commands: {
+		deleteCommands: { executable: "node", args: ["delete-all-commands.js"] },
+		deployGlobalCommands: { executable: "node", args: ["deploy-global-commands.js"] },
+		deployGuildCommands: { executable: "node", args: ["deploy-guild-commands.js"] },
+		install: { executable: "npm", args: ["install"] },
+		validate: { executable: "node", args: ["-e", "require('./config/configCheck.js')"] },
+	},
 });
 
 function stableId(prefix, value) {
@@ -77,7 +84,22 @@ function validateExternalBotDefinition(input, sourcePath = "external definition"
 		},
 		paths: {},
 		capabilities: Object.fromEntries(Object.entries(input.capabilities || {}).map(([key, enabled]) => [key, enabled === true])),
+		commands: {},
 	};
+	for (const [name, command] of Object.entries(input.commands || {})) {
+		if (!command || typeof command !== "object" || Array.isArray(command)) {
+			throw new Error(`${sourcePath} command ${name} must be an object.`);
+		}
+		const executable = String(command.executable || "").trim();
+		if (!/^(?:node|npm|npx|pnpm|yarn|git)$/u.test(executable)) {
+			throw new Error(`${sourcePath} command ${name} uses an unsupported executable.`);
+		}
+		const args = Array.isArray(command.args) ? command.args.map(value => String(value)) : [];
+		if (args.some(value => /[\r\n\0]/u.test(value))) {
+			throw new Error(`${sourcePath} command ${name} contains invalid arguments.`);
+		}
+		definition.commands[name] = { executable, args };
+	}
 	for (const [key, value] of Object.entries(input.paths || {})) {
 		if (value !== undefined && value !== null && String(value).trim()) {
 			definition.paths[key] = assertSafeRelativePath(value, `paths.${key}`);

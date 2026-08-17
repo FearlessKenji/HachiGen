@@ -157,7 +157,7 @@ function validatePackageMetadata() {
 function validateProjectFiles() {
 	const requiredFiles = [
 		"CHANGELOG.md", "README.md", ".github/workflows/ci.yml", ".github/workflows/release.yml",
-		"config/eslint.config.js", "docs/patch-notes.md", "icon.ico", "main.js", "package-lock.json",
+		"config/eslint.config.js", "docs/bot-definitions.md", "docs/patch-notes.md", "icon.ico", "main.js", "package-lock.json",
 		"package.json", "preload.js", "renderer/app.js", "renderer/assets/KenjiBotProfile.svg",
 		"renderer/index.html", "renderer/styles.css", "scripts/copyRootInstaller.js", "scripts/packagedUiSmoke.js", "scripts/smokeTest.js",
 		"src/botRegistry.js", "src/database-worker.js", "src/hachigenLogger.js", "src/manager.js", "src/shell.js",
@@ -894,6 +894,55 @@ async function validateUpdateCheckDeduplication() {
 	}
 }
 
+async function validateFleetCredentialAndBackupSecurity() {
+	const { HachiManager } = requireFresh("src", "manager.js");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-fleet-security-"));
+	const userDataPath = path.join(tempDir, "userData");
+	const deploymentPath = path.join(tempDir, "optional-bot");
+	fs.mkdirSync(path.join(deploymentPath, "data"), { recursive: true });
+	const originalDatabase = Buffer.from("SQLite format 3\0smoke database contents");
+	fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), originalDatabase);
+	try {
+		const manager = new HachiManager({
+			defaultInstallPath: tempDir,
+			managerRoot: projectRoot,
+			userDataPath,
+			protectSecret: value => Buffer.from(String(value)).toString("base64"),
+			unprotectSecret: value => Buffer.from(String(value), "base64").toString("utf8"),
+		});
+		manager.installExternalBotDefinition(JSON.stringify({
+			id: "optional-bot",
+			displayName: "Optional Bot",
+			runtime: { ecosystemFile: "ecosystem.config.js", pm2Name: "OptionalBot" },
+			paths: { database: "data/bot.sqlite" },
+			capabilities: { backups: true, databaseEncryption: true },
+		}));
+		manager.addFleetDeployment({
+			name: "Optional Bot Test",
+			botTypeId: "optional-bot",
+			serverId: "local",
+			installPath: deploymentPath,
+			environment: "test",
+		});
+		const deployment = manager.fleet.deployments.find(item => item.botTypeId === "optional-bot");
+		manager.addCredentialProfile({ name: "Shared test", token: "very-secret-token", clientId: "123", environment: "test" });
+		const profile = manager.fleet.credentialProfiles[0];
+		manager.assignCredentialProfile(deployment.id, profile.id);
+		const vaultText = fs.readFileSync(path.join(userDataPath, "credential-vault.json"), "utf8");
+		assert(!vaultText.includes("very-secret-token"), "Credential vault persisted a plaintext Discord token.");
+		assert(!JSON.stringify(manager.getFleetState()).includes("very-secret-token"), "Renderer fleet state exposed a Discord token.");
+		const audit = await manager.auditFleetDeploymentSecurity(deployment.id);
+		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");
+		const backup = await manager.backupFleetDatabase(deployment.id);
+		assert(fs.readFileSync(backup.backupPath).subarray(0, 5).toString() === "HGBK1", "Fleet database backup should use encrypted HGBK1 format.");
+		fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), "damaged");
+		await manager.restoreFleetDatabaseBackup(deployment.id, backup.backupId);
+		assert(fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase), "Encrypted fleet backup did not restore original database bytes.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
 async function main() {
 	await test("package metadata and lockfile are consistent", validatePackageMetadata);
 	await test("required project files exist", validateProjectFiles);
@@ -911,6 +960,7 @@ async function main() {
 	await test("database worker stages from standalone manager source", validateDatabaseWorkerStaging);
 	await test("logs redact secrets and hide Git plumbing", validateLoggingAndQuietState);
 	await test("update checks are deduplicated", validateUpdateCheckDeduplication);
+	await test("fleet credentials and database backups stay encrypted", validateFleetCredentialAndBackupSecurity);
 
 	console.log("");
 	console.log(`Smoke test complete: ${results.passed} passed, ${results.failed} failed.`);

@@ -10,9 +10,12 @@ Notable changes to HachiGen are documented here.
 - Added a native Hachi bot definition and validated external JSON bot definitions for optional bots such as Paldeck; Hachi remains the only bundled bot type.
 - Added Fleet and Credentials workspaces for server/deployment registration, external bot discovery, scoped local/SSH PM2 controls, health checks, redacted logs, and OS-encrypted Discord credential profiles.
 - Added exclusive shared-credential leases that block multiple ordinary deployments from starting the same Discord test identity concurrently.
+- Added generic security audits, AES-256-GCM fleet database backups/restores, automatic backup and retention policies, log retention, and adapter-driven database encryption with rollback.
+- Added transactional fleet Git updates, external command adapters, Discord command deployment, and external bot-definition installation/removal.
 
 ### Changed
 
+- Changed credential-backed PM2 starts to inject secrets through the process environment or SSH stdin and skip `pm2 save`, preventing Discord tokens from being persisted in environment files or PM2 dumps.
 - Expanded diagnostics bundle export to include redacted Hachi runtime logs and PM2 snapshots alongside HachiGen logs.
 - Updated vulnerable transitive build dependencies to patched releases, clearing npm audit findings for `brace-expansion`, `fast-uri`, `tar`, and `undici`.
 

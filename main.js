@@ -900,6 +900,8 @@ function registerIpc() {
 	ipcMain.handle("manager:add-fleet-deployment", (_event, values) => manager.addFleetDeployment(values));
 	ipcMain.handle("manager:set-active-fleet-deployment", (_event, deploymentId) => manager.setActiveFleetDeployment(deploymentId));
 	ipcMain.handle("manager:remove-fleet-deployment", (_event, deploymentId) => manager.removeFleetDeployment(deploymentId));
+	ipcMain.handle("manager:install-external-bot-definition", (_event, jsonText) => manager.installExternalBotDefinition(jsonText));
+	ipcMain.handle("manager:remove-external-bot-definition", (_event, botTypeId) => manager.removeExternalBotDefinition(botTypeId));
 	ipcMain.handle("manager:get-fleet-deployment-status", (_event, deploymentId) => manager.getFleetDeploymentStatus(deploymentId));
 	ipcMain.handle("manager:control-fleet-deployment", (_event, deploymentId, action) => manager.controlFleetDeployment(deploymentId, action));
 	ipcMain.handle("manager:get-fleet-deployment-logs", (_event, deploymentId, lines) => manager.getFleetDeploymentLogs(deploymentId, lines));
@@ -907,6 +909,18 @@ function registerIpc() {
 	ipcMain.handle("manager:add-credential-profile", (_event, values) => manager.addCredentialProfile(values));
 	ipcMain.handle("manager:remove-credential-profile", (_event, profileId) => manager.removeCredentialProfile(profileId));
 	ipcMain.handle("manager:assign-credential-profile", (_event, deploymentId, profileId) => manager.assignCredentialProfile(deploymentId, profileId));
+	ipcMain.handle("manager:run-fleet-definition-command", (_event, deploymentId, commandName) => manager.runFleetDefinitionCommand(deploymentId, commandName));
+	ipcMain.handle("manager:audit-fleet-deployment-security", (_event, deploymentId) => manager.auditFleetDeploymentSecurity(deploymentId));
+	ipcMain.handle("manager:backup-fleet-database", (_event, deploymentId) => manager.backupFleetDatabase(deploymentId));
+	ipcMain.handle("manager:restore-fleet-database-backup", (_event, deploymentId, backupId) => manager.restoreFleetDatabaseBackup(deploymentId, backupId));
+	ipcMain.handle("manager:encrypt-fleet-database", (_event, deploymentId) => manager.encryptFleetDatabase(deploymentId));
+	ipcMain.handle("manager:get-fleet-repository-status", (_event, deploymentId, options) => manager.getFleetRepositoryStatus(deploymentId, options));
+	ipcMain.handle("manager:update-fleet-deployment", (_event, deploymentId) => manager.updateFleetDeployment(deploymentId));
+	ipcMain.handle("manager:deploy-fleet-discord-commands", (_event, deploymentId) => manager.deployFleetDiscordCommands(deploymentId));
+	ipcMain.handle("manager:set-fleet-deployment-policies", (_event, deploymentId, values) => manager.setFleetDeploymentPolicies(deploymentId, values));
+	ipcMain.handle("manager:list-fleet-backups", (_event, deploymentId) => manager.listFleetBackups(deploymentId));
+	ipcMain.handle("manager:prune-fleet-backups", (_event, deploymentId) => manager.pruneFleetBackups(deploymentId));
+	ipcMain.handle("manager:prune-fleet-logs", (_event, deploymentId) => manager.pruneFleetLogs(deploymentId));
 	ipcMain.handle("manager:get-diagnostics", () => manager.getDiagnostics());
 	ipcMain.handle("manager:get-about-info", () => manager.getAboutInfo());
 
@@ -1121,6 +1135,7 @@ if (!singleInstanceLock) {
 			},
 		});
 		manager.startLogCleanup({ runImmediately: true });
+		manager.startFleetMaintenance();
 		manager.initCrashHandlers();
 
 		app.on("child-process-gone", (_event, details) => {
@@ -1145,6 +1160,7 @@ app.on("before-quit", () => {
 
 	if (manager) {
 		manager.stopLogCleanup();
+		manager.stopFleetMaintenance();
 	}
 });
 

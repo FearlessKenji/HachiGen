@@ -29,6 +29,7 @@
 					<button class="nav-item active" type="button" data-view="dashboard">Dashboard</button>
 					<button class="nav-item" type="button" data-view="fleet">Fleet</button>
 					<button class="nav-item" type="button" data-view="credentials">Credentials</button>
+					<button class="nav-item" type="button" data-view="security">Security</button>
 					<button class="nav-item" type="button" data-view="setup">Setup</button>
 					<button class="nav-item" type="button" data-view="updates">Updates</button>
 					<button class="nav-item" type="button" data-view="database">Database</button>
@@ -65,6 +66,11 @@
 				<!-- Dashboard: high-level health cards plus common actions. -->
 				<section class="view active" data-view-panel="dashboard">
 					<div class="status-grid">
+						<article class="status-card status-card-action" data-action="show-fleet" role="button" tabindex="0">
+							<div class="card-label">Fleet</div>
+							<div class="status-value"><span class="dot" id="fleetDot"></span><span id="fleetStatus">Loading</span></div>
+							<div class="card-detail" id="fleetDetail">Servers and deployments</div>
+						</article>
 						<article class="status-card">
 							<div class="card-label">Bot</div>
 							<div class="status-value">
@@ -658,6 +664,10 @@
 						<div class="panel-meta">Hachi is native. Every other bot is loaded from a validated external definition.</div>
 						<div class="fleet-list" id="fleetBotTypeList">No bot types loaded.</div>
 						<div class="update-message" id="fleetDefinitionErrors"></div>
+						<form class="fleet-form" id="botDefinitionForm">
+							<label class="fleet-form-wide">External definition JSON<textarea name="definition" rows="10" spellcheck="false" placeholder='{"id":"paldeck","displayName":"Paldeck","runtime":{"ecosystemFile":"config/ecosystem.config.js","pm2Name":"Paldeck"},"capabilities":{"pm2":true,"logs":true}}'></textarea></label>
+							<button class="button primary" type="button" data-action="install-bot-definition">Install Definition</button>
+						</form>
 					</div>
 					<div class="panel">
 						<h2>Deployment Output</h2>
@@ -696,6 +706,40 @@
 							<label>Deployment<select id="credentialDeploymentSelect"></select></label>
 							<label>Credential profile<select id="credentialProfileSelect"></select></label>
 							<button class="button primary" type="button" data-action="assign-credential-profile">Save Assignment</button>
+						</div>
+					</div>
+				</section>
+
+				<section class="view" data-view-panel="security">
+					<div class="panel split-panel">
+						<div><h2>Fleet Security</h2><div class="panel-meta">Database encryption, encrypted recovery backups, and deployment compliance</div></div>
+						<label class="select-field">Deployment<select id="securityDeploymentSelect"></select></label>
+					</div>
+					<div class="panel">
+						<div class="button-row wrap">
+							<button class="button info" type="button" data-action="audit-fleet-security">Run Security Audit</button>
+							<button class="button secondary" type="button" data-action="backup-fleet-database">Encrypted Backup</button>
+							<button class="button primary" type="button" data-action="encrypt-fleet-database">Encrypt Database</button>
+						</div>
+						<pre class="output compact-output" id="fleetSecurityOutput">Select a deployment and run a security audit.</pre>
+					</div>
+					<div class="panel">
+						<h2>Restore encrypted backup</h2>
+						<div class="fleet-form">
+							<label>Backup ID<input id="fleetBackupIdInput" spellcheck="false" placeholder="backup-..."></label>
+							<button class="button secondary" type="button" data-action="restore-fleet-database">Restore</button>
+						</div>
+					</div>
+					<div class="panel">
+						<h2>Retention policies</h2>
+						<div class="fleet-form">
+							<label>Encrypted backups to keep<input id="fleetBackupRetentionInput" type="number" min="1" max="365" value="14"></label>
+							<label>Automatic backup interval (hours, 0 disables)<input id="fleetAutoBackupHoursInput" type="number" min="0" max="720" value="0"></label>
+							<label>Log retention days<input id="fleetLogRetentionInput" type="number" min="1" max="3650" value="30"></label>
+							<button class="button primary" type="button" data-action="save-fleet-policies">Save Policies</button>
+							<button class="button secondary" type="button" data-action="list-fleet-backups">List Backups</button>
+							<button class="button secondary" type="button" data-action="prune-fleet-backups">Apply Backup Retention</button>
+							<button class="button secondary" type="button" data-action="prune-fleet-logs">Apply Log Retention</button>
 						</div>
 					</div>
 				</section>

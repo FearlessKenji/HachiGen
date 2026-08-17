@@ -18,6 +18,11 @@ The installer creates an app folder that includes `HachiGen.exe` and `Uninstall 
 
 ## What It Manages
 
+- Multiple local or SSH servers and bot deployments through the Fleet workspace
+- Native Hachi deployments plus validated external bot definitions for optional bots
+- OS-encrypted, reusable Discord credential profiles with shared-test-bot concurrency protection
+- Scoped PM2 runtime controls, Git updates, Discord command deployment, health checks, and redacted logs
+- Fleet-wide database security audits, encrypted backups/restores, retention, and adapter-driven encryption with rollback
 - Local and remote Hachi install paths
 - `.env` and `config/config.json` setup
 - Encrypted secret and database key preparation
@@ -26,6 +31,8 @@ The installer creates an app folder that includes `HachiGen.exe` and `Uninstall 
 - PM2 start, stop, restart, status, and logs
 - Database backups, restore, schema review, sanitation, migration, and encryption lifecycle
 - HachiGen self-updates from `hachigen-vX.X.X` releases
+
+Hachi remains the only bot type bundled with HachiGen. See [External bot definitions](docs/bot-definitions.md) to add Paldeck or another optional bot.
 
 ## Development
 

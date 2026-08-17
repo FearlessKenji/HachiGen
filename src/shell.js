@@ -14,15 +14,17 @@ const ALLOWED_COMMANDS = new Set([
 	"npm",
 	"npx",
 	"pm2",
+	"pnpm",
 	"ssh",
 	"where",
 	"which",
 	"winget",
+	"yarn",
 ]);
 const WINDOWS_COMMAND_PROCESSOR = "C:\\Windows\\System32\\cmd.exe";
 const WINDOWS_COMMAND_RESOLVER = "C:\\Windows\\System32\\where.exe";
 const POSIX_COMMAND_RESOLVERS = ["/usr/bin/which", "/bin/which"];
-const WINDOWS_COMMAND_SHIMS = new Set(["npm", "npx", "pm2"]);
+const WINDOWS_COMMAND_SHIMS = new Set(["npm", "npx", "pm2", "pnpm", "yarn"]);
 const commandPathCache = new Map();
 
 // ShellError wraps command failures with the command result attached. Callers
@@ -81,7 +83,7 @@ function commandFailureMessage(command, args, code, stdout, stderr) {
 // npm/npx/pm2 are usually .cmd shims, and Node's spawn can fail if it treats
 // them like normal executable files.
 function needsWindowsCommandShell(command) {
-	return process.platform === "win32" && ["npm", "npx", "pm2"].includes(command);
+	return process.platform === "win32" && ["npm", "npx", "pm2", "pnpm", "yarn"].includes(command);
 }
 
 function shellError(message, command, args = [], cwd = null) {
