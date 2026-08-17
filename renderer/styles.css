@@ -1423,6 +1423,62 @@ h2 {
 	margin-top: 18px;
 }
 
+.fleet-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 16px;
+}
+
+.fleet-list,
+.fleet-form {
+	display: grid;
+	gap: 10px;
+}
+
+.fleet-form {
+	margin-top: 18px;
+	padding-top: 16px;
+	border-top: 1px solid var(--line);
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fleet-form label {
+	display: grid;
+	gap: 6px;
+	color: var(--muted);
+	font-size: 0.82rem;
+}
+
+.fleet-form .button {
+	align-self: end;
+}
+
+.fleet-entry {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 12px;
+	padding: 11px 12px;
+	border: 1px solid var(--line);
+	border-radius: 7px;
+	background: rgba(255, 255, 255, 0.04);
+}
+
+.fleet-entry-main {
+	min-width: 0;
+}
+
+.fleet-entry-title {
+	font-weight: 650;
+}
+
+.fleet-entry-meta {
+	margin-top: 3px;
+	color: var(--muted);
+	font-size: 0.82rem;
+	overflow-wrap: anywhere;
+}
+
 /* Toast notifications in the bottom-right corner. */
 .toast-region {
 	position: fixed;
@@ -1460,6 +1516,11 @@ h2 {
 	.remote-grid,
 	.updates-grid,
 	.logs-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.fleet-grid,
+	.fleet-form {
 		grid-template-columns: 1fr;
 	}
 

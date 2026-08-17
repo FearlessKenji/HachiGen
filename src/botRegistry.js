@@ -162,12 +162,97 @@ function normalizeFleetRegistry(saved, settings, defaultInstallPath) {
 	};
 }
 
+function normalizeServer(input, existingIds = new Set()) {
+	const connection = input?.connection && typeof input.connection === "object" ? input.connection : {};
+	const type = connection.type === "ssh" ? "ssh" : "local";
+	const name = String(input?.name || "").trim();
+	const id = String(input?.id || stableId("server", `${type}:${name}:${connection.host || ""}:${connection.username || ""}`)).trim();
+	if (!/^[a-z0-9][a-z0-9-]{1,63}$/u.test(id) || existingIds.has(id)) {
+		throw new Error("Server id is invalid or already in use.");
+	}
+	if (!name || name.length > 80) {
+		throw new Error("Server name is required and must be 80 characters or fewer.");
+	}
+	if (type === "local") {
+		return { id, name, connection: { type } };
+	}
+	const host = String(connection.host || "").trim();
+	const username = String(connection.username || "").trim();
+	const port = Number.parseInt(String(connection.port || 22), 10);
+	if (!host || !username || !Number.isInteger(port) || port < 1 || port > 65535) {
+		throw new Error("SSH servers require a host, username, and valid port.");
+	}
+	return {
+		id,
+		name,
+		connection: {
+			type,
+			host,
+			username,
+			port,
+			portMode: connection.portMode === "custom" ? "custom" : "default",
+			sshKeyPath: String(connection.sshKeyPath || "").trim(),
+		},
+	};
+}
+
+function normalizeDeployment(input, fleet, definitions) {
+	const serverIds = new Set(fleet.servers.map(item => item.id));
+	const definitionIds = new Set(definitions.map(item => item.id));
+	const serverId = String(input?.serverId || "").trim();
+	const botTypeId = String(input?.botTypeId || "").trim();
+	const name = String(input?.name || "").trim();
+	const installPath = String(input?.installPath || "").trim();
+	if (!serverIds.has(serverId)) {
+		throw new Error("Deployment server does not exist.");
+	}
+	if (!definitionIds.has(botTypeId)) {
+		throw new Error("Deployment bot type is not installed.");
+	}
+	if (!name || name.length > 80 || !installPath) {
+		throw new Error("Deployment name and install path are required.");
+	}
+	const server = fleet.servers.find(item => item.id === serverId);
+	if (server.connection.type === "local" && !path.isAbsolute(installPath)) {
+		throw new Error("Local deployment paths must be absolute.");
+	}
+	const pm2Name = String(input.pm2Name || definitions.find(item => item.id === botTypeId)?.runtime?.pm2Name || name).trim();
+	if (!pm2Name || pm2Name.length > 100 || /[\r\n\0]/u.test(pm2Name)) {
+		throw new Error("Deployment PM2 name is invalid.");
+	}
+	const id = String(input?.id || stableId("deployment", `${serverId}:${botTypeId}:${installPath}`)).trim();
+	if (!/^[a-z0-9][a-z0-9-]{1,63}$/u.test(id) || fleet.deployments.some(item => item.id === id)) {
+		throw new Error("Deployment id is invalid or already in use.");
+	}
+	return {
+		id,
+		name,
+		botTypeId,
+		serverId,
+		installPath,
+		pm2Name,
+		environment: ["development", "test", "staging", "production"].includes(input.environment) ? input.environment : "production",
+		credentialProfileId: input.credentialProfileId || null,
+		policies: input.policies && typeof input.policies === "object" ? input.policies : {},
+	};
+}
+
+function writeFleetRegistry(filePath, fleet) {
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	const temporaryPath = `${filePath}.${process.pid}.tmp`;
+	fs.writeFileSync(temporaryPath, `${JSON.stringify(fleet, null, "\t")}\n`, { encoding: "utf8", mode: 0o600 });
+	fs.renameSync(temporaryPath, filePath);
+}
+
 module.exports = {
 	LOCAL_SERVER_ID,
 	NATIVE_HACHI_DEFINITION,
 	REGISTRY_VERSION,
 	createLegacyFleet,
 	loadBotDefinitions,
+	normalizeDeployment,
 	normalizeFleetRegistry,
+	normalizeServer,
 	validateExternalBotDefinition,
+	writeFleetRegistry,
 };

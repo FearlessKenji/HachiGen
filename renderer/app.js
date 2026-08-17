@@ -12,6 +12,8 @@ const api = window.hachiGen;
 // Human-readable titles for each sidebar view.
 const viewTitles = {
 	dashboard: "Dashboard",
+	fleet: "Fleet",
+	credentials: "Credentials",
 	setup: "Setup",
 	remote: "Remote",
 	updates: "Updates",
@@ -131,6 +133,8 @@ const ICON_PATHS = {
 };
 const VIEW_ICONS = {
 	dashboard: "layoutDashboard",
+	fleet: "remote",
+	credentials: "key",
 	database: "database",
 	diagnostics: "shieldCheck",
 	logs: "logs",
@@ -271,6 +275,7 @@ let setupGuidePrimaryAction = "show-setup";
 let setupGuideOpen = false;
 let setupGuideAutoShown = false;
 let diagnosticsState = null;
+let fleetState = null;
 
 function setDatabaseView(nextView) {
 	// Keep database viewer state assignment outside async loader internals.
@@ -3125,7 +3130,110 @@ function refreshCurrentDatabaseViewer() {
 	return loadDatabaseViewer(databaseView?.selectedTable || $("#databaseTableSelect")?.value || "", databaseSort);
 }
 
+function replaceSelectOptions(selector, items, labelForItem) {
+	const select = $(selector);
+	if (!select) return;
+	const selected = select.value;
+	select.replaceChildren(...items.map(item => {
+		const option = document.createElement("option");
+		option.value = item.id;
+		option.textContent = labelForItem(item);
+		return option;
+	}));
+	if (items.some(item => item.id === selected)) select.value = selected;
+}
+
+function fleetEntry(title, meta, actions = []) {
+	const entry = document.createElement("div");
+	entry.className = "fleet-entry";
+	const main = document.createElement("div");
+	main.className = "fleet-entry-main";
+	const heading = document.createElement("div");
+	heading.className = "fleet-entry-title";
+	heading.textContent = title;
+	const detail = document.createElement("div");
+	detail.className = "fleet-entry-meta";
+	detail.textContent = meta;
+	main.append(heading, detail);
+	entry.append(main);
+	if (actions.length) {
+		const row = document.createElement("div");
+		row.className = "button-row";
+		for (const action of actions) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = `button compact ${action.kind || "secondary"}`;
+			button.dataset.action = action.action;
+			button.dataset.itemId = action.id;
+			button.textContent = action.label;
+			row.append(button);
+		}
+		entry.append(row);
+	}
+	return entry;
+}
+
+function renderFleet(nextFleet) {
+	fleetState = nextFleet || state?.fleet || null;
+	if (!fleetState) return;
+	const serverList = $("#fleetServerList");
+	const deploymentList = $("#fleetDeploymentList");
+	const botTypeList = $("#fleetBotTypeList");
+	serverList?.replaceChildren(...fleetState.servers.map(server => fleetEntry(
+		server.name,
+		server.connection.type === "local" ? `Local · ${server.deploymentCount} deployment(s)` : `${server.connection.username}@${server.connection.host}:${server.connection.port} · ${server.deploymentCount} deployment(s)`,
+		server.id === "local" ? [] : [{ action: "remove-fleet-server", id: server.id, label: "Remove" }],
+	)));
+	deploymentList?.replaceChildren(...fleetState.deployments.map(deployment => {
+		const server = fleetState.servers.find(item => item.id === deployment.serverId);
+		const type = fleetState.botTypes.find(item => item.id === deployment.botTypeId);
+		const active = deployment.id === fleetState.activeDeploymentId;
+		return fleetEntry(
+			`${deployment.name}${active ? " · Active" : ""}`,
+			`${type?.displayName || deployment.botTypeId} · ${server?.name || deployment.serverId} · ${deployment.environment} · ${deployment.installPath}`,
+			[
+				...(!active ? [{ action: "activate-fleet-deployment", id: deployment.id, label: "Select", kind: "info" }] : []),
+				{ action: "fleet-runtime-start", id: deployment.id, label: "Start", kind: "primary" },
+				{ action: "fleet-runtime-stop", id: deployment.id, label: "Stop" },
+				{ action: "fleet-runtime-restart", id: deployment.id, label: "Restart" },
+				{ action: "fleet-runtime-health", id: deployment.id, label: "Health", kind: "info" },
+				{ action: "fleet-runtime-logs", id: deployment.id, label: "Logs" },
+				{ action: "remove-fleet-deployment", id: deployment.id, label: "Remove" },
+			],
+		);
+	}));
+	botTypeList?.replaceChildren(...fleetState.botTypes.map(type => fleetEntry(
+		type.displayName,
+		`${type.source === "native" ? "Native" : "External"} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "runtime definition"}`,
+	)));
+	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name);
+	replaceSelectOptions("#fleetBotTypeSelect", fleetState.botTypes, item => `${item.displayName}${item.source === "native" ? " (native)" : " (external)"}`);
+	replaceSelectOptions("#credentialDeploymentSelect", fleetState.deployments, item => item.name);
+	const credentialOptions = [{ id: "", name: "No credential profile" }, ...fleetState.credentialProfiles];
+	replaceSelectOptions("#credentialProfileSelect", credentialOptions, item => item.name);
+	const profileList = $("#credentialProfileList");
+	profileList?.replaceChildren(...(fleetState.credentialProfiles.length ? fleetState.credentialProfiles.map(profile => {
+		const assigned = fleetState.deployments.filter(item => item.credentialProfileId === profile.id).map(item => item.name);
+		return fleetEntry(
+			profile.name,
+			`${profile.environment} · Application ${profile.clientId} · fingerprint ${profile.tokenFingerprint} · ${assigned.length ? `Assigned: ${assigned.join(", ")}` : "Unassigned"}`,
+			[{ action: "remove-credential-profile", id: profile.id, label: "Remove" }],
+		);
+	}) : [fleetEntry("No profiles", "Add an encrypted Discord credential profile to begin.")]));
+	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
+}
+
+async function refreshFleet() {
+	const fleet = await api.getFleet();
+	renderFleet(fleet);
+	return fleet;
+}
+
 async function refreshCurrentView() {
+	if (activeView === "fleet") {
+		await refreshFleet();
+		return { message: "Fleet refreshed." };
+	}
 	if (activeView === "database") {
 		await refreshCurrentDatabaseViewer();
 		return { message: "Database view refreshed." };
@@ -3211,6 +3319,7 @@ function renderState(nextState) {
 	renderDatabaseViewer(databaseView);
 	renderSanitizeSummary(sanitizeReport);
 	renderRemote(state.remote, state.runtimeTarget);
+	renderFleet(state.fleet);
 
 	if (!state.database?.exists) {
 		databaseView = null;
@@ -3581,6 +3690,119 @@ function handleAction(event) {
 	}
 
 	const action = button.dataset.action;
+
+	if (action === "refresh-fleet") {
+		runAction("Refresh fleet", refreshFleet);
+		return;
+	}
+
+	if (action === "add-fleet-server") {
+		const form = $("#fleetServerForm");
+		const values = Object.fromEntries(new window.FormData(form));
+		runAction("Add server", async () => {
+			const fleet = await api.addFleetServer({
+				name: values.name,
+				connection: { type: values.type, host: values.host, username: values.username, port: values.port, sshKeyPath: values.sshKeyPath },
+			});
+			renderFleet(fleet);
+			form.reset();
+			return { message: "Server added." };
+		});
+		return;
+	}
+
+	if (action === "add-fleet-deployment") {
+		const form = $("#fleetDeploymentForm");
+		const values = Object.fromEntries(new window.FormData(form));
+		runAction("Add deployment", async () => {
+			const fleet = await api.addFleetDeployment(values);
+			renderFleet(fleet);
+			form.reset();
+			return { message: "Deployment added." };
+		});
+		return;
+	}
+
+	if (action === "add-credential-profile") {
+		const form = $("#credentialProfileForm");
+		const values = Object.fromEntries(new window.FormData(form));
+		values.allowConcurrent = Boolean(form.elements.allowConcurrent.checked);
+		runAction("Save credential profile", async () => {
+			const fleet = await api.addCredentialProfile(values);
+			renderFleet(fleet);
+			form.reset();
+			return { message: "Credential profile encrypted and saved." };
+		});
+		return;
+	}
+
+	if (action === "assign-credential-profile") {
+		runAction("Assign credential profile", async () => {
+			const fleet = await api.assignCredentialProfile($("#credentialDeploymentSelect").value, $("#credentialProfileSelect").value);
+			renderFleet(fleet);
+			return { message: "Credential assignment saved." };
+		});
+		return;
+	}
+
+	if (action === "remove-credential-profile") {
+		showConfirmModal({
+			title: "Remove credential profile?",
+			meta: "Encrypted credential deletion",
+			summary: "The encrypted vault record will be deleted. Assigned profiles must be unassigned first.",
+			confirmText: "Remove",
+			variant: "danger",
+		}).then(confirmed => {
+			if (!confirmed) return;
+			runAction("Remove credential profile", async () => {
+				const fleet = await api.removeCredentialProfile(button.dataset.itemId);
+				renderFleet(fleet);
+				return { message: "Credential profile removed." };
+			});
+		});
+		return;
+	}
+
+	if (action === "activate-fleet-deployment") {
+		runAction("Select deployment", async () => {
+			const fleet = await api.setActiveFleetDeployment(button.dataset.itemId);
+			renderFleet(fleet);
+			return { message: "Active deployment changed." };
+		});
+		return;
+	}
+
+	if (action.startsWith("fleet-runtime-")) {
+		const operation = action.slice("fleet-runtime-".length);
+		const deploymentId = button.dataset.itemId;
+		runAction(`Fleet ${operation}`, async () => {
+			let result;
+			if (["start", "stop", "restart"].includes(operation)) result = await api.controlFleetDeployment(deploymentId, operation);
+			else if (operation === "health") result = await api.checkFleetDeploymentHealth(deploymentId);
+			else result = await api.getFleetDeploymentLogs(deploymentId, 240);
+			setText("#fleetDeploymentOutput", operation === "logs" ? (result.logs || "No logs returned.") : JSON.stringify(result, null, 2));
+			return { message: `${operation[0].toUpperCase()}${operation.slice(1)} completed.` };
+		});
+		return;
+	}
+
+	if (action === "remove-fleet-server" || action === "remove-fleet-deployment") {
+		showConfirmModal({
+			title: action === "remove-fleet-server" ? "Remove server?" : "Remove deployment?",
+			meta: "Fleet configuration change",
+			summary: "This removes HachiGen's registry entry. It does not delete bot files or stop processes.",
+			confirmText: "Remove",
+			variant: "danger",
+		}).then(confirmed => {
+			if (!confirmed) return;
+			runAction("Remove fleet entry", async () => {
+				const fleet = action === "remove-fleet-server" ? await api.removeFleetServer(button.dataset.itemId) : await api.removeFleetDeployment(button.dataset.itemId);
+				renderFleet(fleet);
+				return { message: "Fleet entry removed." };
+			});
+		});
+		return;
+	}
 
 	if (action === "show-setup-guide") {
 		showSetupGuideModal();

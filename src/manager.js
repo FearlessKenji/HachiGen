@@ -15,7 +15,10 @@ const {
 const { commandExists, run } = require("./shell.js");
 const {
 	loadBotDefinitions,
+	normalizeDeployment,
 	normalizeFleetRegistry,
+	normalizeServer,
+	writeFleetRegistry,
 } = require("./botRegistry.js");
 
 // This file contains HachiGen's backend coordinator.
@@ -1908,7 +1911,7 @@ function shouldShowShellEntryInUi(entry) {
 }
 
 class HachiManager {
-	constructor({ managerRoot, defaultInstallPath, userDataPath, sendEvent }) {
+	constructor({ managerRoot, defaultInstallPath, userDataPath, sendEvent, protectSecret, unprotectSecret }) {
 		// managerRoot is the manager folder in development and the bundled app
 		// location after packaging. defaultInstallPath is passed from main.js so
 		// packaged HachiGen can default to the folder beside HachiGen.exe.
@@ -1921,6 +1924,9 @@ class HachiManager {
 		this.settingsPath = path.join(this.userDataPath, "settings.json");
 		this.fleetPath = path.join(this.userDataPath, "fleet.json");
 		this.botDefinitionsDir = path.join(this.userDataPath, "bot-definitions");
+		this.credentialVaultPath = path.join(this.userDataPath, "credential-vault.json");
+		this.protectSecret = protectSecret || null;
+		this.unprotectSecret = unprotectSecret || null;
 
 		// sendEvent comes from main.js and streams backend activity to the UI.
 		this.sendEvent = sendEvent || noop;
@@ -1952,8 +1958,341 @@ class HachiManager {
 		// migration can be rolled back without destroying the working Hachi setup.
 		const saved = readJson(this.fleetPath, null);
 		const fleet = normalizeFleetRegistry(saved, this.settings, this.defaultInstallPath);
-		writeJsonFile(this.fleetPath, fleet);
+		writeFleetRegistry(this.fleetPath, fleet);
 		return fleet;
+	}
+
+	saveFleetRegistry() {
+		writeFleetRegistry(this.fleetPath, this.fleet);
+	}
+
+	addFleetServer(values) {
+		const server = normalizeServer(values, new Set(this.fleet.servers.map(item => item.id)));
+		this.fleet.servers.push(server);
+		this.saveFleetRegistry();
+		this.log(`Fleet server added: ${server.name}.`, { area: "fleet", serverId: server.id });
+		return this.getFleetState();
+	}
+
+	removeFleetServer(serverId) {
+		const server = this.fleet.servers.find(item => item.id === serverId);
+		if (!server) {
+			throw new Error("Server was not found.");
+		}
+		if (server.id === "local") {
+			throw new Error("The built-in local server cannot be removed.");
+		}
+		if (this.fleet.deployments.some(item => item.serverId === server.id)) {
+			throw new Error("Move or remove this server's deployments first.");
+		}
+		this.fleet.servers = this.fleet.servers.filter(item => item.id !== server.id);
+		this.saveFleetRegistry();
+		this.log(`Fleet server removed: ${server.name}.`, { area: "fleet", serverId: server.id });
+		return this.getFleetState();
+	}
+
+	addFleetDeployment(values) {
+		const definitions = loadBotDefinitions(this.botDefinitionsDir).definitions;
+		const deployment = normalizeDeployment(values, this.fleet, definitions);
+		this.fleet.deployments.push(deployment);
+		this.fleet.activeDeploymentId = deployment.id;
+		this.saveFleetRegistry();
+		this.log(`Fleet deployment added: ${deployment.name}.`, { area: "fleet", deploymentId: deployment.id, serverId: deployment.serverId });
+		return this.getFleetState();
+	}
+
+	setActiveFleetDeployment(deploymentId) {
+		if (!this.fleet.deployments.some(item => item.id === deploymentId)) {
+			throw new Error("Deployment was not found.");
+		}
+		this.fleet.activeDeploymentId = deploymentId;
+		this.saveFleetRegistry();
+		return this.getFleetState();
+	}
+
+	removeFleetDeployment(deploymentId) {
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		if (!deployment) {
+			throw new Error("Deployment was not found.");
+		}
+		if (deployment.botTypeId === "hachi" && this.fleet.deployments.filter(item => item.botTypeId === "hachi").length === 1) {
+			throw new Error("The migrated native Hachi deployment cannot be removed until another Hachi deployment exists.");
+		}
+		this.fleet.deployments = this.fleet.deployments.filter(item => item.id !== deploymentId);
+		if (this.fleet.activeDeploymentId === deploymentId) {
+			this.fleet.activeDeploymentId = this.fleet.deployments[0]?.id || null;
+		}
+		this.saveFleetRegistry();
+		this.log(`Fleet deployment removed: ${deployment.name}.`, { area: "fleet", deploymentId });
+		return this.getFleetState();
+	}
+
+	getFleetDeploymentContext(deploymentId) {
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		if (!deployment) {
+			throw new Error("Deployment was not found.");
+		}
+		const server = this.fleet.servers.find(item => item.id === deployment.serverId);
+		if (!server) {
+			throw new Error("Deployment server was not found.");
+		}
+		const loaded = loadBotDefinitions(this.botDefinitionsDir);
+		const definition = loaded.definitions.find(item => item.id === deployment.botTypeId);
+		if (!definition) {
+			throw new Error(`Bot type ${deployment.botTypeId} is not installed.`);
+		}
+		return { definition, deployment, server };
+	}
+
+	async runFleetRemoteCommand(server, command, options = {}) {
+		const connection = server.connection;
+		const settings = normalizeRemoteSettings({
+			host: connection.host,
+			username: connection.username,
+			sshKeyPath: connection.sshKeyPath,
+			portMode: connection.portMode,
+			port: connection.port,
+			remotePath: "/",
+			pm2Name: "unused",
+		});
+		validateRemoteSettings(settings, { requireFields: true });
+		return run("ssh", this.buildRemoteSshArgs(settings, command), {
+			allowFailure: Boolean(options.allowFailure),
+			timeoutMs: options.timeoutMs || 120000,
+			onLog: options.log === false ? undefined : entry => this.logShell(entry),
+		});
+	}
+
+	async runFleetDeploymentCommand(context, localCommand, remoteCommand, options = {}) {
+		if (context.server.connection.type === "ssh") {
+			return this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && ${remoteCommand}`, options);
+		}
+		return run(localCommand.command, localCommand.args || [], {
+			cwd: context.deployment.installPath,
+			allowFailure: Boolean(options.allowFailure),
+			timeoutMs: options.timeoutMs || 120000,
+			onLog: options.log === false ? undefined : entry => this.logShell(entry),
+		});
+	}
+
+	async getFleetDeploymentStatus(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		let result;
+		if (context.server.connection.type === "ssh") {
+			result = await this.runFleetRemoteCommand(context.server, "pm2 jlist", { allowFailure: true, log: false, timeoutMs: 30000 });
+		} else {
+			if (!await commandExists("pm2")) {
+				return { deploymentId, installed: false, registered: false, status: "pm2-missing", message: "PM2 is not installed." };
+			}
+			result = await run("pm2", ["jlist"], { allowFailure: true, timeoutMs: 30000 });
+		}
+		if (result.code !== 0) {
+			return { deploymentId, installed: true, registered: false, status: "error", message: result.stderr || "Could not read PM2 status." };
+		}
+		try {
+			const app = parsePm2Json(result.stdout).find(item => item.name === context.deployment.pm2Name);
+			if (!app) {
+				return { deploymentId, installed: true, registered: false, status: "not-registered", message: `${context.deployment.pm2Name} is not registered.` };
+			}
+			return {
+				deploymentId,
+				installed: true,
+				registered: true,
+				status: app.pm2_env?.status || "unknown",
+				pid: app.pid || null,
+				cpu: app.monit?.cpu || 0,
+				memory: app.monit?.memory || 0,
+				restarts: app.pm2_env?.restart_time || 0,
+				message: `${context.deployment.name} is ${app.pm2_env?.status || "unknown"}.`,
+			};
+		} catch (error) {
+			return { deploymentId, installed: true, registered: false, status: "error", message: error.message };
+		}
+	}
+
+	async controlFleetDeployment(deploymentId, action) {
+		if (!["start", "stop", "restart"].includes(action)) {
+			throw new Error("Unsupported runtime action.");
+		}
+		const context = this.getFleetDeploymentContext(deploymentId);
+		if (action === "start" || action === "restart") {
+			await this.assertCredentialLeaseAvailable(deploymentId);
+		}
+		if (!context.definition.capabilities?.pm2) {
+			throw new Error(`${context.definition.displayName} does not declare PM2 capability.`);
+		}
+		const status = await this.getFleetDeploymentStatus(deploymentId);
+		const ecosystem = context.definition.runtime.ecosystemFile;
+		let localArgs;
+		let remoteCommand;
+		if (action === "start" && !status.registered) {
+			localArgs = ["start", ecosystem, "--only", context.deployment.pm2Name];
+			remoteCommand = `pm2 start ${quotePosix(ecosystem)} --only ${quotePosix(context.deployment.pm2Name)}`;
+		} else {
+			localArgs = [action === "start" ? "restart" : action, context.deployment.pm2Name];
+			remoteCommand = `pm2 ${action === "start" ? "restart" : action} ${quotePosix(context.deployment.pm2Name)}`;
+		}
+		this.log(`${action[0].toUpperCase()}${action.slice(1)}ing fleet deployment ${context.deployment.name}.`, { area: "fleet-runtime", action, deploymentId, serverId: context.server.id });
+		await this.runFleetDeploymentCommand(context, { command: "pm2", args: localArgs }, remoteCommand);
+		if (action !== "stop") {
+			if (context.server.connection.type === "ssh") {
+				await this.runFleetRemoteCommand(context.server, "pm2 save", { timeoutMs: 120000 });
+			} else {
+				await run("pm2", ["save"], { timeoutMs: 120000, onLog: entry => this.logShell(entry) });
+			}
+		}
+		return this.getFleetDeploymentStatus(deploymentId);
+	}
+
+	async getFleetDeploymentLogs(deploymentId, lines = 200) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		const safeLines = Math.min(1000, Math.max(20, Number.parseInt(String(lines), 10) || 200));
+		const result = await this.runFleetDeploymentCommand(
+			context,
+			{ command: "pm2", args: ["logs", context.deployment.pm2Name, "--lines", String(safeLines), "--nostream", "--no-color"] },
+			`pm2 logs ${quotePosix(context.deployment.pm2Name)} --lines ${safeLines} --nostream --no-color`,
+			{ allowFailure: true, log: false, timeoutMs: 30000 },
+		);
+		return { deploymentId, logs: redactHachiGenLogText(`${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`), ok: result.code === 0 };
+	}
+
+	async checkFleetDeploymentHealth(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		let pathResult;
+		if (context.server.connection.type === "ssh") {
+			pathResult = await this.runFleetRemoteCommand(context.server, `test -d ${quoteRemotePath(context.deployment.installPath)}`, { allowFailure: true, log: false, timeoutMs: 30000 });
+		} else {
+			pathResult = { code: fileExists(context.deployment.installPath) ? 0 : 1 };
+		}
+		const runtime = await this.getFleetDeploymentStatus(deploymentId);
+		return {
+			deploymentId,
+			checkedAt: new Date().toISOString(),
+			installFound: pathResult.code === 0,
+			runtime,
+			security: { status: "unverified", message: "Run a deployment security audit before treating stored Discord data as protected." },
+			ok: pathResult.code === 0 && !["error", "pm2-missing"].includes(runtime.status),
+		};
+	}
+
+	loadCredentialVault() {
+		const vault = readJson(this.credentialVaultPath, { version: 1, records: {} });
+		return vault?.version === 1 && vault.records && typeof vault.records === "object" ? vault : { version: 1, records: {} };
+	}
+
+	saveCredentialVault(vault) {
+		ensureDir(path.dirname(this.credentialVaultPath));
+		const temporaryPath = `${this.credentialVaultPath}.${process.pid}.tmp`;
+		fs.writeFileSync(temporaryPath, `${JSON.stringify(vault, null, "\t")}\n`, { encoding: "utf8", mode: 0o600 });
+		fs.renameSync(temporaryPath, this.credentialVaultPath);
+	}
+
+	addCredentialProfile(values) {
+		if (!this.protectSecret) {
+			throw new Error("Operating-system credential encryption is unavailable.");
+		}
+		const name = String(values?.name || "").trim();
+		const token = String(values?.token || "").trim();
+		const clientId = String(values?.clientId || "").trim();
+		const environment = ["development", "test", "staging", "production"].includes(values?.environment) ? values.environment : "test";
+		if (!name || name.length > 80 || !token || !clientId) {
+			throw new Error("Credential name, Discord token, and application ID are required.");
+		}
+		const id = `credential-${crypto.randomUUID()}`;
+		const vault = this.loadCredentialVault();
+		vault.records[id] = {
+			token: this.protectSecret(token),
+			clientSecret: values.clientSecret ? this.protectSecret(String(values.clientSecret)) : "",
+			publicKey: values.publicKey ? this.protectSecret(String(values.publicKey)) : "",
+		};
+		this.saveCredentialVault(vault);
+		const profile = {
+			id,
+			name,
+			clientId,
+			environment,
+			guildIds: normalizeConfigIdList(values.guildIds),
+			allowConcurrent: Boolean(values.allowConcurrent),
+			tokenFingerprint: crypto.createHash("sha256").update(token).digest("hex").slice(0, 12),
+			createdAt: new Date().toISOString(),
+			lastVerifiedAt: null,
+		};
+		this.fleet.credentialProfiles.push(profile);
+		this.saveFleetRegistry();
+		this.log(`Credential profile added: ${profile.name}.`, { area: "credential-vault", credentialProfileId: id });
+		return this.getFleetState();
+	}
+
+	removeCredentialProfile(profileId) {
+		const profile = this.fleet.credentialProfiles.find(item => item.id === profileId);
+		if (!profile) {
+			throw new Error("Credential profile was not found.");
+		}
+		if (this.fleet.deployments.some(item => item.credentialProfileId === profileId)) {
+			throw new Error("Unassign this credential profile from every deployment first.");
+		}
+		const vault = this.loadCredentialVault();
+		delete vault.records[profileId];
+		this.saveCredentialVault(vault);
+		this.fleet.credentialProfiles = this.fleet.credentialProfiles.filter(item => item.id !== profileId);
+		this.saveFleetRegistry();
+		this.log(`Credential profile removed: ${profile.name}.`, { area: "credential-vault", credentialProfileId: profileId });
+		return this.getFleetState();
+	}
+
+	assignCredentialProfile(deploymentId, profileId) {
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		if (!deployment) {
+			throw new Error("Deployment was not found.");
+		}
+		if (profileId && !this.fleet.credentialProfiles.some(item => item.id === profileId)) {
+			throw new Error("Credential profile was not found.");
+		}
+		deployment.credentialProfileId = profileId || null;
+		this.saveFleetRegistry();
+		this.log(`Credential assignment changed for ${deployment.name}.`, {
+			area: "credential-vault",
+			deploymentId,
+			credentialProfileId: profileId || null,
+		});
+		return this.getFleetState();
+	}
+
+	readCredentialForDeployment(deploymentId) {
+		if (!this.unprotectSecret) {
+			throw new Error("Operating-system credential decryption is unavailable.");
+		}
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		const profile = this.fleet.credentialProfiles.find(item => item.id === deployment?.credentialProfileId);
+		if (!deployment || !profile) {
+			throw new Error("Deployment has no credential profile assigned.");
+		}
+		const record = this.loadCredentialVault().records[profile.id];
+		if (!record?.token) {
+			throw new Error("Credential vault record is missing.");
+		}
+		return {
+			TOKEN: this.unprotectSecret(record.token),
+			clientId: profile.clientId,
+			clientSecret: record.clientSecret ? this.unprotectSecret(record.clientSecret) : "",
+			publicKey: record.publicKey ? this.unprotectSecret(record.publicKey) : "",
+			guildIds: profile.guildIds,
+		};
+	}
+
+	async assertCredentialLeaseAvailable(deploymentId) {
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		const profile = this.fleet.credentialProfiles.find(item => item.id === deployment?.credentialProfileId);
+		if (!profile || profile.allowConcurrent) {
+			return;
+		}
+		const conflicts = this.fleet.deployments.filter(item => item.id !== deploymentId && item.credentialProfileId === profile.id);
+		for (const conflict of conflicts) {
+			const status = await this.getFleetDeploymentStatus(conflict.id);
+			if (status.status === "online" || status.status === "launching") {
+				throw new Error(`${profile.name} is already active on ${conflict.name}. Stop that deployment before starting this one.`);
+			}
+		}
 	}
 
 	getFleetState() {

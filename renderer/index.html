@@ -27,6 +27,8 @@
 				<!-- data-view tells renderer/app.js which panel to show. -->
 				<nav class="nav" aria-label="Main">
 					<button class="nav-item active" type="button" data-view="dashboard">Dashboard</button>
+					<button class="nav-item" type="button" data-view="fleet">Fleet</button>
+					<button class="nav-item" type="button" data-view="credentials">Credentials</button>
 					<button class="nav-item" type="button" data-view="setup">Setup</button>
 					<button class="nav-item" type="button" data-view="updates">Updates</button>
 					<button class="nav-item" type="button" data-view="database">Database</button>
@@ -611,6 +613,89 @@
 							<h2>Sanitation review</h2>
 							<div class="update-summary" id="databaseSanitizeSummary">No review has run yet.</div>
 							<ul class="update-list" id="databaseSanitizeList"></ul>
+						</div>
+					</div>
+				</section>
+
+				<section class="view" data-view-panel="fleet">
+					<div class="panel split-panel">
+						<div>
+							<h2>Fleet</h2>
+							<div class="panel-meta">Servers and bot deployments managed by HachiGen</div>
+						</div>
+						<button class="button info" type="button" data-action="refresh-fleet">Refresh Fleet</button>
+					</div>
+					<div class="fleet-grid">
+						<div class="panel">
+							<h2>Servers</h2>
+							<div class="fleet-list" id="fleetServerList">No servers loaded.</div>
+							<form class="fleet-form" id="fleetServerForm">
+								<label>Name<input name="name" required maxlength="80" placeholder="Secondary server"></label>
+								<label>Connection<select name="type"><option value="ssh">Remote SSH</option><option value="local">Local</option></select></label>
+								<label>Host<input name="host" placeholder="server.example.com"></label>
+								<label>Username<input name="username" placeholder="botrunner"></label>
+								<label>Port<input name="port" type="number" min="1" max="65535" value="22"></label>
+								<label>SSH key path<input name="sshKeyPath" spellcheck="false"></label>
+								<button class="button primary" type="button" data-action="add-fleet-server">Add Server</button>
+							</form>
+						</div>
+						<div class="panel">
+							<h2>Deployments</h2>
+							<div class="fleet-list" id="fleetDeploymentList">No deployments loaded.</div>
+							<form class="fleet-form" id="fleetDeploymentForm">
+								<label>Name<input name="name" required maxlength="80" placeholder="Paldeck production"></label>
+								<label>Bot type<select name="botTypeId" id="fleetBotTypeSelect"></select></label>
+								<label>Server<select name="serverId" id="fleetServerSelect"></select></label>
+								<label>Install path<input name="installPath" required spellcheck="false" placeholder="/srv/bots/paldeck"></label>
+								<label>PM2 name<input name="pm2Name" placeholder="Paldeck"></label>
+								<label>Environment<select name="environment"><option value="production">Production</option><option value="staging">Staging</option><option value="test">Test</option><option value="development">Development</option></select></label>
+								<button class="button primary" type="button" data-action="add-fleet-deployment">Add Deployment</button>
+							</form>
+						</div>
+					</div>
+					<div class="panel">
+						<h2>Bot Types</h2>
+						<div class="panel-meta">Hachi is native. Every other bot is loaded from a validated external definition.</div>
+						<div class="fleet-list" id="fleetBotTypeList">No bot types loaded.</div>
+						<div class="update-message" id="fleetDefinitionErrors"></div>
+					</div>
+					<div class="panel">
+						<h2>Deployment Output</h2>
+						<pre class="output compact-output" id="fleetDeploymentOutput">Select a deployment action to inspect runtime status, health, or logs.</pre>
+					</div>
+				</section>
+
+				<section class="view" data-view-panel="credentials">
+					<div class="panel split-panel">
+						<div><h2>Credential Vault</h2><div class="panel-meta">OS-encrypted Discord identities shared safely between deployments</div></div>
+						<button class="button info" type="button" data-action="refresh-fleet">Refresh</button>
+					</div>
+					<div class="fleet-grid">
+						<div class="panel">
+							<h2>Profiles</h2>
+							<div class="fleet-list" id="credentialProfileList">No credential profiles.</div>
+						</div>
+						<div class="panel">
+							<h2>Add encrypted profile</h2>
+							<form class="fleet-form" id="credentialProfileForm">
+								<label>Name<input name="name" required maxlength="80" placeholder="Shared test bot"></label>
+								<label>Environment<select name="environment"><option value="test">Test</option><option value="development">Development</option><option value="staging">Staging</option><option value="production">Production</option></select></label>
+								<label>Application ID<input name="clientId" required spellcheck="false"></label>
+								<label>Bot token<input name="token" type="password" required autocomplete="new-password"></label>
+								<label>Public key<input name="publicKey" type="password" autocomplete="new-password"></label>
+								<label>Client secret<input name="clientSecret" type="password" autocomplete="new-password"></label>
+								<label>Test guild IDs<textarea name="guildIds" rows="3"></textarea></label>
+								<label><span>Advanced</span><span><input name="allowConcurrent" type="checkbox"> Allow concurrent use</span></label>
+								<button class="button primary" type="button" data-action="add-credential-profile">Encrypt and Save</button>
+							</form>
+						</div>
+					</div>
+					<div class="panel">
+						<h2>Assignments</h2>
+						<div class="fleet-form" id="credentialAssignmentForm">
+							<label>Deployment<select id="credentialDeploymentSelect"></select></label>
+							<label>Credential profile<select id="credentialProfileSelect"></select></label>
+							<button class="button primary" type="button" data-action="assign-credential-profile">Save Assignment</button>
 						</div>
 					</div>
 				</section>

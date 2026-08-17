@@ -14,6 +14,7 @@ const {
 	dialog,
 	Menu,
 	screen,
+	safeStorage,
 	shell,
 } = require("electron");
 const { HachiManager } = require("./src/manager.js");
@@ -893,6 +894,19 @@ function registerIpc() {
 	// State and install-path channels. These read or update the Hachi install
 	// folder that every later operation uses as its root.
 	ipcMain.handle("manager:get-state", () => manager.getState());
+	ipcMain.handle("manager:get-fleet", () => manager.getFleetState());
+	ipcMain.handle("manager:add-fleet-server", (_event, values) => manager.addFleetServer(values));
+	ipcMain.handle("manager:remove-fleet-server", (_event, serverId) => manager.removeFleetServer(serverId));
+	ipcMain.handle("manager:add-fleet-deployment", (_event, values) => manager.addFleetDeployment(values));
+	ipcMain.handle("manager:set-active-fleet-deployment", (_event, deploymentId) => manager.setActiveFleetDeployment(deploymentId));
+	ipcMain.handle("manager:remove-fleet-deployment", (_event, deploymentId) => manager.removeFleetDeployment(deploymentId));
+	ipcMain.handle("manager:get-fleet-deployment-status", (_event, deploymentId) => manager.getFleetDeploymentStatus(deploymentId));
+	ipcMain.handle("manager:control-fleet-deployment", (_event, deploymentId, action) => manager.controlFleetDeployment(deploymentId, action));
+	ipcMain.handle("manager:get-fleet-deployment-logs", (_event, deploymentId, lines) => manager.getFleetDeploymentLogs(deploymentId, lines));
+	ipcMain.handle("manager:check-fleet-deployment-health", (_event, deploymentId) => manager.checkFleetDeploymentHealth(deploymentId));
+	ipcMain.handle("manager:add-credential-profile", (_event, values) => manager.addCredentialProfile(values));
+	ipcMain.handle("manager:remove-credential-profile", (_event, profileId) => manager.removeCredentialProfile(profileId));
+	ipcMain.handle("manager:assign-credential-profile", (_event, deploymentId, profileId) => manager.assignCredentialProfile(deploymentId, profileId));
 	ipcMain.handle("manager:get-diagnostics", () => manager.getDiagnostics());
 	ipcMain.handle("manager:get-about-info", () => manager.getAboutInfo());
 
@@ -1093,6 +1107,18 @@ if (!singleInstanceLock) {
 			defaultInstallPath,
 			userDataPath: app.getPath("userData"),
 			sendEvent,
+			protectSecret: value => {
+				if (!safeStorage.isEncryptionAvailable()) {
+					throw new Error("Operating-system credential encryption is unavailable.");
+				}
+				return safeStorage.encryptString(String(value)).toString("base64");
+			},
+			unprotectSecret: value => {
+				if (!safeStorage.isEncryptionAvailable()) {
+					throw new Error("Operating-system credential encryption is unavailable.");
+				}
+				return safeStorage.decryptString(Buffer.from(String(value), "base64"));
+			},
 		});
 		manager.startLogCleanup({ runImmediately: true });
 		manager.initCrashHandlers();

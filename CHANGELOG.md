@@ -8,6 +8,8 @@ Notable changes to HachiGen are documented here.
 
 - Added the rollback-safe fleet registry foundation for multiple servers and bot deployments, with automatic migration of the current Hachi target.
 - Added a native Hachi bot definition and validated external JSON bot definitions for optional bots such as Paldeck; Hachi remains the only bundled bot type.
+- Added Fleet and Credentials workspaces for server/deployment registration, external bot discovery, scoped local/SSH PM2 controls, health checks, redacted logs, and OS-encrypted Discord credential profiles.
+- Added exclusive shared-credential leases that block multiple ordinary deployments from starting the same Discord test identity concurrently.
 
 ### Changed
 
