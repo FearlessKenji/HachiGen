@@ -3177,7 +3177,7 @@ function fleetEntry(title, meta, actions = []) {
 
 function fleetEmpty(message) {
 	const empty = document.createElement("div");
-	empty.className = "fleet-empty";
+	empty.className = "empty-state";
 	empty.textContent = message;
 	return empty;
 }

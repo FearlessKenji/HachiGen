@@ -470,7 +470,9 @@ h2 {
 }
 
 /* Form fields and inputs. */
-.field {
+.field,
+.select-field,
+.choice-field {
 	display: grid;
 	gap: 8px;
 	margin-top: 14px;
@@ -479,19 +481,31 @@ h2 {
 	font-weight: 750;
 }
 
-.field input {
+.field input,
+.field textarea {
 	width: 100%;
-	height: 38px;
 	border: 1px solid var(--line);
 	border-radius: 6px;
 	background: var(--surface-soft);
 	color: var(--text);
-	padding: 0 12px;
 	font-size: 13px;
 	font-weight: 500;
 }
 
-.field input:focus {
+.field input {
+	height: 38px;
+	padding: 0 12px;
+}
+
+.field textarea {
+	min-height: 152px;
+	padding: 10px 12px;
+	line-height: 1.45;
+	resize: vertical;
+}
+
+.field input:focus,
+.field textarea:focus {
 	border-color: var(--info);
 	outline: 3px solid rgba(63, 111, 159, 0.18);
 }
@@ -500,27 +514,45 @@ h2 {
 	cursor: pointer;
 }
 
-.select-field {
-	display: grid;
-	gap: 6px;
-	color: var(--muted);
-	font-size: 12px;
-	font-weight: 750;
+.field input:disabled,
+.field textarea:disabled,
+.select-field select:disabled {
+	cursor: not-allowed;
+	opacity: 0.58;
 }
 
 .select-field select {
-	min-width: 220px;
+	width: 100%;
+	min-width: 0;
 	height: 38px;
 	border: 1px solid var(--line);
 	border-radius: 6px;
 	background: var(--surface-soft);
 	color: var(--text);
 	padding: 0 10px;
+	font-size: 13px;
+	font-weight: 500;
 }
 
 .select-field select:focus {
 	border-color: var(--info);
 	outline: 3px solid rgba(63, 111, 159, 0.18);
+}
+
+.choice-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 38px;
+	color: var(--text);
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.choice-option input {
+	width: 16px;
+	height: 16px;
+	accent-color: var(--primary);
 }
 
 /* Install path text field plus Browse button. */
@@ -1429,7 +1461,7 @@ h2 {
 	gap: 16px;
 }
 
-.fleet-section-header {
+.section-header {
 	display: flex;
 	align-items: flex-start;
 	justify-content: space-between;
@@ -1437,7 +1469,7 @@ h2 {
 	margin-bottom: 16px;
 }
 
-.fleet-section-header h2 {
+.section-header h2 {
 	margin-bottom: 4px;
 }
 
@@ -1452,13 +1484,13 @@ h2 {
 	padding-top: 16px;
 	border-top: 1px solid var(--line);
 	grid-template-columns: repeat(2, minmax(0, 1fr));
+	column-gap: 16px;
+	row-gap: 0;
 }
 
-.fleet-form label {
-	display: grid;
-	gap: 6px;
-	color: var(--muted);
-	font-size: 0.82rem;
+.fleet-form .select-field select {
+	width: 100%;
+	min-width: 0;
 }
 
 .fleet-form .button {
@@ -1469,12 +1501,13 @@ h2 {
 	grid-column: 1 / -1;
 }
 
-.fleet-form-action {
+.form-actions {
 	display: flex;
 	justify-content: flex-end;
+	gap: 10px;
 }
 
-.fleet-empty {
+.empty-state {
 	padding: 14px;
 	border: 1px dashed var(--line);
 	border-radius: 7px;
@@ -1483,13 +1516,13 @@ h2 {
 	text-align: center;
 }
 
-.fleet-explanation {
+.component-description {
 	max-width: 760px;
 	margin: 4px 0 16px;
 	line-height: 1.55;
 }
 
-.field-optional {
+.optional-label {
 	color: var(--muted);
 	font-size: 0.72rem;
 	font-weight: 400;

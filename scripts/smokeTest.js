@@ -265,6 +265,13 @@ function validateRendererAndMenuWiring() {
 		"Fleet should use neutral bot-support onboarding and exclude the built-in runtime.",
 	);
 	assert(
+		!/<label>/u.test(indexSource) &&
+			stylesSource.includes(".field,\n.select-field,\n.choice-field") &&
+			stylesSource.includes(".empty-state") &&
+			stylesSource.includes(".form-actions"),
+		"Forms should use shared field, choice, empty-state, and action components instead of bare page-specific controls.",
+	);
+	assert(
 		databaseSection.includes("Backup / Transfer") &&
 			!databaseSection.includes("Backup / Transfer...") &&
 			!databaseSection.includes("data-action=\"restore-database\""),
