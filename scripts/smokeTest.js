@@ -273,6 +273,13 @@ function validateRendererAndMenuWiring() {
 		"Forms should use shared field, choice, empty-state, and action components instead of bare page-specific controls.",
 	);
 	assert(
+		indexSource.includes('id="deploymentCredentialFields" hidden') &&
+			indexSource.includes("Optional credential setup for additional bots") &&
+			rendererSource.includes('replaceSelectOptions("#credentialDeploymentSelect", managedDeployments') &&
+			rendererSource.includes("credentialFields.hidden = !allowed"),
+		"Credentials should exclude the built-in runtime and reveal fields only for approved additional-bot adapters.",
+	);
+	assert(
 		databaseSection.includes("Backup / Transfer") &&
 			!databaseSection.includes("Backup / Transfer...") &&
 			!databaseSection.includes("data-action=\"restore-database\""),

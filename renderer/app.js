@@ -3230,7 +3230,7 @@ function renderFleet(nextFleet) {
 	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name);
 	replaceSelectOptions("#fleetBotTypeSelect", supportedBotTypes, item => item.displayName);
 	setDisabled("#addFleetBotButton", !supportedBotTypes.length);
-	replaceSelectOptions("#credentialDeploymentSelect", fleetState.deployments, item => item.name);
+	replaceSelectOptions("#credentialDeploymentSelect", managedDeployments, item => item.name);
 	replaceSelectOptions("#securityDeploymentSelect", fleetState.deployments, item => item.name);
 	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
 	renderDeploymentCredentialMode();
@@ -3240,13 +3240,15 @@ function renderFleet(nextFleet) {
 function renderDeploymentCredentialMode() {
 	const deployment = fleetState?.deployments?.find(item => item.id === $("#credentialDeploymentSelect")?.value);
 	const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
-	const native = definition?.source === "native";
 	const adapter = definition?.credentials?.mode === "adapter" && definition?.commands?.credentialsWrite;
-	const allowed = Boolean(native || (adapter && deployment?.approvedCapabilities?.secretEncryption));
+	const allowed = Boolean(definition?.source === "external" && adapter && deployment?.approvedCapabilities?.secretEncryption);
+	const credentialFields = $("#deploymentCredentialFields");
+	if (credentialFields) credentialFields.hidden = !allowed;
 	setDisabled("#saveDeploymentCredentialsButton", !allowed);
-	setText("#deploymentCredentialsMode", allowed ?
+	setText("#deploymentCredentialsMode", !deployment ?
+		"No additional bot is available. Add one from Fleet first." : allowed ?
 		`${definition.displayName} explicitly supports managed credential storage. Submitted values are sent only to its approved writer.` :
-		"Credentials are externally managed for this deployment. HachiGen will not read, rewrite, encrypt, or relocate them.");
+		`${definition?.displayName || "This bot"} manages its own credentials. HachiGen will not ask for, read, rewrite, encrypt, or relocate them.`);
 }
 
 function renderFleetSecurityCapabilities() {

@@ -685,21 +685,23 @@
 
 				<section class="view" data-view-panel="credentials">
 					<div class="panel split-panel">
-						<div><h2>Deployment Credentials</h2><div class="panel-meta">Credentials are encrypted and stored only inside the selected bot's folder</div></div>
+						<div><h2>Bot Credentials</h2><div class="panel-meta">Optional credential setup for additional bots with approved secure storage</div></div>
 						<button class="button info" type="button" data-action="refresh-fleet">Refresh</button>
 					</div>
 					<div class="panel">
 						<form class="fleet-form" id="deploymentCredentialForm">
-							<label class="select-field">Deployment<select name="deploymentId" id="credentialDeploymentSelect"></select></label>
-							<label class="field">Application ID<input name="clientId" required spellcheck="false"></label>
-							<label class="field">Bot token<input name="token" type="password" required autocomplete="new-password"></label>
-							<label class="field">Public key<input name="publicKey" type="password" autocomplete="new-password"></label>
-							<label class="field">Client secret<input name="clientSecret" type="password" autocomplete="new-password"></label>
-							<label class="field">Test guild IDs<textarea name="guildIds" rows="3"></textarea></label>
-							<label class="choice-field"><span>Advanced</span><span class="choice-option"><input name="allowConcurrent" type="checkbox"> Allow concurrent use</span></label>
-							<div class="fleet-form-wide form-actions"><button class="button primary" type="button" data-action="save-deployment-credentials" id="saveDeploymentCredentialsButton">Encrypt in Bot Folder</button></div>
+							<label class="select-field fleet-form-wide">Bot<select name="deploymentId" id="credentialDeploymentSelect"></select></label>
+							<div class="form-contents" id="deploymentCredentialFields" hidden>
+								<label class="field">Application ID<input name="clientId" required spellcheck="false"></label>
+								<label class="field">Bot token<input name="token" type="password" required autocomplete="new-password"></label>
+								<label class="field">Public key<input name="publicKey" type="password" autocomplete="new-password"></label>
+								<label class="field">Client secret<input name="clientSecret" type="password" autocomplete="new-password"></label>
+								<label class="field">Test guild IDs<textarea name="guildIds" rows="3"></textarea></label>
+								<label class="choice-field"><span>Advanced</span><span class="choice-option"><input name="allowConcurrent" type="checkbox"> Allow concurrent use</span></label>
+								<div class="fleet-form-wide form-actions"><button class="button primary" type="button" data-action="save-deployment-credentials" id="saveDeploymentCredentialsButton">Save Securely in Bot Folder</button></div>
+							</div>
 						</form>
-						<div class="update-message" id="deploymentCredentialsMode">Select a deployment to review its credential-management mode.</div>
+						<div class="update-message" id="deploymentCredentialsMode">Add an additional bot to review its credential-management mode.</div>
 					</div>
 				</section>
 
