@@ -255,6 +255,15 @@ function validateRendererAndMenuWiring() {
 		"Database transfer IPC actions are not wired.",
 	);
 	const databaseSection = indexSource.match(/<section class="view" data-view-panel="database">[\s\S]*?<section class="view" data-view-panel="logs">/u)?.[0] || "";
+	const fleetSection = indexSource.match(/<section class="view" data-view-panel="fleet">[\s\S]*?<section class="view" data-view-panel="credentials">/u)?.[0] || "";
+	assert(
+		fleetSection.includes("Bot Support") &&
+			fleetSection.includes("Add bot support") &&
+			!fleetSection.includes("Paldeck") &&
+			!fleetSection.includes("Hachi is native") &&
+			rendererSource.includes('type => type.source === "external"'),
+		"Fleet should use neutral bot-support onboarding and exclude the built-in runtime.",
+	);
 	assert(
 		databaseSection.includes("Backup / Transfer") &&
 			!databaseSection.includes("Backup / Transfer...") &&

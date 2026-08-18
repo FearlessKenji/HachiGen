@@ -69,7 +69,7 @@
 						<article class="status-card status-card-action" data-action="show-fleet" role="button" tabindex="0">
 							<div class="card-label">Fleet</div>
 							<div class="status-value"><span class="dot" id="fleetDot"></span><span id="fleetStatus">Loading</span></div>
-							<div class="card-detail" id="fleetDetail">Servers and deployments</div>
+							<div class="card-detail" id="fleetDetail">Additional bots and connections</div>
 						</article>
 						<article class="status-card">
 							<div class="card-label">Bot</div>
@@ -627,16 +627,18 @@
 					<div class="panel split-panel">
 						<div>
 							<h2>Fleet</h2>
-							<div class="panel-meta">Servers and bot deployments managed by HachiGen</div>
+							<div class="panel-meta">Manage additional bots on this computer or remote servers</div>
 						</div>
-						<button class="button info" type="button" data-action="refresh-fleet">Refresh Fleet</button>
+						<button class="button info" type="button" data-action="refresh-fleet">Refresh</button>
 					</div>
-					<div class="fleet-grid">
+					<div class="panel-stack">
 						<div class="panel">
-							<h2>Servers</h2>
+							<div class="fleet-section-header">
+								<div><h2>Connections</h2><div class="panel-meta">Where your additional bots are installed</div></div>
+							</div>
 							<div class="fleet-list" id="fleetServerList">No servers loaded.</div>
 							<form class="fleet-form" id="fleetServerForm">
-								<label>Name<input name="name" required maxlength="80" placeholder="Secondary server"></label>
+								<label>Connection name<input name="name" required maxlength="80" placeholder="Production server"></label>
 								<label>Connection<select name="type"><option value="ssh">Remote SSH</option><option value="local">Local</option></select></label>
 								<label>Host<input name="host" placeholder="server.example.com"></label>
 								<label>Username<input name="username" placeholder="botrunner"></label>
@@ -646,32 +648,38 @@
 							</form>
 						</div>
 						<div class="panel">
-							<h2>Deployments</h2>
-							<div class="fleet-list" id="fleetDeploymentList">No deployments loaded.</div>
+							<div class="fleet-section-header">
+								<div><h2>Bots</h2><div class="panel-meta">Each bot stays linked to its own repository, configuration, and runtime</div></div>
+							</div>
+							<div class="fleet-list" id="fleetDeploymentList"><div class="fleet-empty">No additional bots have been added.</div></div>
 							<form class="fleet-form" id="fleetDeploymentForm">
-								<label>Name<input name="name" required maxlength="80" placeholder="Paldeck production"></label>
-								<label>Bot type<select name="botTypeId" id="fleetBotTypeSelect"></select></label>
-								<label>Server<select name="serverId" id="fleetServerSelect"></select></label>
-								<label>Install path<input name="installPath" required spellcheck="false" placeholder="/srv/bots/paldeck"></label>
-								<label>PM2 name<input name="pm2Name" placeholder="Paldeck"></label>
+								<label>Display name<input name="name" required maxlength="80" placeholder="Production bot"></label>
+								<label>Bot support<select name="botTypeId" id="fleetBotTypeSelect"></select></label>
+								<label>Connection<select name="serverId" id="fleetServerSelect"></select></label>
+								<label>Bot folder<input name="installPath" required spellcheck="false" placeholder="C:\Bots\MyBot or /srv/bots/my-bot"></label>
+								<label>PM2 process name <span class="field-optional">Optional</span><input name="pm2Name" placeholder="Uses support-file default"></label>
 								<label>Environment<select name="environment"><option value="production">Production</option><option value="staging">Staging</option><option value="test">Test</option><option value="development">Development</option></select></label>
-								<button class="button primary" type="button" data-action="add-fleet-deployment">Add Deployment</button>
+								<div class="fleet-form-wide fleet-form-action"><button class="button primary" id="addFleetBotButton" type="button" data-action="add-fleet-deployment">Add Bot</button></div>
 							</form>
 						</div>
-					</div>
-					<div class="panel">
-						<h2>Bot Types</h2>
-						<div class="panel-meta">Hachi is native. Every other bot is loaded from a validated external definition.</div>
-						<div class="fleet-list" id="fleetBotTypeList">No bot types loaded.</div>
-						<div class="update-message" id="fleetDefinitionErrors"></div>
-						<form class="fleet-form" id="botDefinitionForm">
-							<label class="fleet-form-wide">External definition JSON<textarea name="definition" rows="10" spellcheck="false" placeholder='{"id":"paldeck","displayName":"Paldeck","runtime":{"ecosystemFile":"config/ecosystem.config.js","pm2Name":"Paldeck"},"capabilities":{"pm2":true,"logs":true}}'></textarea></label>
-							<button class="button primary" type="button" data-action="install-bot-definition">Install Definition</button>
-						</form>
-					</div>
-					<div class="panel">
-						<h2>Deployment Output</h2>
-						<pre class="output compact-output" id="fleetDeploymentOutput">Select a deployment action to inspect runtime status, health, or logs.</pre>
+						<div class="panel">
+							<h2>Bot Support</h2>
+							<div class="panel-meta fleet-explanation">A bot support file tells HachiGen how to identify and operate a bot without changing that bot's code or credential files. Add one only when you want HachiGen to manage a new kind of bot.</div>
+							<div class="fleet-list" id="fleetBotTypeList"><div class="fleet-empty">No bot support has been added yet.</div></div>
+							<div class="update-message" id="fleetDefinitionErrors"></div>
+							<details class="advanced-disclosure">
+								<summary>Add bot support</summary>
+								<form class="fleet-form" id="botDefinitionForm">
+									<label class="fleet-form-wide">Support file contents<textarea name="definition" rows="10" spellcheck="false" placeholder="Paste the JSON support file supplied with the bot"></textarea></label>
+									<div class="fleet-form-wide form-help">HachiGen will show the repository, commands, paths, and requested permissions for review before anything is added.</div>
+									<div class="fleet-form-wide fleet-form-action"><button class="button primary" type="button" data-action="install-bot-definition">Review &amp; Add Support</button></div>
+								</form>
+							</details>
+						</div>
+						<div class="panel">
+							<h2>Activity</h2>
+							<pre class="output compact-output" id="fleetDeploymentOutput">Select a bot action to view its status, health, updates, or logs.</pre>
+						</div>
 					</div>
 				</section>
 

@@ -3175,20 +3175,33 @@ function fleetEntry(title, meta, actions = []) {
 	return entry;
 }
 
+function fleetEmpty(message) {
+	const empty = document.createElement("div");
+	empty.className = "fleet-empty";
+	empty.textContent = message;
+	return empty;
+}
+
 function renderFleet(nextFleet) {
 	fleetState = nextFleet || state?.fleet || null;
 	if (!fleetState) return;
 	const serverList = $("#fleetServerList");
 	const deploymentList = $("#fleetDeploymentList");
 	const botTypeList = $("#fleetBotTypeList");
+	// Fleet is reserved for optional bots; the built-in runtime keeps its existing dedicated controls.
+	const supportedBotTypes = fleetState.botTypes.filter(type => type.source === "external");
+	const supportedTypeIds = new Set(supportedBotTypes.map(type => type.id));
+	const managedDeployments = fleetState.deployments.filter(deployment => supportedTypeIds.has(deployment.botTypeId));
 	serverList?.replaceChildren(...fleetState.servers.map(server => fleetEntry(
 		server.name,
-		server.connection.type === "local" ? `Local · ${server.deploymentCount} deployment(s)` : `${server.connection.username}@${server.connection.host}:${server.connection.port} · ${server.deploymentCount} deployment(s)`,
+		server.connection.type === "local" ?
+			`Local · ${managedDeployments.filter(deployment => deployment.serverId === server.id).length} bot(s)` :
+			`${server.connection.username}@${server.connection.host}:${server.connection.port} · ${managedDeployments.filter(deployment => deployment.serverId === server.id).length} bot(s)`,
 		server.id === "local" ? [] : [{ action: "remove-fleet-server", id: server.id, label: "Remove" }],
 	)));
-	deploymentList?.replaceChildren(...fleetState.deployments.map(deployment => {
+	deploymentList?.replaceChildren(...(managedDeployments.length ? managedDeployments.map(deployment => {
 		const server = fleetState.servers.find(item => item.id === deployment.serverId);
-		const type = fleetState.botTypes.find(item => item.id === deployment.botTypeId);
+		const type = supportedBotTypes.find(item => item.id === deployment.botTypeId);
 		const active = deployment.id === fleetState.activeDeploymentId;
 		const capabilities = type?.source === "native" ? type.capabilities : (deployment.approvedCapabilities || {});
 		return fleetEntry(
@@ -3208,14 +3221,15 @@ function renderFleet(nextFleet) {
 				{ action: "remove-fleet-deployment", id: deployment.id, label: "Remove" },
 			],
 		);
-	}));
-	botTypeList?.replaceChildren(...fleetState.botTypes.map(type => fleetEntry(
+	}) : [fleetEmpty("No additional bots have been added.")]));
+	botTypeList?.replaceChildren(...(supportedBotTypes.length ? supportedBotTypes.map(type => fleetEntry(
 		type.displayName,
-		`${type.source === "native" ? "Native" : "External"} · Credentials: ${type.source === "native" ? "native" : (type.credentials?.mode || "external")} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "observe only"}`,
-		type.source === "external" ? [{ action: "remove-bot-definition", id: type.id, label: "Remove" }] : [],
-	)));
+		`Credentials: ${type.credentials?.mode === "adapter" ? "approved secure writer" : "managed by bot"} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "status only"}`,
+		[{ action: "remove-bot-definition", id: type.id, label: "Remove" }],
+	)) : [fleetEmpty("No bot support has been added yet.")]));
 	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name);
-	replaceSelectOptions("#fleetBotTypeSelect", fleetState.botTypes, item => `${item.displayName}${item.source === "native" ? " (native)" : " (external)"}`);
+	replaceSelectOptions("#fleetBotTypeSelect", supportedBotTypes, item => item.displayName);
+	setDisabled("#addFleetBotButton", !supportedBotTypes.length);
 	replaceSelectOptions("#credentialDeploymentSelect", fleetState.deployments, item => item.name);
 	replaceSelectOptions("#securityDeploymentSelect", fleetState.deployments, item => item.name);
 	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
@@ -3298,10 +3312,11 @@ function renderState(nextState) {
 	setText("#sidebarRepoBranch", repositoryBranchLabel(state.repository));
 	setText("#sidebarStatusText", install.label);
 	setDot("#sidebarStatusDot", install.dot);
-	const fleetDeploymentCount = state.fleet?.deployments?.length || 0;
+	const externalTypeIds = new Set((state.fleet?.botTypes || []).filter(type => type.source === "external").map(type => type.id));
+	const fleetDeploymentCount = (state.fleet?.deployments || []).filter(deployment => externalTypeIds.has(deployment.botTypeId)).length;
 	const fleetDefinitionErrorCount = state.fleet?.botDefinitionErrors?.length || 0;
-	setText("#fleetStatus", fleetDefinitionErrorCount ? "Needs attention" : `${fleetDeploymentCount} deployment${fleetDeploymentCount === 1 ? "" : "s"}`);
-	setText("#fleetDetail", `${state.fleet?.servers?.length || 0} server(s) · deployment-local credentials`);
+	setText("#fleetStatus", fleetDefinitionErrorCount ? "Needs attention" : `${fleetDeploymentCount} bot${fleetDeploymentCount === 1 ? "" : "s"}`);
+	setText("#fleetDetail", `${state.fleet?.servers?.length || 0} connection(s) · bot-owned credentials`);
 	setDot("#fleetDot", fleetDefinitionErrorCount ? "warn" : "good");
 
 	// Dashboard status cards.
@@ -3750,21 +3765,21 @@ function handleAction(event) {
 	if (action === "install-bot-definition") {
 		const form = $("#botDefinitionForm");
 		const definitionText = form.elements.definition.value;
-		runAction("Review bot definition", () => api.previewExternalBotDefinition(definitionText), { toast: false }).then(preview => {
+		runAction("Review bot support", () => api.previewExternalBotDefinition(definitionText), { toast: false }).then(preview => {
 			if (!preview) return;
 			const permissions = preview.capabilities.length ? preview.capabilities.join(", ") : "Observe only";
 			showConfirmModal({
-				title: `Install ${preview.displayName} adapter?`,
-				meta: "External adapter permission review",
+				title: `Add support for ${preview.displayName}?`,
+				meta: "Bot support permission review",
 				summary: `Repository: ${preview.repository.url}\nBranch: ${preview.repository.branch}\nCredentials: ${preview.credentialsMode}\nRequested capabilities: ${permissions}\nCommands: ${preview.commands.join(", ") || "None"}`,
-				confirmText: "Approve Adapter",
+				confirmText: "Approve & Add",
 			}).then(confirmed => {
 				if (!confirmed) return;
-				runAction("Install bot definition", async () => {
+				runAction("Add bot support", async () => {
 					const fleet = await api.installExternalBotDefinition(definitionText);
 					renderFleet(fleet);
 					form.reset();
-					return { message: "External bot definition installed." };
+					return { message: `Support for ${preview.displayName} was added.` };
 				});
 			});
 		});
@@ -3772,10 +3787,10 @@ function handleAction(event) {
 	}
 
 	if (action === "remove-bot-definition") {
-		runAction("Remove bot definition", async () => {
+		runAction("Remove bot support", async () => {
 			const fleet = await api.removeExternalBotDefinition(button.dataset.itemId);
 			renderFleet(fleet);
-			return { message: "External bot definition removed." };
+			return { message: "Bot support removed." };
 		});
 		return;
 	}
@@ -3783,11 +3798,11 @@ function handleAction(event) {
 	if (action === "add-fleet-deployment") {
 		const form = $("#fleetDeploymentForm");
 		const values = Object.fromEntries(new window.FormData(form));
-		runAction("Add deployment", async () => {
+		runAction("Add bot", async () => {
 			const fleet = await api.addFleetDeployment(values);
 			renderFleet(fleet);
 			form.reset();
-			return { message: "Deployment added." };
+			return { message: "Bot added." };
 		});
 		return;
 	}

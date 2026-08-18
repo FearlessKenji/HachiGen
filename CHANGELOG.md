@@ -18,6 +18,7 @@ Notable changes to HachiGen are documented here.
 
 - Changed credential management so each bot folder is the sole credential store. HachiGen passes credentials to the bot's encrypted storage adapter over stdin and retains only non-secret identity metadata.
 - Changed external credentials to remain unmanaged by default. HachiGen can write them only when a reviewed definition explicitly opts into adapter mode and the `secretEncryption` capability.
+- Redesigned Fleet around neutral additional-bot onboarding, removed built-in bot references and project-specific placeholders, and moved technical support-file JSON behind an explained advanced disclosure that matches the rest of the interface.
 - Expanded diagnostics bundle export to include redacted Hachi runtime logs and PM2 snapshots alongside HachiGen logs.
 - Updated vulnerable transitive build dependencies to patched releases, clearing npm audit findings for `brace-expansion`, `fast-uri`, `tar`, and `undici`.
 
