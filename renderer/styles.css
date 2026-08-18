@@ -1505,7 +1505,8 @@ h2 {
 	display: flex;
 	justify-content: flex-end;
 	gap: 10px;
-	margin-top: 14px;
+	margin-top: 0;
+	padding-top: 14px;
 }
 
 .empty-state {

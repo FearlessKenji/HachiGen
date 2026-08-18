@@ -12,6 +12,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 - Fleet now focuses only on additional bots, uses the same stacked-panel layout as the rest of HachiGen, and explains bot support files in plain language instead of presenting an unexplained external-definition editor.
 - Setup, Fleet, Credentials, and Fleet Security now share the same form controls, labels, action alignment, empty states, spacing, focus treatment, and disabled appearance.
 - Corrected inconsistent spacing above the Add Server and Add Bot buttons in Fleet.
+- Matched the Fleet add-button rows exactly and changed the label to `PM2 process name (Optional)` on one line.
 - Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
 - Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 

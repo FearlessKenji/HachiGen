@@ -268,7 +268,8 @@ function validateRendererAndMenuWiring() {
 		!/<label>/u.test(indexSource) &&
 			stylesSource.includes(".field,\n.select-field,\n.choice-field") &&
 			stylesSource.includes(".empty-state") &&
-			/\.form-actions \{[\s\S]*?margin-top: 14px;/u.test(stylesSource),
+			/\.form-actions \{[\s\S]*?margin-top: 0;[\s\S]*?padding-top: 14px;/u.test(stylesSource) &&
+			indexSource.includes('PM2 process name <span class="optional-label">(Optional)</span>'),
 		"Forms should use shared field, choice, empty-state, and action components instead of bare page-specific controls.",
 	);
 	assert(

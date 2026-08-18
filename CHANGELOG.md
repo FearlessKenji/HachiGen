@@ -21,6 +21,7 @@ Notable changes to HachiGen are documented here.
 - Redesigned Fleet around neutral additional-bot onboarding, removed built-in bot references and project-specific placeholders, and moved technical support-file JSON behind an explained advanced disclosure that matches the rest of the interface.
 - Consolidated Setup, Fleet, Credentials, and Fleet Security onto shared field, select, textarea, choice, section-header, empty-state, help-text, and form-action components for consistent sizing, typography, spacing, focus, and disabled states.
 - Standardized the vertical gap above form action rows so Fleet add buttons no longer sit at different distances from their final fields.
+- Made form-action spacing grid-independent and kept the PM2 process optional indicator inline with its label.
 - Expanded diagnostics bundle export to include redacted Hachi runtime logs and PM2 snapshots alongside HachiGen logs.
 - Updated vulnerable transitive build dependencies to patched releases, clearing npm audit findings for `brace-expansion`, `fast-uri`, `tar`, and `undici`.
 
