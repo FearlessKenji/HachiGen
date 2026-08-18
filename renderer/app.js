@@ -13,9 +13,8 @@ const api = window.hachiGen;
 const viewTitles = {
 	dashboard: "Dashboard",
 	fleet: "Fleet",
-	credentials: "Credentials",
 	security: "Security",
-	setup: "Setup",
+	setup: "Hachi",
 	remote: "Remote",
 	updates: "Updates",
 	database: "Database",
@@ -1153,7 +1152,7 @@ function setupProgress(nextState) {
 	const steps = [
 		{
 			action: usingRemote && !remote.configured ? "show-remote" : "show-setup",
-			actionLabel: usingRemote ? "Open Remote" : "Open Setup",
+			actionLabel: usingRemote ? "Open Remote" : "Open Hachi",
 			detail: usingRemote && !remote.configured ?
 				remote.errors?.[0] || "Remote connection details are not saved yet." :
 				installReady ? "Hachi project files were found." : "Select or install a Hachi folder.",
@@ -1173,7 +1172,7 @@ function setupProgress(nextState) {
 		},
 		{
 			action: "show-setup",
-			actionLabel: "Open Setup",
+			actionLabel: "Open Hachi",
 			detail: configurationReady ?
 				"Required configuration fields are saved." :
 				`${scan.configurationMissing?.length || 0} required configuration fields need values.`,
@@ -3300,7 +3299,7 @@ async function refreshCurrentView() {
 
 	if (activeView === "setup") {
 		await refreshConfig();
-		return { message: "Setup refreshed." };
+		return { message: "Hachi refreshed." };
 	}
 
 	if (activeView === "diagnostics") {
@@ -4174,7 +4173,7 @@ function handleAction(event) {
 	}
 
 	if (action === "show-setup") {
-		// Dashboard shortcut to the Setup tab.
+		// Dashboard shortcut to the Hachi page.
 		showView("setup");
 		return;
 	}

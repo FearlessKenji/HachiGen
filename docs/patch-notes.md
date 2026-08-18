@@ -14,6 +14,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 - Corrected inconsistent spacing above the Add Server and Add Bot buttons in Fleet.
 - Matched the Fleet add-button rows exactly and changed the label to `PM2 process name (Optional)` on one line.
 - Additional-bot credentials now live directly in Fleet instead of a separate sidebar page. Compatible bots show a Credentials action and open the same secure form automatically when first added.
+- Setup is now named Hachi and sits directly below Dashboard in the sidebar, making it clear that the page manages the built-in bot rather than application-wide setup.
 - Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
 - Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 

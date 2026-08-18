@@ -329,6 +329,13 @@ function validateRendererAndMenuWiring() {
 	);
 	assert(indexSource.includes("data-view=\"diagnostics\"") && indexSource.includes("data-action=\"export-support-bundle\""), "Diagnostics view or diagnostics bundle action is missing.");
 	assert(
+		indexSource.indexOf('data-view="setup">Hachi') > indexSource.indexOf('data-view="dashboard">Dashboard') &&
+			indexSource.indexOf('data-view="setup">Hachi') < indexSource.indexOf('data-view="fleet">Fleet') &&
+			rendererSource.includes('setup: "Hachi"') &&
+			!rendererSource.includes('actionLabel: "Open Setup"'),
+		"The Hachi management page should be named Hachi and appear directly below Dashboard.",
+	);
+	assert(
 		preloadSource.includes("getAboutInfo") &&
 			rendererSource.includes("function showAboutModal(") &&
 			rendererSource.includes("[\"User Data\"") &&
