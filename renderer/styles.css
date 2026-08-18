@@ -586,17 +586,12 @@ h2 {
 	gap: 0 16px;
 }
 
-/* Lets conditional groups participate in their parent's grid without adding another layout layer. */
-.form-contents {
-	display: contents;
-}
-
-.form-contents[hidden] {
-	display: none;
-}
-
 .field.wide {
 	grid-column: 1 / -1;
+}
+
+.modal-form {
+	min-width: min(680px, 72vw);
 }
 
 .remote-grid {

@@ -255,7 +255,7 @@ function validateRendererAndMenuWiring() {
 		"Database transfer IPC actions are not wired.",
 	);
 	const databaseSection = indexSource.match(/<section class="view" data-view-panel="database">[\s\S]*?<section class="view" data-view-panel="logs">/u)?.[0] || "";
-	const fleetSection = indexSource.match(/<section class="view" data-view-panel="fleet">[\s\S]*?<section class="view" data-view-panel="credentials">/u)?.[0] || "";
+	const fleetSection = indexSource.match(/<section class="view" data-view-panel="fleet">[\s\S]*?<section class="view" data-view-panel="security">/u)?.[0] || "";
 	assert(
 		fleetSection.includes("Bot Support") &&
 			fleetSection.includes("Add bot support") &&
@@ -273,11 +273,12 @@ function validateRendererAndMenuWiring() {
 		"Forms should use shared field, choice, empty-state, and action components instead of bare page-specific controls.",
 	);
 	assert(
-		indexSource.includes('id="deploymentCredentialFields" hidden') &&
-			indexSource.includes("Optional credential setup for additional bots") &&
-			rendererSource.includes('replaceSelectOptions("#credentialDeploymentSelect", managedDeployments') &&
-			rendererSource.includes("credentialFields.hidden = !allowed"),
-		"Credentials should exclude the built-in runtime and reveal fields only for approved additional-bot adapters.",
+		!indexSource.includes('data-view="credentials"') &&
+			!indexSource.includes('data-view-panel="credentials"') &&
+			indexSource.includes('id="fleetCredentialFormTemplate"') &&
+			rendererSource.includes('action: "fleet-edit-credentials"') &&
+			rendererSource.includes("showFleetCredentialModal(addedDeploymentId)"),
+		"Additional-bot credentials should be an approved contextual Fleet action and not a separate page.",
 	);
 	assert(
 		databaseSection.includes("Backup / Transfer") &&

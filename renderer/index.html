@@ -28,7 +28,6 @@
 				<nav class="nav" aria-label="Main">
 					<button class="nav-item active" type="button" data-view="dashboard">Dashboard</button>
 					<button class="nav-item" type="button" data-view="fleet">Fleet</button>
-					<button class="nav-item" type="button" data-view="credentials">Credentials</button>
 					<button class="nav-item" type="button" data-view="security">Security</button>
 					<button class="nav-item" type="button" data-view="setup">Setup</button>
 					<button class="nav-item" type="button" data-view="updates">Updates</button>
@@ -683,28 +682,6 @@
 					</div>
 				</section>
 
-				<section class="view" data-view-panel="credentials">
-					<div class="panel split-panel">
-						<div><h2>Bot Credentials</h2><div class="panel-meta">Optional credential setup for additional bots with approved secure storage</div></div>
-						<button class="button info" type="button" data-action="refresh-fleet">Refresh</button>
-					</div>
-					<div class="panel">
-						<form class="fleet-form" id="deploymentCredentialForm">
-							<label class="select-field fleet-form-wide">Bot<select name="deploymentId" id="credentialDeploymentSelect"></select></label>
-							<div class="form-contents" id="deploymentCredentialFields" hidden>
-								<label class="field">Application ID<input name="clientId" required spellcheck="false"></label>
-								<label class="field">Bot token<input name="token" type="password" required autocomplete="new-password"></label>
-								<label class="field">Public key<input name="publicKey" type="password" autocomplete="new-password"></label>
-								<label class="field">Client secret<input name="clientSecret" type="password" autocomplete="new-password"></label>
-								<label class="field">Test guild IDs<textarea name="guildIds" rows="3"></textarea></label>
-								<label class="choice-field"><span>Advanced</span><span class="choice-option"><input name="allowConcurrent" type="checkbox"> Allow concurrent use</span></label>
-								<div class="fleet-form-wide form-actions"><button class="button primary" type="button" data-action="save-deployment-credentials" id="saveDeploymentCredentialsButton">Save Securely in Bot Folder</button></div>
-							</div>
-						</form>
-						<div class="update-message" id="deploymentCredentialsMode">Add an additional bot to review its credential-management mode.</div>
-					</div>
-				</section>
-
 				<section class="view" data-view-panel="security">
 					<div class="panel split-panel">
 						<div><h2>Fleet Security</h2><div class="panel-meta">Database encryption, encrypted recovery backups, and deployment compliance</div></div>
@@ -861,6 +838,17 @@
 				<div class="modal-actions" id="sharedModalActions"></div>
 			</div>
 		</div>
+
+		<template id="fleetCredentialFormTemplate">
+			<form class="form-grid modal-form" id="fleetCredentialModalForm">
+				<label class="field"><span>Application ID</span><input name="clientId" required spellcheck="false"></label>
+				<label class="field"><span>Bot token</span><input name="token" type="password" required autocomplete="new-password"></label>
+				<label class="field"><span>Public key <span class="optional-label">(Optional)</span></span><input name="publicKey" type="password" autocomplete="new-password"></label>
+				<label class="field"><span>Client secret <span class="optional-label">(Optional)</span></span><input name="clientSecret" type="password" autocomplete="new-password"></label>
+				<label class="field wide"><span>Test guild IDs <span class="optional-label">(Optional)</span></span><textarea name="guildIds" rows="3"></textarea></label>
+				<label class="choice-field wide"><span>Advanced</span><span class="choice-option"><input name="allowConcurrent" type="checkbox"> Allow concurrent use of this Discord identity</span></label>
+			</form>
+		</template>
 
 		<!-- Toasts are short messages created by toast() in app.js. -->
 		<div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>

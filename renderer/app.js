@@ -3182,6 +3182,36 @@ function fleetEmpty(message) {
 	return empty;
 }
 
+function canManageFleetCredentials(deployment, definition) {
+	return Boolean(
+		definition?.source === "external" &&
+		definition.credentials?.mode === "adapter" &&
+		definition.commands?.credentialsWrite &&
+		deployment?.approvedCapabilities?.secretEncryption,
+	);
+}
+
+function showFleetCredentialModal(deploymentId) {
+	const deployment = fleetState?.deployments?.find(item => item.id === deploymentId);
+	const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
+	const template = $("#fleetCredentialFormTemplate");
+	if (!deployment || !canManageFleetCredentials(deployment, definition) || !template) {
+		toast("This bot manages its own credentials.", "error");
+		return;
+	}
+	const form = template.content.firstElementChild.cloneNode(true);
+	form.dataset.deploymentId = deployment.id;
+	showSharedModal({
+		actions: [
+			{ action: "fleet-credentials-cancel", label: "Cancel", variant: "secondary" },
+			{ action: "fleet-credentials-save", label: "Save Securely", variant: "primary" },
+		],
+		content: [form],
+		meta: `Saved only through ${definition.displayName}'s approved encrypted-storage writer`,
+		title: `${deployment.name} credentials`,
+	});
+}
+
 function renderFleet(nextFleet) {
 	fleetState = nextFleet || state?.fleet || null;
 	if (!fleetState) return;
@@ -3218,6 +3248,7 @@ function renderFleet(nextFleet) {
 				...(capabilities.logs ? [{ action: "fleet-runtime-logs", id: deployment.id, label: "Logs" }] : []),
 				...(capabilities.gitUpdates ? [{ action: "fleet-repository-check", id: deployment.id, label: "Updates", kind: "info" }] : []),
 				...(capabilities.discordCommands ? [{ action: "fleet-deploy-commands", id: deployment.id, label: "Deploy" }] : []),
+				...(canManageFleetCredentials(deployment, type) ? [{ action: "fleet-edit-credentials", id: deployment.id, label: "Credentials" }] : []),
 				{ action: "remove-fleet-deployment", id: deployment.id, label: "Remove" },
 			],
 		);
@@ -3230,25 +3261,9 @@ function renderFleet(nextFleet) {
 	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name);
 	replaceSelectOptions("#fleetBotTypeSelect", supportedBotTypes, item => item.displayName);
 	setDisabled("#addFleetBotButton", !supportedBotTypes.length);
-	replaceSelectOptions("#credentialDeploymentSelect", managedDeployments, item => item.name);
 	replaceSelectOptions("#securityDeploymentSelect", fleetState.deployments, item => item.name);
 	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
-	renderDeploymentCredentialMode();
 	renderFleetSecurityCapabilities();
-}
-
-function renderDeploymentCredentialMode() {
-	const deployment = fleetState?.deployments?.find(item => item.id === $("#credentialDeploymentSelect")?.value);
-	const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
-	const adapter = definition?.credentials?.mode === "adapter" && definition?.commands?.credentialsWrite;
-	const allowed = Boolean(definition?.source === "external" && adapter && deployment?.approvedCapabilities?.secretEncryption);
-	const credentialFields = $("#deploymentCredentialFields");
-	if (credentialFields) credentialFields.hidden = !allowed;
-	setDisabled("#saveDeploymentCredentialsButton", !allowed);
-	setText("#deploymentCredentialsMode", !deployment ?
-		"No additional bot is available. Add one from Fleet first." : allowed ?
-		`${definition.displayName} explicitly supports managed credential storage. Submitted values are sent only to its approved writer.` :
-		`${definition?.displayName || "This bot"} manages its own credentials. HachiGen will not ask for, read, rewrite, encrypt, or relocate them.`);
 }
 
 function renderFleetSecurityCapabilities() {
@@ -3611,10 +3626,6 @@ function handleChange(event) {
 		updateRemotePortMode();
 	}
 
-	if (event.target.id === "credentialDeploymentSelect") {
-		renderDeploymentCredentialMode();
-	}
-
 	if (event.target.id === "securityDeploymentSelect") {
 		renderFleetSecurityCapabilities();
 	}
@@ -3800,24 +3811,45 @@ function handleAction(event) {
 	if (action === "add-fleet-deployment") {
 		const form = $("#fleetDeploymentForm");
 		const values = Object.fromEntries(new window.FormData(form));
+		const existingDeploymentIds = new Set(fleetState?.deployments?.map(item => item.id) || []);
+		let addedDeploymentId = null;
 		runAction("Add bot", async () => {
 			const fleet = await api.addFleetDeployment(values);
+			addedDeploymentId = fleet.deployments.find(item => !existingDeploymentIds.has(item.id))?.id || null;
 			renderFleet(fleet);
 			form.reset();
-			return { message: "Bot added." };
+			return { ...fleet, message: "Bot added." };
+		}).then(result => {
+			if (result && addedDeploymentId) {
+				const deployment = fleetState?.deployments?.find(item => item.id === addedDeploymentId);
+				const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
+				if (canManageFleetCredentials(deployment, definition)) showFleetCredentialModal(addedDeploymentId);
+			}
 		});
 		return;
 	}
 
-	if (action === "save-deployment-credentials") {
-		const form = $("#deploymentCredentialForm");
+	if (action === "fleet-edit-credentials") {
+		showFleetCredentialModal(button.dataset.itemId);
+		return;
+	}
+
+	if (action === "fleet-credentials-cancel") {
+		closeSharedModal();
+		return;
+	}
+
+	if (action === "fleet-credentials-save") {
+		const form = $("#fleetCredentialModalForm");
+		if (!form?.reportValidity()) return;
 		const values = Object.fromEntries(new window.FormData(form));
 		values.allowConcurrent = Boolean(form.elements.allowConcurrent.checked);
-		runAction("Save deployment credentials", async () => {
-			const fleet = await api.saveFleetDeploymentCredentials(values.deploymentId, values);
+		runAction("Save bot credentials", async () => {
+			const fleet = await api.saveFleetDeploymentCredentials(form.dataset.deploymentId, values);
 			renderFleet(fleet);
-			form.reset();
 			return { message: "Credentials encrypted in the bot folder." };
+		}).then(result => {
+			if (result) closeSharedModal();
 		});
 		return;
 	}
