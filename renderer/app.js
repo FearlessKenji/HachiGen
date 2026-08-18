@@ -15,7 +15,6 @@ const viewTitles = {
 	fleet: "Fleet",
 	security: "Security",
 	setup: "Hachi",
-	remote: "Remote",
 	updates: "Updates",
 	database: "Database",
 	logs: "Logs",
@@ -3685,7 +3684,8 @@ function runInlineAction(action) {
 	}
 
 	if (action === "show-remote") {
-		showView("remote");
+		showView("setup");
+		window.requestAnimationFrame(() => $("#remoteConnectionPanel")?.scrollIntoView({ behavior: "smooth", block: "start" }));
 		return;
 	}
 

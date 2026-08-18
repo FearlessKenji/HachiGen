@@ -24,6 +24,7 @@ Notable changes to HachiGen are documented here.
 - Made form-action spacing grid-independent and kept the PM2 process optional indicator inline with its label.
 - Consolidated additional-bot information into Fleet by removing the Credentials page and adding a contextual credentials modal that appears only for approved adapters, including immediately after compatible bot onboarding.
 - Renamed the Setup navigation destination to Hachi and moved it directly below Dashboard, while retaining the stable internal route and updating visible guide/action copy.
+- Integrated Hachi's local/remote runtime target, SSH settings, connection testing, and preview into the Hachi page; removed the separate Remote navigation destination and redirected existing shortcuts to the embedded panel.
 - Expanded diagnostics bundle export to include redacted Hachi runtime logs and PM2 snapshots alongside HachiGen logs.
 - Updated vulnerable transitive build dependencies to patched releases, clearing npm audit findings for `brace-expansion`, `fast-uri`, `tar`, and `undici`.
 

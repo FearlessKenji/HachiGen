@@ -304,6 +304,13 @@ function validateRendererAndMenuWiring() {
 		"Database transfers should re-encrypt transferred copies with the destination database key.",
 	);
 	assert(indexSource.includes("id=\"remotePreviewLastTest\"") && managerSource.includes("lastRemoteTest"), "Remote profile should show the last connection test result.");
+	assert(
+		!indexSource.includes('data-view="remote"') &&
+			!indexSource.includes('data-view-panel="remote"') &&
+			indexSource.includes('id="remoteConnectionPanel"') &&
+			rendererSource.includes('showView("setup");\n\t\twindow.requestAnimationFrame(() => $("#remoteConnectionPanel")'),
+		"Remote runtime settings should live inside Hachi and existing shortcuts should route to that panel.",
+	);
 	assert(mainSource.includes("manager:check-hachigen-updates") && mainSource.includes("manager:install-hachigen-update"), "Main process should handle HachiGen self-update channels.");
 	assert(preloadSource.includes("installHachiGenUpdate") && rendererSource.includes("api.installHachiGenUpdate()"), "Self-update install action is not wired.");
 	assert(indexSource.includes("id=\"hachigenUpdateMeta\"") && stylesSource.includes(".update-wizard-progress"), "Update wizard UI or styles are missing.");

@@ -32,7 +32,6 @@
 					<button class="nav-item" type="button" data-view="security">Security</button>
 					<button class="nav-item" type="button" data-view="updates">Updates</button>
 					<button class="nav-item" type="button" data-view="database">Database</button>
-					<button class="nav-item" type="button" data-view="remote">Remote</button>
 					<button class="nav-item" type="button" data-view="logs">Logs</button>
 					<button class="nav-item" type="button" data-view="diagnostics">Diagnostics</button>
 				</nav>
@@ -303,10 +302,11 @@
 							</div>
 						</form>
 					</div>
-				</section>
-
-				<!-- Remote: saved SSH details for the production server. -->
-				<section class="view" data-view-panel="remote">
+					<!-- Runtime location: local/remote target and saved SSH details for Hachi. -->
+					<div class="panel" id="remoteConnectionPanel">
+						<h2>Runtime Location</h2>
+						<div class="panel-meta">Choose whether Hachi runs locally or through a saved remote connection</div>
+					</div>
 					<div class="remote-grid">
 						<div class="panel remote-settings-panel">
 							<div class="form-header">
