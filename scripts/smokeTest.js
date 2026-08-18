@@ -268,7 +268,7 @@ function validateRendererAndMenuWiring() {
 		!/<label>/u.test(indexSource) &&
 			stylesSource.includes(".field,\n.select-field,\n.choice-field") &&
 			stylesSource.includes(".empty-state") &&
-			stylesSource.includes(".form-actions"),
+			/\.form-actions \{[\s\S]*?margin-top: 14px;/u.test(stylesSource),
 		"Forms should use shared field, choice, empty-state, and action components instead of bare page-specific controls.",
 	);
 	assert(

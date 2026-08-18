@@ -20,6 +20,7 @@ Notable changes to HachiGen are documented here.
 - Changed external credentials to remain unmanaged by default. HachiGen can write them only when a reviewed definition explicitly opts into adapter mode and the `secretEncryption` capability.
 - Redesigned Fleet around neutral additional-bot onboarding, removed built-in bot references and project-specific placeholders, and moved technical support-file JSON behind an explained advanced disclosure that matches the rest of the interface.
 - Consolidated Setup, Fleet, Credentials, and Fleet Security onto shared field, select, textarea, choice, section-header, empty-state, help-text, and form-action components for consistent sizing, typography, spacing, focus, and disabled states.
+- Standardized the vertical gap above form action rows so Fleet add buttons no longer sit at different distances from their final fields.
 - Expanded diagnostics bundle export to include redacted Hachi runtime logs and PM2 snapshots alongside HachiGen logs.
 - Updated vulnerable transitive build dependencies to patched releases, clearing npm audit findings for `brace-expansion`, `fast-uri`, `tar`, and `undici`.
 
