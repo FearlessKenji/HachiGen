@@ -7,12 +7,14 @@ Notable changes to HachiGen are documented here.
 ### Added
 
 - Added the rollback-safe fleet registry foundation for multiple servers and bot deployments, with automatic migration of the current Hachi target.
-- Added a native Hachi bot definition and validated external JSON bot definitions for optional bots such as Paldeck; Hachi remains the only bundled bot type.
+- Added a native Hachi bot definition and validated external JSON bot profiles for optional bots; Hachi remains the only bundled bot type.
 - Added Fleet and Credentials workspaces for server/deployment registration, external bot discovery, scoped local/SSH PM2 controls, health checks, redacted logs, and deployment-local encrypted Discord credentials.
 - Added deployment-local credential fingerprints that block multiple ordinary deployments from starting the same Discord test identity concurrently without storing another token copy.
 - Added generic security audits, AES-256-GCM fleet database backups/restores, automatic backup and retention policies, log retention, and adapter-driven database encryption with rollback.
 - Added transactional fleet Git updates, external command adapters, Discord command deployment, and external bot-definition installation/removal.
 - Added preservation-first external-bot onboarding with a permission preview, immutable capability approval snapshots, definition fingerprints, and deployment repository origin/branch/ecosystem verification.
+- Added a guided production-bot onboarding flow that inspects a selected Git repository, detects package scripts, PM2 configuration, database and log paths, previews the generated capabilities, and stores the approved profile under `Profiles/Bots` without changing the bot repository.
+- Added multiple local Testing identities under `Profiles/Testing`, with Windows-user-protected values in profile `.env` files, one optional default identity, and 60-second clipboard copy controls.
 
 ### Changed
 
@@ -25,6 +27,8 @@ Notable changes to HachiGen are documented here.
 - Consolidated additional-bot information into Fleet by removing the Credentials page and adding a contextual credentials modal that appears only for approved adapters, including immediately after compatible bot onboarding.
 - Renamed the Setup navigation destination to Hachi and moved it directly below Dashboard, while retaining the stable internal route and updating visible guide/action copy.
 - Integrated Hachi's local/remote runtime target, SSH settings, connection testing, and preview into the Hachi page; removed the separate Remote navigation destination and redirected existing shortcuts to the embedded panel.
+- Replaced Fleet's empty Bot Support selector with repository inspection, added a native folder picker for local bots, removed the Environment field, and treats every added bot as production.
+- Renamed Fleet support records to Bot Profiles and migrated legacy external definitions by copying them into the new `Profiles/Bots` location so older builds remain rollback-compatible.
 - Expanded diagnostics bundle export to include redacted Hachi runtime logs and PM2 snapshots alongside HachiGen logs.
 - Updated vulnerable transitive build dependencies to patched releases, clearing npm audit findings for `brace-expansion`, `fast-uri`, `tar`, and `undici`.
 

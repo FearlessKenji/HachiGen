@@ -920,6 +920,24 @@ function registerIpc() {
 	ipcMain.handle("manager:list-fleet-backups", (_event, deploymentId) => manager.listFleetBackups(deploymentId));
 	ipcMain.handle("manager:prune-fleet-backups", (_event, deploymentId) => manager.pruneFleetBackups(deploymentId));
 	ipcMain.handle("manager:prune-fleet-logs", (_event, deploymentId) => manager.pruneFleetLogs(deploymentId));
+	ipcMain.handle("manager:choose-fleet-bot-folder", async () => {
+		const result = await dialog.showOpenDialog(mainWindow, {
+			properties: ["openDirectory"],
+			title: "Choose bot folder",
+		});
+		return result.canceled || !result.filePaths.length ? { canceled: true, path: "" } : { canceled: false, path: result.filePaths[0] };
+	});
+	ipcMain.handle("manager:inspect-fleet-bot-candidate", (_event, values) => manager.inspectFleetBotCandidate(values));
+	ipcMain.handle("manager:get-testing-profiles", () => manager.getTestingProfiles());
+	ipcMain.handle("manager:save-testing-profile", (_event, values) => manager.saveTestingProfile(values));
+	ipcMain.handle("manager:delete-testing-profile", (_event, profileId) => manager.deleteTestingProfile(profileId));
+	ipcMain.handle("manager:copy-testing-secret", (_event, profileId, field) => {
+		const secret = manager.readTestingSecretForCopy(profileId, field);
+		clipboard.writeText(secret.value);
+		scheduleClipboardClear(secret.value, secret.ttlMs);
+		manager.log(`Testing identity ${secret.profileId}: ${secret.field} copied to clipboard for ${Math.round(secret.ttlMs / 1000)} seconds.`, { area: "testing", profileId: secret.profileId });
+		return { field: secret.field, message: `${secret.field} copied. Clipboard clears in ${Math.round(secret.ttlMs / 1000)} seconds if unchanged.`, ok: true, ttlMs: secret.ttlMs };
+	});
 	ipcMain.handle("manager:get-diagnostics", () => manager.getDiagnostics());
 	ipcMain.handle("manager:get-about-info", () => manager.getAboutInfo());
 

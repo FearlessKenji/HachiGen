@@ -4,9 +4,9 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
-- Began the multi-server, multi-bot foundation while keeping existing Hachi management intact. Hachi remains the only built-in bot, and optional bots will be supplied through external definitions.
+- Began the multi-server, multi-bot foundation while keeping existing Hachi management intact. Hachi remains the only built-in bot, and optional bots use separately approved profiles.
 - Added Fleet and Credentials pages for managing servers, bot deployments, deployment-local encrypted Discord identities, runtime controls, health checks, and logs. HachiGen does not retain a second token copy, while shared test identities remain protected from accidental concurrent use.
-- Added fleet security audits, encrypted database backups and restores, automatic retention, safe bot updates with rollback, and external bot definitions for optional projects such as Paldeck.
+- Added fleet security audits, encrypted database backups and restores, automatic retention, safe bot updates with rollback, and external bot profiles for optional projects.
 - External bots are now preservation-first: HachiGen previews requested permissions before installing an adapter, verifies each deployment's Git origin, branch, and ecosystem file, and blocks actions if the definition changes after approval.
 - External credentials remain completely under the bot's control by default. Credential entry is available only for a deliberately approved encrypted-storage adapter; HachiGen never keeps a second token copy.
 - Fleet now focuses only on additional bots, uses the same stacked-panel layout as the rest of HachiGen, and explains bot support files in plain language instead of presenting an unexplained external-definition editor.
@@ -16,6 +16,9 @@ These notes are written for people running the HachiGen desktop manager. For the
 - Additional-bot credentials now live directly in Fleet instead of a separate sidebar page. Compatible bots show a Credentials action and open the same secure form automatically when first added.
 - Setup is now named Hachi and sits directly below Dashboard in the sidebar, making it clear that the page manages the built-in bot rather than application-wide setup.
 - Remote settings now live under Hachi as its Runtime Location section. The separate Remote sidebar tab was removed, while Dashboard and guide shortcuts still open the correct settings directly.
+- Adding a bot now uses a guided review: choose its repository folder, let HachiGen detect its Git source, package scripts, PM2 file, database, and logs, then approve the generated production profile. HachiGen saves profiles in its own `Profiles/Bots` folder and does not modify the bot repository.
+- Fleet now has an Open Folder picker, no longer shows empty Bot Support or Environment selectors, and assumes every added bot is production.
+- Added a Testing tab for one or more local Discord test identities. Each identity is protected for the current Windows user in its own profile `.env`, can optionally be the default, and provides the same temporary 60-second copy behavior as Hachi credentials.
 - Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
 - Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 

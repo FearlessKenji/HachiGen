@@ -32,7 +32,7 @@ The installer creates an app folder that includes `HachiGen.exe` and `Uninstall 
 - Database backups, restore, schema review, sanitation, migration, and encryption lifecycle
 - HachiGen self-updates from `hachigen-vX.X.X` releases
 
-Hachi remains the only bot type bundled with HachiGen. See [External bot definitions](docs/bot-definitions.md) to add Paldeck or another optional bot.
+Hachi remains the only bot type bundled with HachiGen. See [Bot profiles](docs/bot-definitions.md) to add another optional bot.
 
 External deployments are linked to their repositories by the definition's expected Git URL, branch, ecosystem file, paths, and command adapters. HachiGen verifies that identity before registering a deployment and runs only capabilities approved when the definition was installed.
 

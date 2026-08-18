@@ -51,9 +51,9 @@ async function validateBotRegistryFoundation() {
 	assert(fleet.servers.length === 1 && fleet.deployments.length === 1, "Legacy settings should migrate to one local Hachi deployment.");
 	assert(fleet.deployments[0].botTypeId === "hachi", "Migrated deployment should use native Hachi.");
 	const external = validateExternalBotDefinition({
-		id: "paldeck",
-		displayName: "Paldeck",
-		runtime: { ecosystemFile: "config/ecosystem.config.js", pm2Name: "Paldeck" },
+		id: "optional-bot",
+		displayName: "Optional Bot",
+		runtime: { ecosystemFile: "config/ecosystem.config.js", pm2Name: "OptionalBot" },
 		capabilities: { backups: true, databaseEncryption: true },
 	});
 	assert(external.source === "external" && external.capabilities.databaseEncryption, "Optional bots should load as external definitions.");
@@ -79,9 +79,9 @@ async function validateBotRegistryFoundation() {
 	assert(rejectedNativeOverride, "External definitions must not replace native Hachi.");
 	const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-bot-types-"));
 	try {
-		fs.writeFileSync(path.join(tempRoot, "paldeck.json"), JSON.stringify({
-			id: "paldeck",
-			displayName: "Paldeck",
+		fs.writeFileSync(path.join(tempRoot, "optional-bot.json"), JSON.stringify({
+			id: "optional-bot",
+			displayName: "Optional Bot",
 			runtime: { ecosystemFile: "ecosystem.config.js" },
 		}));
 		const loaded = loadBotDefinitions(tempRoot);
@@ -257,12 +257,25 @@ function validateRendererAndMenuWiring() {
 	const databaseSection = indexSource.match(/<section class="view" data-view-panel="database">[\s\S]*?<section class="view" data-view-panel="logs">/u)?.[0] || "";
 	const fleetSection = indexSource.match(/<section class="view" data-view-panel="fleet">[\s\S]*?<section class="view" data-view-panel="security">/u)?.[0] || "";
 	assert(
-		fleetSection.includes("Bot Support") &&
-			fleetSection.includes("Add bot support") &&
+		fleetSection.includes("Bot Profiles") &&
+			fleetSection.includes("Open Folder") &&
+			fleetSection.includes("Review Bot") &&
+			!fleetSection.includes(">Environment<") &&
 			!fleetSection.includes("Paldeck") &&
 			!fleetSection.includes("Hachi is native") &&
 			rendererSource.includes('type => type.source === "external"'),
-		"Fleet should use neutral bot-support onboarding and exclude the built-in runtime.",
+		"Fleet should use profile-based onboarding, assume production, and exclude the built-in runtime.",
+	);
+	assert(
+		indexSource.includes('data-view="testing"') &&
+			indexSource.includes('data-view-panel="testing"') &&
+			indexSource.includes('id="testingProfileForm"') &&
+			preloadSource.includes("getTestingProfiles") &&
+			preloadSource.includes("copyTestingSecret") &&
+			mainSource.includes("manager:copy-testing-secret") &&
+			managerSource.includes('path.join(this.profilesDir, "Testing")') &&
+			managerSource.includes("os:v1:"),
+		"Testing identities should be locally protected, copyable, and managed from the Testing tab.",
 	);
 	assert(
 		!/<label>/u.test(indexSource) &&
@@ -277,7 +290,7 @@ function validateRendererAndMenuWiring() {
 			!indexSource.includes('data-view-panel="credentials"') &&
 			indexSource.includes('id="fleetCredentialFormTemplate"') &&
 			rendererSource.includes('action: "fleet-edit-credentials"') &&
-			rendererSource.includes("showFleetCredentialModal(addedDeploymentId)"),
+			rendererSource.includes("showFleetCredentialModal(button.dataset.itemId)"),
 		"Additional-bot credentials should be an approved contextual Fleet action and not a separate page.",
 	);
 	assert(
@@ -1005,6 +1018,40 @@ async function validateFleetCredentialAndBackupSecurity() {
 	}
 }
 
+function validateTestingIdentityProtection() {
+	const { HachiManager } = requireFresh("src", "manager.js");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-testing-identities-"));
+	const userDataPath = path.join(tempDir, "userData");
+	try {
+		const manager = new HachiManager({
+			defaultInstallPath: tempDir,
+			managerRoot: projectRoot,
+			userDataPath,
+			protectSecret: value => Buffer.from(String(value)).toString("base64"),
+			unprotectSecret: value => Buffer.from(String(value), "base64").toString("utf8"),
+		});
+		manager.saveTestingProfile({ name: "Shared Test", TOKEN: "test-token", clientId: "123", guildIds: "456\n789", isDefault: true });
+		manager.saveTestingProfile({ name: "Secondary", TOKEN: "second-token", clientId: "321" });
+		const profiles = manager.getTestingProfiles();
+		assert(profiles.length === 2 && profiles[0].isDefault, "Testing profiles should support multiple identities and one optional default.");
+		assert(profiles[0].guildIds.length === 2, "Testing profile guild IDs were not normalized.");
+		const secretPath = path.join(userDataPath, "Profiles", "Testing", "shared-test", "secrets.env");
+		const secrets = fs.readFileSync(secretPath, "utf8");
+		assert(secrets.includes("os:v1:") && !secrets.includes("test-token"), "Testing profile .env should contain only OS-protected values.");
+		assert(manager.readTestingSecretForCopy("shared-test", "TOKEN").value === "test-token", "Protected testing token did not round-trip for copy.");
+		assert(!JSON.stringify(profiles).includes("test-token"), "Testing profile metadata exposed plaintext credentials.");
+		let duplicateRejected = false;
+		try {
+			manager.saveTestingProfile({ name: "Shared Test", TOKEN: "replacement", clientId: "999" });
+		} catch {
+			duplicateRejected = true;
+		}
+		assert(duplicateRejected, "A duplicate testing profile name should not overwrite saved credentials.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
 async function main() {
 	await test("package metadata and lockfile are consistent", validatePackageMetadata);
 	await test("required project files exist", validateProjectFiles);
@@ -1023,6 +1070,7 @@ async function main() {
 	await test("logs redact secrets and hide Git plumbing", validateLoggingAndQuietState);
 	await test("update checks are deduplicated", validateUpdateCheckDeduplication);
 	await test("fleet credentials and database backups stay encrypted", validateFleetCredentialAndBackupSecurity);
+	await test("testing identities stay OS-protected and out of renderer state", validateTestingIdentityProtection);
 
 	console.log("");
 	console.log(`Smoke test complete: ${results.passed} passed, ${results.failed} failed.`);

@@ -210,6 +210,23 @@ function normalizeConfigIdList(value) {
 		.filter(item => item && !item.includes("(REQUIRED)")))];
 }
 
+function normalizeProfileId(value, fallback = "profile") {
+	const normalized = String(value || "").trim().toLowerCase()
+		.replace(/[^a-z0-9_-]+/gu, "-")
+		.replace(/^-+|-+$/gu, "")
+		.slice(0, 64);
+	return normalized || `${fallback}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function remoteCandidateProbe(candidates, kind) {
+	const flag = kind === "directory" ? "-d" : "-f";
+	return [
+		"found=''",
+		`for candidate in ${candidates.map(quotePosix).join(" ")}; do if test ${flag} "$candidate"; then printf '%s\\n' "$candidate"; found=1; break; fi; done`,
+		`if test -z "$found"; then printf -- '-\\n'; fi`,
+	].join("; ");
+}
+
 function idListForForm(value) {
 	return normalizeConfigIdList(value).join("\n");
 }
@@ -1935,7 +1952,9 @@ class HachiManager {
 		this.userDataPath = userDataPath || getDefaultHachiGenUserDataPath();
 		this.settingsPath = path.join(this.userDataPath, "settings.json");
 		this.fleetPath = path.join(this.userDataPath, "fleet.json");
-		this.botDefinitionsDir = path.join(this.userDataPath, "bot-definitions");
+		this.profilesDir = path.join(this.userDataPath, "Profiles");
+		this.botDefinitionsDir = path.join(this.profilesDir, "Bots");
+		this.testingProfilesDir = path.join(this.profilesDir, "Testing");
 		this.protectSecret = protectSecret || null;
 		this.unprotectSecret = unprotectSecret || null;
 
@@ -1961,8 +1980,135 @@ class HachiManager {
 		this.fleetMaintenanceTimer = null;
 
 		ensureDir(this.userDataPath);
+		this.migrateLegacyBotProfiles();
 		this.settings = this.loadSettings();
 		this.fleet = this.loadFleetRegistry();
+	}
+
+	migrateLegacyBotProfiles() {
+		const legacyDir = path.join(this.userDataPath, "bot-definitions");
+		ensureDir(this.botDefinitionsDir);
+		ensureDir(this.testingProfilesDir);
+		if (!fileExists(legacyDir)) {
+			return;
+		}
+		// Copy rather than move so rolling back to an older HachiGen build remains safe.
+		for (const entry of fs.readdirSync(legacyDir, { withFileTypes: true })) {
+			if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".json") {
+				continue;
+			}
+			const destination = path.join(this.botDefinitionsDir, entry.name);
+			if (!fileExists(destination)) {
+				fs.copyFileSync(path.join(legacyDir, entry.name), destination);
+			}
+		}
+	}
+
+	getTestingProfiles() {
+		ensureDir(this.testingProfilesDir);
+		const profiles = [];
+		for (const entry of fs.readdirSync(this.testingProfilesDir, { withFileTypes: true })) {
+			if (!entry.isDirectory()) {
+				continue;
+			}
+			const root = path.join(this.testingProfilesDir, entry.name);
+			const metadata = readJson(path.join(root, "profile.json"), null);
+			if (!metadata) {
+				continue;
+			}
+			const secrets = parseDotEnv(path.join(root, "secrets.env"));
+			profiles.push({
+				id: entry.name,
+				name: String(metadata.name || entry.name),
+				isDefault: metadata.isDefault === true,
+				guildIds: normalizeConfigIdList(metadata.guildIds),
+				createdAt: metadata.createdAt || null,
+				updatedAt: metadata.updatedAt || null,
+				hasValues: Object.fromEntries(["TOKEN", "clientId", "publicKey", "clientSecret"].map(field => [field, String(secrets[field] || "").startsWith("os:v1:")])),
+			});
+		}
+		return profiles.sort((left, right) => Number(right.isDefault) - Number(left.isDefault) || left.name.localeCompare(right.name));
+	}
+
+	saveTestingProfile(values) {
+		if (!this.protectSecret) {
+			throw new Error("Operating-system secret protection is unavailable.");
+		}
+		const requestedId = normalizeProfileId(values?.id || values?.name, "testing");
+		const existing = this.getTestingProfiles().find(profile => profile.id === requestedId);
+		if (!values?.id && existing) {
+			throw new Error("A testing identity already uses that profile name.");
+		}
+		const profileId = existing ? requestedId : normalizeProfileId(values?.name || requestedId, "testing");
+		const root = path.join(this.testingProfilesDir, profileId);
+		ensureDir(root);
+		const metadataPath = path.join(root, "profile.json");
+		const secretsPath = path.join(root, "secrets.env");
+		const now = new Date().toISOString();
+		const previousMetadata = readJson(metadataPath, {});
+		const previousSecrets = fileExists(secretsPath) ? fs.readFileSync(secretsPath, "utf8") : "";
+		const updates = { HACHIGEN_TEST_SECRETS_PROTECTION: "os" };
+		for (const field of ["TOKEN", "clientId", "publicKey", "clientSecret"]) {
+			const submitted = String(values?.[field] || "").trim();
+			if (submitted) {
+				updates[field] = `os:v1:${this.protectSecret(submitted)}`;
+			}
+		}
+		const parsedSecrets = parseDotEnvContent(updateDotEnvContent(previousSecrets, updates));
+		if (!String(parsedSecrets.TOKEN || "").startsWith("os:v1:") || !String(parsedSecrets.clientId || "").startsWith("os:v1:")) {
+			throw new Error("A test bot token and application ID are required.");
+		}
+		if (values?.isDefault) {
+			for (const profile of this.getTestingProfiles()) {
+				if (profile.id === profileId) {
+					continue;
+				}
+				const otherPath = path.join(this.testingProfilesDir, profile.id, "profile.json");
+				const other = readJson(otherPath, null);
+				if (other?.isDefault) {
+					writeJsonFile(otherPath, { ...other, isDefault: false, updatedAt: now });
+				}
+			}
+		}
+		writeJsonFile(metadataPath, {
+			createdAt: previousMetadata.createdAt || now,
+			guildIds: normalizeConfigIdList(values?.guildIds ?? previousMetadata.guildIds),
+			id: profileId,
+			isDefault: values?.isDefault === true,
+			name: String(values?.name || previousMetadata.name || profileId).trim(),
+			updatedAt: now,
+			version: 1,
+		});
+		fs.writeFileSync(secretsPath, updateDotEnvContent(previousSecrets, updates), { encoding: "utf8", mode: 0o600 });
+		this.log(`Testing identity saved: ${profileId}.`, { area: "testing", profileId });
+		return { message: "Testing identity saved.", profiles: this.getTestingProfiles() };
+	}
+
+	readTestingSecretForCopy(profileId, field) {
+		if (!this.unprotectSecret) {
+			throw new Error("Operating-system secret protection is unavailable.");
+		}
+		if (!["TOKEN", "clientId", "publicKey", "clientSecret"].includes(field)) {
+			throw new Error("Unsupported testing credential field.");
+		}
+		const safeId = normalizeProfileId(profileId);
+		const secrets = parseDotEnv(path.join(this.testingProfilesDir, safeId, "secrets.env"));
+		const protectedValue = String(secrets[field] || "");
+		if (!protectedValue.startsWith("os:v1:")) {
+			throw new Error(`${field} has no saved value.`);
+		}
+		return { field, profileId: safeId, ttlMs: 60000, value: this.unprotectSecret(protectedValue.slice("os:v1:".length)) };
+	}
+
+	deleteTestingProfile(profileId) {
+		const safeId = normalizeProfileId(profileId);
+		const root = path.join(this.testingProfilesDir, safeId);
+		if (!fileExists(path.join(root, "profile.json"))) {
+			throw new Error("Testing identity was not found.");
+		}
+		fs.rmSync(root, { force: true, recursive: true });
+		this.log(`Testing identity deleted: ${safeId}.`, { area: "testing", profileId: safeId });
+		return { message: "Testing identity deleted.", profiles: this.getTestingProfiles() };
 	}
 
 	loadFleetRegistry() {
@@ -2014,6 +2160,106 @@ class HachiManager {
 		this.saveFleetRegistry();
 		this.log(`Fleet deployment added: ${deployment.name}.`, { area: "fleet", deploymentId: deployment.id, serverId: deployment.serverId });
 		return this.getFleetState();
+	}
+
+	async inspectFleetBotCandidate(values) {
+		const server = this.fleet.servers.find(item => item.id === values?.serverId);
+		if (!server) {
+			throw new Error("Select a valid connection.");
+		}
+		const installPath = String(values?.installPath || "").trim();
+		if (!installPath) {
+			throw new Error("Select a bot folder.");
+		}
+		const ecosystemCandidates = ["ecosystem.config.js", "ecosystem.config.cjs", "config/ecosystem.config.js", "config/ecosystem.config.cjs"];
+		const databaseCandidates = ["database/database.sqlite", "data/database.sqlite", "data/bot.sqlite", "database.sqlite"];
+		const logCandidates = ["logs", "log"];
+		let origin;
+		let branch;
+		let packageJson;
+		let ecosystemFile;
+		let ecosystemFound;
+		let databasePath;
+		let logsPath;
+		if (server.connection.type === "ssh") {
+			// Return one machine-readable JSON line so remote package metadata never becomes shell input.
+			const inspectScript = [
+				`cd ${quoteRemotePath(installPath)}`,
+				"git remote get-url origin",
+				"git branch --show-current",
+				`if test -f package.json; then node -p ${quotePosix("JSON.stringify(require('./package.json'))")}; else printf '{}\\n'; fi`,
+				remoteCandidateProbe(ecosystemCandidates, "file"),
+				remoteCandidateProbe(databaseCandidates, "file"),
+				remoteCandidateProbe(logCandidates, "directory"),
+			].join(" && ");
+			const result = await this.runFleetRemoteCommand(server, inspectScript, { allowFailure: true, log: false, timeoutMs: 30000 });
+			if (result.code !== 0) {
+				throw new Error(result.stderr || "Remote bot folder must be a Git checkout with an origin remote.");
+			}
+			const lines = result.stdout.split(/\r?\n/u);
+			[origin, branch] = lines;
+			packageJson = parseJsonText(lines[2], {});
+			ecosystemFile = lines[3] && lines[3] !== "-" ? lines[3] : "ecosystem.config.js";
+			ecosystemFound = lines[3] !== "-";
+			databasePath = lines[4] && lines[4] !== "-" ? lines[4] : undefined;
+			logsPath = lines[5] && lines[5] !== "-" ? lines[5] : undefined;
+		} else {
+			if (!fileExists(installPath)) {
+				throw new Error("Bot folder does not exist.");
+			}
+			const originResult = await run("git", ["remote", "get-url", "origin"], { allowFailure: true, cwd: installPath, timeoutMs: 30000 });
+			const branchResult = await run("git", ["branch", "--show-current"], { allowFailure: true, cwd: installPath, timeoutMs: 30000 });
+			if (originResult.code !== 0 || !originResult.stdout.trim()) {
+				throw new Error("Bot folder must be a Git checkout with an origin remote.");
+			}
+			origin = originResult.stdout.trim();
+			branch = branchResult.stdout.trim();
+			packageJson = readJson(path.join(installPath, "package.json"), {});
+			ecosystemFile = ecosystemCandidates.find(candidate => fileExists(path.join(installPath, candidate))) || "ecosystem.config.js";
+			ecosystemFound = fileExists(path.join(installPath, ecosystemFile));
+			databasePath = databaseCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
+			logsPath = logCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
+		}
+		if (!String(origin || "").trim()) {
+			throw new Error("Bot folder must be a Git checkout with an origin remote.");
+		}
+		const scripts = packageJson.scripts || {};
+		const validationScript = ["check", "lint", "test"].find(name => scripts[name]);
+		const deployScript = ["deploy", "deploy:commands", "commands:deploy"].find(name => scripts[name]);
+		const displayName = String(values?.name || packageJson.displayName || packageJson.name || path.basename(installPath)).trim();
+		const id = normalizeProfileId(packageJson.name || displayName, "bot");
+		const definition = {
+			id,
+			displayName,
+			repository: { branch: String(branch || "").trim() || "main", url: String(origin).trim() },
+			runtime: { ecosystemFile, pm2Name: String(values?.pm2Name || displayName).trim() },
+			credentials: { mode: "external" },
+			paths: {},
+			capabilities: { gitUpdates: true, pm2: ecosystemFound },
+			commands: { install: { executable: "npm", args: [fileExists(path.join(installPath, "package-lock.json")) ? "ci" : "install"] } },
+		};
+		if (validationScript) {
+			definition.commands.validate = { executable: "npm", args: ["run", validationScript] };
+		}
+		if (deployScript) {
+			definition.commands.deployCommands = { executable: "npm", args: ["run", deployScript] };
+			definition.capabilities.discordCommands = true;
+		}
+		if (databasePath) {
+			definition.paths.database = databasePath;
+			definition.capabilities.backups = true;
+		}
+		if (logsPath) {
+			definition.paths.logs = logsPath;
+			definition.capabilities.logs = true;
+		}
+		return {
+			definition,
+			detected: { databasePath: databasePath || null, ecosystemFound: definition.capabilities.pm2, ecosystemFile, logsPath: logsPath || null, packageName: packageJson.name || null },
+			installPath,
+			serverId: server.id,
+			warnings: definition.capabilities.pm2 ? [] : ["No PM2 ecosystem file was found. The bot will be added without PM2 controls."],
+		};
 	}
 
 	previewExternalBotDefinition(jsonText) {
@@ -2084,9 +2330,12 @@ class HachiManager {
 		let branch;
 		let ecosystemFound;
 		if (context.server.connection.type === "ssh") {
+			const ecosystemCheck = context.definition.capabilities?.pm2 ?
+				` && test -f ${quotePosix(context.definition.runtime.ecosystemFile)}` :
+				"";
 			const result = await this.runFleetRemoteCommand(
 				context.server,
-				`cd ${quoteRemotePath(context.deployment.installPath)} && git remote get-url origin && git branch --show-current && test -f ${quotePosix(context.definition.runtime.ecosystemFile)}`,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && git remote get-url origin && git branch --show-current${ecosystemCheck}`,
 				{ allowFailure: true, log: false, timeoutMs: 30000 },
 			);
 			if (result.code !== 0) {
@@ -2123,7 +2372,7 @@ class HachiManager {
 		if (branch !== context.definition.repository.branch) {
 			throw new Error(`Repository branch mismatch. Expected ${context.definition.repository.branch}, found ${branch || "detached HEAD"}.`);
 		}
-		if (!ecosystemFound) {
+		if (context.definition.capabilities?.pm2 && !ecosystemFound) {
 			throw new Error(`Required ecosystem file was not found: ${context.definition.runtime.ecosystemFile}.`);
 		}
 		return { branch, origin, ok: true };

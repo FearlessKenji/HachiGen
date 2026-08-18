@@ -33,6 +33,7 @@
 					<button class="nav-item" type="button" data-view="updates">Updates</button>
 					<button class="nav-item" type="button" data-view="database">Database</button>
 					<button class="nav-item" type="button" data-view="logs">Logs</button>
+					<button class="nav-item" type="button" data-view="testing">Testing</button>
 					<button class="nav-item" type="button" data-view="diagnostics">Diagnostics</button>
 				</nav>
 
@@ -653,21 +654,20 @@
 							<div class="fleet-list" id="fleetDeploymentList"><div class="empty-state">No additional bots have been added.</div></div>
 							<form class="fleet-form" id="fleetDeploymentForm">
 								<label class="field">Display name<input name="name" required maxlength="80" placeholder="Production bot"></label>
-								<label class="select-field">Bot support<select name="botTypeId" id="fleetBotTypeSelect"></select></label>
 								<label class="select-field">Connection<select name="serverId" id="fleetServerSelect"></select></label>
-								<label class="field">Bot folder<input name="installPath" required spellcheck="false" placeholder="C:\Bots\MyBot or /srv/bots/my-bot"></label>
-								<label class="field"><span>PM2 process name <span class="optional-label">(Optional)</span></span><input name="pm2Name" placeholder="Uses support-file default"></label>
-								<label class="select-field">Environment<select name="environment"><option value="production">Production</option><option value="staging">Staging</option><option value="test">Test</option><option value="development">Development</option></select></label>
-								<div class="fleet-form-wide form-actions"><button class="button primary" id="addFleetBotButton" type="button" data-action="add-fleet-deployment">Add Bot</button></div>
+								<label class="field fleet-form-wide"><span>Bot folder</span><div class="input-row"><input name="installPath" required spellcheck="false" placeholder="C:\Bots\MyBot or /srv/bots/my-bot"><button class="button secondary compact" id="chooseFleetBotFolderButton" type="button" data-action="choose-fleet-bot-folder">Open Folder</button></div></label>
+								<label class="field"><span>PM2 process name <span class="optional-label">(Optional)</span></span><input name="pm2Name" placeholder="Detected automatically"></label>
+								<div class="fleet-form-wide form-help">HachiGen will inspect the repository, package scripts, ecosystem file, database, and logs before showing a profile for approval. Added bots are treated as production.</div>
+								<div class="fleet-form-wide form-actions"><button class="button primary" id="addFleetBotButton" type="button" data-action="add-fleet-deployment">Review Bot</button></div>
 							</form>
 						</div>
 						<div class="panel">
-							<h2>Bot Support</h2>
-							<div class="panel-meta component-description">A bot support file tells HachiGen how to identify and operate a bot without changing that bot's code or credential files. Add one only when you want HachiGen to manage a new kind of bot.</div>
-							<div class="fleet-list" id="fleetBotTypeList"><div class="empty-state">No bot support has been added yet.</div></div>
+							<h2>Bot Profiles</h2>
+							<div class="panel-meta component-description">Profiles record how HachiGen may identify and operate each kind of bot. They are saved in HachiGen's Profiles folder and never added to bot repositories.</div>
+							<div class="fleet-list" id="fleetBotTypeList"><div class="empty-state">No bot profiles have been added yet.</div></div>
 							<div class="update-message" id="fleetDefinitionErrors"></div>
 							<details class="advanced-disclosure">
-								<summary>Add bot support</summary>
+								<summary>Import an advanced profile</summary>
 								<form class="fleet-form" id="botDefinitionForm">
 									<label class="field wide fleet-form-wide">Support file contents<textarea name="definition" rows="10" spellcheck="false" placeholder="Paste the JSON support file supplied with the bot"></textarea></label>
 									<div class="fleet-form-wide form-help">HachiGen will show the repository, commands, paths, and requested permissions for review before anything is added.</div>
@@ -739,6 +739,33 @@
 							<h2>HachiGen</h2>
 							<pre class="output" id="eventLogs">No manager activity yet.</pre>
 						</div>
+					</div>
+				</section>
+
+				<section class="view" data-view-panel="testing">
+					<div class="panel split-panel">
+						<div><h2>Testing</h2><div class="panel-meta">Local Discord identities for temporary bot testing</div></div>
+						<button class="button info" type="button" data-action="new-testing-profile">New Identity</button>
+					</div>
+					<div class="two-column testing-layout">
+						<div class="panel">
+							<h2>Testing Identities</h2>
+							<div class="fleet-list" id="testingProfileList"><div class="empty-state">No testing identities saved.</div></div>
+						</div>
+						<form class="panel" id="testingProfileForm">
+							<div class="form-header"><div><h2 id="testingProfileFormTitle">New Identity</h2><div class="panel-meta">Protected for this Windows user</div></div><button class="button primary compact" type="submit">Save</button></div>
+							<input name="id" type="hidden">
+							<div class="form-grid">
+								<label class="field wide"><span>Profile name</span><input name="name" required maxlength="80" placeholder="Default Test Bot"></label>
+								<label class="field"><span>Application ID</span><div class="secret-field-row"><input name="clientId" autocomplete="off"><button class="button secondary compact" type="button" data-action="copy-testing-secret" data-secret-field="clientId" disabled>Copy</button></div></label>
+								<label class="field"><span>Bot token</span><div class="secret-field-row"><input name="TOKEN" type="password" autocomplete="new-password"><button class="button secondary compact" type="button" data-action="copy-testing-secret" data-secret-field="TOKEN" disabled>Copy</button></div></label>
+								<label class="field"><span>Public key <span class="optional-label">(Optional)</span></span><div class="secret-field-row"><input name="publicKey" type="password" autocomplete="new-password"><button class="button secondary compact" type="button" data-action="copy-testing-secret" data-secret-field="publicKey" disabled>Copy</button></div></label>
+								<label class="field"><span>Client secret <span class="optional-label">(Optional)</span></span><div class="secret-field-row"><input name="clientSecret" type="password" autocomplete="new-password"><button class="button secondary compact" type="button" data-action="copy-testing-secret" data-secret-field="clientSecret" disabled>Copy</button></div></label>
+								<label class="field wide"><span>Test guild IDs <span class="optional-label">(Optional)</span></span><input name="guildIds" placeholder="One or more IDs"></label>
+								<label class="choice-field wide"><span>Default identity</span><span class="choice-option"><input name="isDefault" type="checkbox"> Use automatically when a test identity is not selected</span></label>
+							</div>
+							<div class="form-actions"><button class="button danger" id="deleteTestingProfileButton" type="button" data-action="delete-testing-profile" disabled>Delete</button></div>
+						</form>
 					</div>
 				</section>
 

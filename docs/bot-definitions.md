@@ -1,20 +1,22 @@
-# External bot definitions
+# Bot profiles
 
-Hachi is the only bot type built into HachiGen. Paldeck and every other optional bot are installed as external JSON definitions from the Fleet page. Removing a definition does not delete its repository or server files.
+Hachi is the only bot type built into HachiGen. Every additional bot uses a JSON profile managed from Fleet. Removing a profile does not delete its repository or server files.
+
+The normal Fleet wizard inspects the selected local repository or remote SSH path and proposes a profile from its Git origin, branch, package scripts, PM2 ecosystem file, database, and log paths. HachiGen shows that proposal before saving it under its application-data `Profiles/Bots` folder. Inspection and profile creation do not write into the bot repository. Legacy files are copied into this folder during migration and retained in their old location for rollback compatibility.
 
 ## Example
 
 ```json
 {
-  "id": "paldeck",
-  "displayName": "Paldeck",
+  "id": "optional-bot",
+  "displayName": "Optional Bot",
   "repository": {
-    "url": "https://github.com/OWNER/Paldeck.git",
+    "url": "https://github.com/OWNER/OptionalBot.git",
     "branch": "main"
   },
   "runtime": {
     "ecosystemFile": "config/ecosystem.config.js",
-    "pm2Name": "Paldeck"
+    "pm2Name": "OptionalBot"
   },
   "credentials": {
     "mode": "adapter"
@@ -46,7 +48,7 @@ Hachi is the only bot type built into HachiGen. Paldeck and every other optional
 
 Only `node`, `npm`, `npx`, `pnpm`, `yarn`, and `git` commands are accepted. Commands are passed as an executable and argument array instead of an arbitrary shell string. Paths must be relative to the deployment root and cannot contain traversal segments.
 
-Before installation, HachiGen displays the repository identity, credential mode, capabilities, commands, and declared paths for approval. A deployment is accepted only when its checked-out Git origin and current branch match the definition and its ecosystem file exists. The approved capability set and definition fingerprint are stored with the deployment; changing the installed definition blocks privileged actions until the deployment is deliberately reviewed and added again.
+Before installation, HachiGen displays the repository identity, credential mode, capabilities, commands, and declared paths for approval. A deployment is accepted only when its checked-out Git origin and current branch match the profile. An ecosystem file is also required when the profile enables PM2 control. The approved capability set and profile fingerprint are stored with the deployment; changing the installed profile blocks privileged actions until the deployment is deliberately reviewed and added again.
 
 Capabilities are restrictive permissions. PM2 control, log access or deletion, Git updates, Discord command deployment, backups, database encryption, and credential writing are unavailable unless their corresponding capability was approved. Read-only health and security inspection remain available where possible.
 
@@ -65,6 +67,12 @@ The default `credentials.mode` is `external`. In that mode HachiGen never asks f
 An external bot may explicitly use `credentials.mode: "adapter"`. That mode requires both the `secretEncryption` capability and a `credentialsWrite` command. After the user approves those permissions, `credentialsWrite` receives a JSON object through standard input containing `token`, `clientId`, `clientSecret`, `publicKey`, and `guildIds`. The bot's adapter must encrypt and save those values using its normal local credential format and must not print them. Hachi uses its native encrypted secret-storage implementation.
 
 HachiGen retains only a one-way token fingerprint and application ID as non-secret deployment metadata. The fingerprint allows HachiGen to block two known deployments using the same Discord identity from running concurrently unless the user explicitly permits it.
+
+## Testing identities
+
+Testing identities are separate from production-bot credentials. HachiGen stores each identity under `Profiles/Testing/<profile-id>` with non-secret metadata in `profile.json` and Windows-user-protected values in `secrets.env`. The `.env` contains only `os:v1:` protected values; there is no second key file or additional vault. Multiple identities are supported, and at most one may be marked as the optional default.
+
+The renderer receives only field-presence metadata. A Copy action asks the main process to decrypt one value, places it on the clipboard, and clears the clipboard after 60 seconds if it has not changed. Plaintext is not returned to the renderer or written to logs.
 
 ## Backup format
 

@@ -18,6 +18,7 @@ const viewTitles = {
 	updates: "Updates",
 	database: "Database",
 	logs: "Logs",
+	testing: "Testing",
 	diagnostics: "Diagnostics",
 };
 const ONBOARDING_DISMISSED_KEY = "hachigen:onboarding-dismissed:v1";
@@ -276,6 +277,8 @@ let setupGuideOpen = false;
 let setupGuideAutoShown = false;
 let diagnosticsState = null;
 let fleetState = null;
+let testingProfiles = [];
+let selectedTestingProfileId = null;
 
 function setDatabaseView(nextView) {
 	// Keep database viewer state assignment outside async loader internals.
@@ -3255,13 +3258,21 @@ function renderFleet(nextFleet) {
 		type.displayName,
 		`Credentials: ${type.credentials?.mode === "adapter" ? "approved secure writer" : "managed by bot"} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "status only"}`,
 		[{ action: "remove-bot-definition", id: type.id, label: "Remove" }],
-	)) : [fleetEmpty("No bot support has been added yet.")]));
-	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name);
-	replaceSelectOptions("#fleetBotTypeSelect", supportedBotTypes, item => item.displayName);
-	setDisabled("#addFleetBotButton", !supportedBotTypes.length);
+	)) : [fleetEmpty("No bot profiles have been added yet.")]));
+	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name || (item.id === "local" ? "Local Computer" : item.id));
+	setDisabled("#addFleetBotButton", !fleetState.servers.length);
 	replaceSelectOptions("#securityDeploymentSelect", fleetState.deployments, item => item.name);
 	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
 	renderFleetSecurityCapabilities();
+	renderFleetFolderMode();
+}
+
+function renderFleetFolderMode() {
+	const server = fleetState?.servers?.find(item => item.id === $("#fleetServerSelect")?.value);
+	const local = server?.connection?.type === "local";
+	setDisabled("#chooseFleetBotFolderButton", !local);
+	const input = $("#fleetDeploymentForm input[name=\"installPath\"]");
+	if (input) input.placeholder = local ? "Choose the local bot repository" : "/srv/bots/my-bot";
 }
 
 function renderFleetSecurityCapabilities() {
@@ -3273,6 +3284,56 @@ function renderFleetSecurityCapabilities() {
 	setDisabled("#fleetPruneBackupsButton", !capabilities?.backups);
 	setDisabled("#fleetEncryptButton", !capabilities?.databaseEncryption);
 	setDisabled("#fleetPruneLogsButton", !capabilities?.logs);
+}
+
+function renderTestingProfileEditor(profile = null) {
+	const form = $("#testingProfileForm");
+	if (!form) return;
+	selectedTestingProfileId = profile?.id || null;
+	form.reset();
+	form.elements.id.value = profile?.id || "";
+	form.elements.name.value = profile?.name || "";
+	form.elements.guildIds.value = (profile?.guildIds || []).join("\n");
+	form.elements.isDefault.checked = profile?.isDefault === true;
+	setText("#testingProfileFormTitle", profile ? profile.name : "New Identity");
+	setDisabled("#deleteTestingProfileButton", !profile);
+	for (const button of form.querySelectorAll('[data-action="copy-testing-secret"]')) {
+		const field = button.dataset.secretField;
+		button.disabled = !profile?.hasValues?.[field];
+		button.title = profile?.hasValues?.[field] ? "Copy saved value to clipboard for 60 seconds" : "No saved value";
+	}
+}
+
+function renderTestingProfiles(profiles) {
+	testingProfiles = Array.isArray(profiles) ? profiles : [];
+	const list = $("#testingProfileList");
+	if (list) {
+		list.replaceChildren(...(testingProfiles.length ? testingProfiles.map(profile => fleetEntry(
+			`${profile.name}${profile.isDefault ? " · Default" : ""}`,
+			`${profile.hasValues?.TOKEN && profile.hasValues?.clientId ? "Ready" : "Incomplete"} · ${(profile.guildIds || []).length} test guild(s)`,
+			[{ action: "edit-testing-profile", id: profile.id, label: "Edit", kind: "info" }],
+		)) : [fleetEmpty("No testing identities saved.")]));
+	}
+	const selected = testingProfiles.find(profile => profile.id === selectedTestingProfileId);
+	if (selectedTestingProfileId && !selected) renderTestingProfileEditor(null);
+	else if (selected) renderTestingProfileEditor(selected);
+}
+
+async function refreshTestingProfiles() {
+	renderTestingProfiles(await api.getTestingProfiles());
+}
+
+async function handleTestingProfileSubmit(event) {
+	event.preventDefault();
+	const form = event.currentTarget;
+	const values = Object.fromEntries(new window.FormData(form));
+	values.isDefault = Boolean(form.elements.isDefault.checked);
+	const result = await runAction("Save testing identity", () => api.saveTestingProfile(values));
+	if (!result) return;
+	renderTestingProfiles(result.profiles);
+	const saved = result.profiles.find(profile => profile.id === values.id) ||
+		result.profiles.find(profile => profile.name === values.name);
+	renderTestingProfileEditor(saved || null);
 }
 
 async function refreshFleet() {
@@ -3299,6 +3360,11 @@ async function refreshCurrentView() {
 	if (activeView === "setup") {
 		await refreshConfig();
 		return { message: "Hachi refreshed." };
+	}
+
+	if (activeView === "testing") {
+		await refreshTestingProfiles();
+		return { message: "Testing identities refreshed." };
 	}
 
 	if (activeView === "diagnostics") {
@@ -3628,6 +3694,10 @@ function handleChange(event) {
 		renderFleetSecurityCapabilities();
 	}
 
+	if (event.target.id === "fleetServerSelect") {
+		renderFleetFolderMode();
+	}
+
 	if (event.target.name === "runtimeTarget") {
 		const nextTarget = event.target.value === "remote" ? "remote" : "local";
 
@@ -3754,6 +3824,43 @@ function handleAction(event) {
 
 	const action = button.dataset.action;
 
+	if (action === "new-testing-profile") {
+		renderTestingProfileEditor(null);
+		$("#testingProfileForm input[name=\"name\"]")?.focus();
+		return;
+	}
+
+	if (action === "edit-testing-profile") {
+		renderTestingProfileEditor(testingProfiles.find(profile => profile.id === button.dataset.itemId) || null);
+		return;
+	}
+
+	if (action === "copy-testing-secret") {
+		if (!selectedTestingProfileId) return;
+		runAction("Copy testing credential", () => api.copyTestingSecret(selectedTestingProfileId, button.dataset.secretField));
+		return;
+	}
+
+	if (action === "delete-testing-profile") {
+		if (!selectedTestingProfileId) return;
+		const profile = testingProfiles.find(item => item.id === selectedTestingProfileId);
+		showConfirmModal({
+			confirmText: "Delete Identity",
+			meta: "This removes its locally protected credentials",
+			summary: `${profile?.name || "This testing identity"} will be permanently removed from this computer.`,
+			title: "Delete testing identity?",
+			variant: "danger",
+		}).then(confirmed => {
+			if (!confirmed) return;
+			runAction("Delete testing identity", () => api.deleteTestingProfile(selectedTestingProfileId)).then(result => {
+				if (!result) return;
+				renderTestingProfiles(result.profiles);
+				renderTestingProfileEditor(null);
+			});
+		});
+		return;
+	}
+
 	if (action === "refresh-fleet") {
 		runAction("Refresh fleet", refreshFleet);
 		return;
@@ -3770,6 +3877,15 @@ function handleAction(event) {
 			renderFleet(fleet);
 			form.reset();
 			return { message: "Server added." };
+		});
+		return;
+	}
+
+	if (action === "choose-fleet-bot-folder") {
+		runAction("Choose bot folder", () => api.chooseFleetBotFolder(), { toast: false }).then(result => {
+			if (!result || result.canceled) return;
+			const input = $("#fleetDeploymentForm input[name=\"installPath\"]");
+			if (input) input.value = result.path;
 		});
 		return;
 	}
@@ -3810,20 +3926,42 @@ function handleAction(event) {
 	if (action === "add-fleet-deployment") {
 		const form = $("#fleetDeploymentForm");
 		const values = Object.fromEntries(new window.FormData(form));
-		const existingDeploymentIds = new Set(fleetState?.deployments?.map(item => item.id) || []);
-		let addedDeploymentId = null;
-		runAction("Add bot", async () => {
-			const fleet = await api.addFleetDeployment(values);
-			addedDeploymentId = fleet.deployments.find(item => !existingDeploymentIds.has(item.id))?.id || null;
-			renderFleet(fleet);
-			form.reset();
-			return { ...fleet, message: "Bot added." };
-		}).then(result => {
-			if (result && addedDeploymentId) {
-				const deployment = fleetState?.deployments?.find(item => item.id === addedDeploymentId);
-				const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
-				if (canManageFleetCredentials(deployment, definition)) showFleetCredentialModal(addedDeploymentId);
-			}
+		runAction("Inspect bot", () => api.inspectFleetBotCandidate(values), { toast: false }).then(candidate => {
+			if (!candidate) return;
+			const definition = candidate.definition;
+			const capabilities = Object.entries(definition.capabilities).filter(([, enabled]) => enabled).map(([name]) => name);
+			showConfirmModal({
+				confirmText: "Create Profile & Add Bot",
+				details: [
+					`Repository: ${definition.repository.url}`,
+					`Branch: ${definition.repository.branch}`,
+					`Ecosystem: ${definition.runtime.ecosystemFile}`,
+					`Capabilities: ${capabilities.join(", ") || "Status only"}`,
+					...candidate.warnings,
+				],
+				meta: "Review the automatically generated production profile",
+				summary: `${definition.displayName} was inspected without changing its repository. HachiGen will save this profile under Profiles/Bots.`,
+				title: `Add ${definition.displayName}?`,
+			}).then(confirmed => {
+				if (!confirmed) return;
+				runAction("Add bot", async () => {
+					let nextFleet = fleetState;
+					if (!fleetState.botTypes.some(type => type.id === definition.id)) {
+						nextFleet = await api.installExternalBotDefinition(JSON.stringify(definition));
+					}
+					const fleet = await api.addFleetDeployment({
+						botTypeId: definition.id,
+						environment: "production",
+						installPath: candidate.installPath,
+						name: values.name || definition.displayName,
+						pm2Name: values.pm2Name || definition.runtime.pm2Name,
+						serverId: candidate.serverId,
+					});
+					renderFleet(fleet || nextFleet);
+					form.reset();
+					return { ...(fleet || nextFleet), message: "Production bot added." };
+				});
+			});
 		});
 		return;
 	}
@@ -4509,6 +4647,7 @@ async function init() {
 	document.addEventListener("mouseup", handleLogSelectionPointerUp);
 	document.addEventListener("selectionchange", handleLogSelectionChange);
 	$("#configForm").addEventListener("submit", handleConfigSubmit);
+	$("#testingProfileForm")?.addEventListener("submit", handleTestingProfileSubmit);
 
 	api.onEvent(event => {
 		// Live backend events arrive here while commands are running.
@@ -4523,6 +4662,7 @@ async function init() {
 	await refreshState();
 	await refreshConfig();
 	await refreshLogs();
+	await refreshTestingProfiles();
 	checkUpdatesOnStartup();
 }
 
