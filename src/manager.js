@@ -2149,8 +2149,17 @@ class HachiManager {
 		if (server.id === "local") {
 			throw new Error("The built-in local server cannot be removed.");
 		}
-		if (this.fleet.deployments.some(item => item.serverId === server.id)) {
+		const attachedDeployments = this.fleet.deployments.filter(item => item.serverId === server.id);
+		if (attachedDeployments.some(item => item.botTypeId !== "hachi")) {
 			throw new Error("Move or remove this server's deployments first.");
+		}
+		// Fleet hides Hachi, but early migration still attached its internal record to
+		// the configured remote server. Move that record locally so an apparently
+		// empty additional-bot connection can be removed without losing Hachi state.
+		for (const deployment of attachedDeployments) {
+			deployment.serverId = "local";
+			deployment.installPath = this.settings.installPath || this.defaultInstallPath;
+			deployment.pm2Name = "Hachi";
 		}
 		this.fleet.servers = this.fleet.servers.filter(item => item.id !== server.id);
 		this.saveFleetRegistry();

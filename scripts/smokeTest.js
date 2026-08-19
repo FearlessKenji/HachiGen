@@ -1052,6 +1052,12 @@ function validateTestingIdentityProtection() {
 			duplicateServerRejected = true;
 		}
 		assert(duplicateServerRejected, "Duplicate SSH endpoints should not create multiple Fleet connections.");
+		const remoteServer = manager.fleet.servers.find(server => server.name === "Primary");
+		const nativeHachi = manager.fleet.deployments.find(deployment => deployment.botTypeId === "hachi");
+		nativeHachi.serverId = remoteServer.id;
+		nativeHachi.installPath = "/srv/hachi";
+		manager.removeFleetServer(remoteServer.id);
+		assert(nativeHachi.serverId === "local" && nativeHachi.installPath === manager.settings.installPath, "Removing an otherwise empty SSH connection should preserve hidden Hachi state locally.");
 		manager.saveTestingProfile({ name: "Shared Test", TOKEN: "test-token", clientId: "123", guildIds: "456\n789", isDefault: true });
 		manager.saveTestingProfile({ name: "Secondary", TOKEN: "second-token", clientId: "321" });
 		const profiles = manager.getTestingProfiles();
