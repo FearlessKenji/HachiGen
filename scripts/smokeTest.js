@@ -50,6 +50,14 @@ async function validateBotRegistryFoundation() {
 	const fleet = createLegacyFleet({ installPath: "C:\\Bots\\Hachi", runtimeTarget: "local" }, "C:\\Fallback");
 	assert(fleet.servers.length === 1 && fleet.deployments.length === 1, "Legacy settings should migrate to one local Hachi deployment.");
 	assert(fleet.deployments[0].botTypeId === "hachi", "Migrated deployment should use native Hachi.");
+	const repairedFleet = requireFresh("src", "botRegistry.js").normalizeFleetRegistry({
+		activeDeploymentId: null,
+		deployments: [],
+		policies: {},
+		servers: [],
+		version: 1,
+	}, {}, "C:\\Fallback");
+	assert(repairedFleet.servers.length === 1 && repairedFleet.servers[0].id === "local", "Fleet should repair a missing Local computer connection.");
 	const external = validateExternalBotDefinition({
 		id: "optional-bot",
 		displayName: "Optional Bot",

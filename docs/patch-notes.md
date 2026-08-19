@@ -19,6 +19,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 - Adding a bot now uses a guided review: choose its repository folder, let HachiGen detect its Git source, package scripts, PM2 file, database, and logs, then approve the generated production profile. HachiGen saves profiles in its own `Profiles/Bots` folder and does not modify the bot repository.
 - Fleet now has an Open Folder picker, no longer shows empty Bot Support or Environment selectors, and assumes every added bot is production.
 - Added a Testing tab for one or more local Discord test identities. Each identity is protected for the current Windows user in its own profile `.env`, can optionally be the default, and provides the same temporary 60-second copy behavior as Hachi credentials.
+- Fixed empty Fleet Connection dropdowns by restoring the permanent Local computer connection in affected saved registries.
 - Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
 - Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 

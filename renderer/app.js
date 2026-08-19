@@ -3144,6 +3144,7 @@ function replaceSelectOptions(selector, items, labelForItem) {
 		return option;
 	}));
 	if (items.some(item => item.id === selected)) select.value = selected;
+	else if (items.length) select.value = items[0].id;
 }
 
 function fleetEntry(title, meta, actions = []) {

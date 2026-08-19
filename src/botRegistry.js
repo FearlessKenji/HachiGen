@@ -204,6 +204,13 @@ function normalizeFleetRegistry(saved, settings, defaultInstallPath) {
 	if (!saved || saved.version !== REGISTRY_VERSION || !Array.isArray(saved.servers) || !Array.isArray(saved.deployments)) {
 		return createLegacyFleet(settings, defaultInstallPath);
 	}
+	// Local computer is a permanent Fleet connection. Repair early registry files
+	// that were saved with an empty server list instead of leaving every selector unusable.
+	const localServer = { id: LOCAL_SERVER_ID, name: "Local computer", connection: { type: "local" } };
+	const hasLocalServer = saved.servers.some(server => server?.id === LOCAL_SERVER_ID);
+	const servers = hasLocalServer ?
+		saved.servers.map(server => server.id === LOCAL_SERVER_ID ? localServer : server) :
+		[localServer, ...saved.servers];
 	const deploymentIds = new Set(saved.deployments.map(item => item.id));
 	// Credential profiles were removed before release. Strip their metadata so
 	// each deployment folder remains the only credential source of truth.
@@ -218,6 +225,7 @@ function normalizeFleetRegistry(saved, settings, defaultInstallPath) {
 			return deployment;
 		}),
 		policies: saved.policies && typeof saved.policies === "object" ? saved.policies : { backup: [], security: [], logs: [] },
+		servers,
 	};
 }
 

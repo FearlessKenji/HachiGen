@@ -35,6 +35,7 @@ Notable changes to HachiGen are documented here.
 ### Fixed
 
 - Fixed the smoke-test CI workflow parser so split CI job assertions do not fail with an undefined helper.
+- Fixed valid-version Fleet registries with an empty server list so Local computer is restored and Connection selectors submit a valid value.
 
 ## v1.1.0 - 2026-07-16
 
