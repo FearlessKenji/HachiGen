@@ -643,7 +643,7 @@
 								<label class="field">Host<input name="host" placeholder="server.example.com"></label>
 								<label class="field">Username<input name="username" placeholder="botrunner"></label>
 								<label class="field">Port<input name="port" type="number" min="1" max="65535" value="22"></label>
-								<label class="field">SSH key path<input name="sshKeyPath" spellcheck="false"></label>
+								<label class="field"><span>SSH key path</span><div class="input-row"><input name="sshKeyPath" spellcheck="false" placeholder="Choose a private key file" readonly data-action="browse-fleet-ssh-key"><button class="button secondary compact" type="button" data-action="browse-fleet-ssh-key">Choose Key</button></div></label>
 								<div class="fleet-form-wide form-actions"><button class="button primary" type="button" data-action="add-fleet-server">Add Server</button></div>
 							</form>
 						</div>

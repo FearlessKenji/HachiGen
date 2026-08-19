@@ -3891,6 +3891,21 @@ function handleAction(event) {
 		return;
 	}
 
+	if (action === "browse-fleet-ssh-key") {
+		// Reuse Hachi's validated private-key picker without saving Hachi's remote settings.
+		runAction("Choose Fleet SSH key", () => api.chooseSshKey(), { toast: false })
+			.then(result => {
+				if (result?.ok) {
+					const input = $("#fleetServerForm input[name=\"sshKeyPath\"]");
+					if (input) input.value = result.sshKeyPath;
+					toast(result.message || "SSH key selected.");
+				} else if (result?.message) {
+					toast(result.message);
+				}
+			});
+		return;
+	}
+
 	if (action === "install-bot-definition") {
 		const form = $("#botDefinitionForm");
 		const definitionText = form.elements.definition.value;
@@ -3936,7 +3951,7 @@ function handleAction(event) {
 				details: [
 					`Repository: ${definition.repository.url}`,
 					`Branch: ${definition.repository.branch}`,
-					`Ecosystem: ${definition.runtime.ecosystemFile}`,
+					`Ecosystem: ${candidate.detected.ecosystemFound ? definition.runtime.ecosystemFile : "Not detected"}`,
 					`Capabilities: ${capabilities.join(", ") || "Status only"}`,
 					...candidate.warnings,
 				],

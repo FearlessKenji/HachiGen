@@ -20,6 +20,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 - Fleet now has an Open Folder picker, no longer shows empty Bot Support or Environment selectors, and assumes every added bot is production.
 - Added a Testing tab for one or more local Discord test identities. Each identity is protected for the current Windows user in its own profile `.env`, can optionally be the default, and provides the same temporary 60-second copy behavior as Hachi credentials.
 - Fixed empty Fleet Connection dropdowns by restoring the permanent Local computer connection in affected saved registries.
+- Fleet connections now have the same Choose Key control as Hachi, reject duplicate SSH host/user/port entries, and clearly say when no PM2 ecosystem file was detected.
 - Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
 - Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 

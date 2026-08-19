@@ -2126,6 +2126,15 @@ class HachiManager {
 
 	addFleetServer(values) {
 		const server = normalizeServer(values, new Set(this.fleet.servers.map(item => item.id)));
+		if (server.connection.type === "ssh") {
+			const duplicate = this.fleet.servers.find(item => item.connection.type === "ssh" &&
+				item.connection.host.toLowerCase() === server.connection.host.toLowerCase() &&
+				item.connection.username === server.connection.username &&
+				item.connection.port === server.connection.port);
+			if (duplicate) {
+				throw new Error(`That SSH connection already exists as ${duplicate.name}.`);
+			}
+		}
 		this.fleet.servers.push(server);
 		this.saveFleetRegistry();
 		this.log(`Fleet server added: ${server.name}.`, { area: "fleet", serverId: server.id });

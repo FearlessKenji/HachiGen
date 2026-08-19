@@ -267,12 +267,18 @@ function validateRendererAndMenuWiring() {
 	assert(
 		fleetSection.includes("Bot Profiles") &&
 			fleetSection.includes("Open Folder") &&
+			fleetSection.includes("Choose Key") &&
 			fleetSection.includes("Review Bot") &&
 			!fleetSection.includes(">Environment<") &&
 			!fleetSection.includes("Paldeck") &&
 			!fleetSection.includes("Hachi is native") &&
 			rendererSource.includes('type => type.source === "external"'),
 		"Fleet should use profile-based onboarding, assume production, and exclude the built-in runtime.",
+	);
+	assert(
+		rendererSource.includes('candidate.detected.ecosystemFound ? definition.runtime.ecosystemFile : "Not detected"') &&
+			managerSource.includes("That SSH connection already exists as"),
+		"Fleet review should distinguish a detected ecosystem file and reject duplicate SSH endpoints.",
 	);
 	assert(
 		indexSource.includes('data-view="testing"') &&
@@ -1038,6 +1044,14 @@ function validateTestingIdentityProtection() {
 			protectSecret: value => Buffer.from(String(value)).toString("base64"),
 			unprotectSecret: value => Buffer.from(String(value), "base64").toString("utf8"),
 		});
+		manager.addFleetServer({ name: "Primary", connection: { type: "ssh", host: "server.example", username: "bot", port: 22 } });
+		let duplicateServerRejected = false;
+		try {
+			manager.addFleetServer({ name: "Duplicate", connection: { type: "ssh", host: "SERVER.EXAMPLE", username: "bot", port: 22 } });
+		} catch {
+			duplicateServerRejected = true;
+		}
+		assert(duplicateServerRejected, "Duplicate SSH endpoints should not create multiple Fleet connections.");
 		manager.saveTestingProfile({ name: "Shared Test", TOKEN: "test-token", clientId: "123", guildIds: "456\n789", isDefault: true });
 		manager.saveTestingProfile({ name: "Secondary", TOKEN: "second-token", clientId: "321" });
 		const profiles = manager.getTestingProfiles();

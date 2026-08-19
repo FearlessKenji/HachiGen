@@ -36,6 +36,7 @@ Notable changes to HachiGen are documented here.
 
 - Fixed the smoke-test CI workflow parser so split CI job assertions do not fail with an undefined helper.
 - Fixed valid-version Fleet registries with an empty server list so Local computer is restored and Connection selectors submit a valid value.
+- Fixed Fleet's generated-profile review so a fallback ecosystem filename is not presented as detected, rejected duplicate SSH endpoints, and added the shared validated SSH key picker to the connection form.
 
 ## v1.1.0 - 2026-07-16
 
