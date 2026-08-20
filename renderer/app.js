@@ -3961,8 +3961,9 @@ function handleAction(event) {
 			}).then(confirmed => {
 				if (!confirmed) return;
 				runAction("Add bot", async () => {
-					let nextFleet = fleetState;
-					if (!fleetState.botTypes.some(type => type.id === definition.id)) {
+					const currentFleet = fleetState || await api.getFleet();
+					let nextFleet = currentFleet;
+					if (!currentFleet.botTypes.some(type => type.id === definition.id)) {
 						nextFleet = await api.installExternalBotDefinition(JSON.stringify(definition));
 					}
 					const fleet = await api.addFleetDeployment({

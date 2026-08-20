@@ -102,6 +102,9 @@ function validateExternalBotDefinition(input, sourcePath = "external definition"
 		commands: {},
 		credentials: { mode: credentialsMode },
 	};
+	if (!definition.repository.url || definition.repository.url === "-" || !definition.repository.branch || definition.repository.branch === "-") {
+		throw new Error(`${sourcePath} must declare a repository URL and branch.`);
+	}
 	for (const [key, enabled] of Object.entries(input.capabilities || {})) {
 		if (!EXTERNAL_CAPABILITY_NAMES.has(key)) {
 			throw new Error(`${sourcePath} requests unsupported capability ${key}.`);

@@ -61,6 +61,7 @@ async function validateBotRegistryFoundation() {
 	const external = validateExternalBotDefinition({
 		id: "optional-bot",
 		displayName: "Optional Bot",
+		repository: { url: "https://example.invalid/optional-bot.git", branch: "main" },
 		runtime: { ecosystemFile: "config/ecosystem.config.js", pm2Name: "OptionalBot" },
 		capabilities: { backups: true, databaseEncryption: true },
 	});
@@ -71,6 +72,7 @@ async function validateBotRegistryFoundation() {
 		validateExternalBotDefinition({
 			id: "unsafe-adapter",
 			displayName: "Unsafe Adapter",
+			repository: { url: "https://example.invalid/unsafe-adapter.git", branch: "main" },
 			credentials: { mode: "adapter" },
 			runtime: {},
 		});
@@ -78,6 +80,13 @@ async function validateBotRegistryFoundation() {
 		rejectedUnsafeCredentialAdapter = true;
 	}
 	assert(rejectedUnsafeCredentialAdapter, "Credential adapters must declare both a write command and secret-encryption permission.");
+	let rejectedMissingRepository = false;
+	try {
+		validateExternalBotDefinition({ id: "missing-repository", displayName: "Missing Repository", runtime: {} });
+	} catch {
+		rejectedMissingRepository = true;
+	}
+	assert(rejectedMissingRepository, "External bot profiles must include a real Git repository identity.");
 	let rejectedNativeOverride = false;
 	try {
 		validateExternalBotDefinition({ id: "hachi", displayName: "Replacement", runtime: {} });
@@ -90,6 +99,7 @@ async function validateBotRegistryFoundation() {
 		fs.writeFileSync(path.join(tempRoot, "optional-bot.json"), JSON.stringify({
 			id: "optional-bot",
 			displayName: "Optional Bot",
+			repository: { url: "https://example.invalid/optional-bot.git", branch: "main" },
 			runtime: { ecosystemFile: "ecosystem.config.js" },
 		}));
 		const loaded = loadBotDefinitions(tempRoot);

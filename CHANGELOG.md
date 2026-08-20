@@ -38,6 +38,7 @@ Notable changes to HachiGen are documented here.
 - Fixed valid-version Fleet registries with an empty server list so Local computer is restored and Connection selectors submit a valid value.
 - Fixed Fleet's generated-profile review so a fallback ecosystem filename is not presented as detected, rejected duplicate SSH endpoints, and added the shared validated SSH key picker to the connection form.
 - Fixed removal of connections showing zero additional bots when a hidden legacy Hachi migration record was still attached; the native record is preserved on Local computer before removal.
+- Fixed remote bot inspection by replacing positional shell output with validated JSON, rejecting missing Git identity before approval, detecting remote lockfiles correctly, and recovering Fleet state before profile installation.
 
 ## v1.1.0 - 2026-07-16
 

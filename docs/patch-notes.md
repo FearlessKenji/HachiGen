@@ -22,6 +22,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 - Fixed empty Fleet Connection dropdowns by restoring the permanent Local computer connection in affected saved registries.
 - Fleet connections now have the same Choose Key control as Hachi, reject duplicate SSH host/user/port entries, and clearly say when no PM2 ecosystem file was detected.
 - Connections showing zero additional bots can now be removed even when an older hidden Hachi migration record was attached to them. Hachi remains preserved under Local computer.
+- Fixed remote bot review showing `-` for its repository and branch, followed by a `botTypes` error. Remote inspection now validates structured Git and runtime details before showing approval.
 - Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
 - Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 

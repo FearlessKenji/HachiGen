@@ -218,13 +218,18 @@ function normalizeProfileId(value, fallback = "profile") {
 	return normalized || `${fallback}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-function remoteCandidateProbe(candidates, kind) {
-	const flag = kind === "directory" ? "-d" : "-f";
-	return [
-		"found=''",
-		`for candidate in ${candidates.map(quotePosix).join(" ")}; do if test ${flag} "$candidate"; then printf '%s\\n' "$candidate"; found=1; break; fi; done`,
-		`if test -z "$found"; then printf -- '-\\n'; fi`,
-	].join("; ");
+function fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, logCandidates) {
+	// Emit exactly one JSON object so empty optional fields cannot shift positional shell output.
+	return `const fs=require('node:fs'),cp=require('node:child_process');` +
+		`const first=(items,type)=>items.find(item=>{try{return fs.statSync(item)[type]();}catch{return false;}})||null;` +
+		`const git=args=>cp.execFileSync('git',args,{encoding:'utf8'}).trim();` +
+		`const packageJson=fs.existsSync('package.json')?JSON.parse(fs.readFileSync('package.json','utf8')):{};` +
+		`const output={origin:git(['remote','get-url','origin']),branch:git(['branch','--show-current']),packageJson,` +
+		`packageLockFound:fs.existsSync('package-lock.json'),` +
+		`ecosystemFile:first(${JSON.stringify(ecosystemCandidates)},'isFile'),` +
+		`databasePath:first(${JSON.stringify(databaseCandidates)},'isFile'),` +
+		`logsPath:first(${JSON.stringify(logCandidates)},'isDirectory')};` +
+		`process.stdout.write(JSON.stringify(output));`;
 }
 
 function idListForForm(value) {
@@ -2199,28 +2204,21 @@ class HachiManager {
 		let ecosystemFound;
 		let databasePath;
 		let logsPath;
+		let packageLockFound;
 		if (server.connection.type === "ssh") {
-			// Return one machine-readable JSON line so remote package metadata never becomes shell input.
-			const inspectScript = [
-				`cd ${quoteRemotePath(installPath)}`,
-				"git remote get-url origin",
-				"git branch --show-current",
-				`if test -f package.json; then node -p ${quotePosix("JSON.stringify(require('./package.json'))")}; else printf '{}\\n'; fi`,
-				remoteCandidateProbe(ecosystemCandidates, "file"),
-				remoteCandidateProbe(databaseCandidates, "file"),
-				remoteCandidateProbe(logCandidates, "directory"),
-			].join(" && ");
+			const inspectionSource = fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, logCandidates);
+			const inspectScript = `cd ${quoteRemotePath(installPath)} && node -e ${quotePosix(inspectionSource)}`;
 			const result = await this.runFleetRemoteCommand(server, inspectScript, { allowFailure: true, log: false, timeoutMs: 30000 });
 			if (result.code !== 0) {
 				throw new Error(result.stderr || "Remote bot folder must be a Git checkout with an origin remote.");
 			}
-			const lines = result.stdout.split(/\r?\n/u);
-			[origin, branch] = lines;
-			packageJson = parseJsonText(lines[2], {});
-			ecosystemFile = lines[3] && lines[3] !== "-" ? lines[3] : "ecosystem.config.js";
-			ecosystemFound = lines[3] !== "-";
-			databasePath = lines[4] && lines[4] !== "-" ? lines[4] : undefined;
-			logsPath = lines[5] && lines[5] !== "-" ? lines[5] : undefined;
+			const inspection = parseJsonText(result.stdout.trim(), null);
+			if (!inspection) {
+				throw new Error("Remote repository inspection returned an invalid response.");
+			}
+			({ origin, branch, packageJson, packageLockFound, databasePath, logsPath } = inspection);
+			ecosystemFile = inspection.ecosystemFile || "ecosystem.config.js";
+			ecosystemFound = Boolean(inspection.ecosystemFile);
 		} else {
 			if (!fileExists(installPath)) {
 				throw new Error("Bot folder does not exist.");
@@ -2233,12 +2231,13 @@ class HachiManager {
 			origin = originResult.stdout.trim();
 			branch = branchResult.stdout.trim();
 			packageJson = readJson(path.join(installPath, "package.json"), {});
+			packageLockFound = fileExists(path.join(installPath, "package-lock.json"));
 			ecosystemFile = ecosystemCandidates.find(candidate => fileExists(path.join(installPath, candidate))) || "ecosystem.config.js";
 			ecosystemFound = fileExists(path.join(installPath, ecosystemFile));
 			databasePath = databaseCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
 			logsPath = logCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
 		}
-		if (!String(origin || "").trim()) {
+		if (!String(origin || "").trim() || String(origin).trim() === "-" || !String(branch || "").trim() || String(branch).trim() === "-") {
 			throw new Error("Bot folder must be a Git checkout with an origin remote.");
 		}
 		const scripts = packageJson.scripts || {};
@@ -2254,7 +2253,7 @@ class HachiManager {
 			credentials: { mode: "external" },
 			paths: {},
 			capabilities: { gitUpdates: true, pm2: ecosystemFound },
-			commands: { install: { executable: "npm", args: [fileExists(path.join(installPath, "package-lock.json")) ? "ci" : "install"] } },
+			commands: { install: { executable: "npm", args: [packageLockFound ? "ci" : "install"] } },
 		};
 		if (validationScript) {
 			definition.commands.validate = { executable: "npm", args: ["run", validationScript] };
