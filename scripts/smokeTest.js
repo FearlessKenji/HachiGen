@@ -304,7 +304,9 @@ function validateRendererAndMenuWiring() {
 			managerSource.includes('path.join(this.profilesDir, "Testing")') &&
 			managerSource.includes("os:v1:") &&
 			rendererSource.includes('testing: "flask"') &&
-			managerSource.includes("fleet: this.getFleetState()"),
+			managerSource.includes("fleet: this.getFleetState()") &&
+			indexSource.includes("The production process can remain online") &&
+			!managerSource.includes("Stop this bot's production PM2 process before starting a test identity."),
 		"Testing identities should be protected, runnable, and iconized, while Fleet hydrates in the startup state.",
 	);
 	assert(

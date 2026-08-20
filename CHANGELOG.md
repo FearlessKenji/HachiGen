@@ -15,7 +15,7 @@ Notable changes to HachiGen are documented here.
 - Added preservation-first external-bot onboarding with a permission preview, immutable capability approval snapshots, definition fingerprints, and deployment repository origin/branch/ecosystem verification.
 - Added a guided production-bot onboarding flow that inspects a selected Git repository, detects package scripts, PM2 configuration, database and log paths, previews the generated capabilities, and stores the approved profile under `Profiles/Bots` without changing the bot repository.
 - Added multiple local Testing identities under `Profiles/Testing`, with Windows-user-protected values in profile `.env` files, one optional default identity, and 60-second clipboard copy controls.
-- Added temporary local bot testing from the Testing tab, including reviewed test-entry detection, in-memory credential injection, production-PM2 conflict checks, redacted process output, and managed stop/exit state.
+- Added temporary local bot testing from the Testing tab, including reviewed test-entry detection, in-memory credential injection, parallel production/test operation, redacted process output, and managed stop/exit state.
 
 ### Changed
 

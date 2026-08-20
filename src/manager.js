@@ -2150,10 +2150,6 @@ class HachiManager {
 		if (existing?.status === "running") {
 			throw new Error("This bot already has a testing process running.");
 		}
-		const production = await this.getFleetDeploymentStatus(deploymentId);
-		if (production.registered && production.status === "online") {
-			throw new Error("Stop this bot's production PM2 process before starting a test identity.");
-		}
 		const detectedTestEntry = ["start-test.js", "test.js", "scripts/start-test.js"]
 			.find(candidate => fileExists(path.join(context.deployment.installPath, candidate)));
 		const command = context.definition.commands?.testStart ||
