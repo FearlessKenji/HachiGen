@@ -21,6 +21,7 @@ Notable changes to HachiGen are documented here.
 
 - Changed the Dashboard's generic Bot card to Hachi, removed the Fleet summary card from Hachi's Dashboard, and added selected-bot status cards directly to Fleet.
 - Aligned Fleet status cards with Dashboard terminology and order: selected bot, Install, Updates, Deployment, and Database; made the bot selector inline and labels duplicate deployment names as Local or Remote.
+- Fixed the Fleet header selector cascade so its label, dropdown, and Refresh button remain centered on one horizontal line.
 - Changed credential management so each bot folder is the sole credential store. HachiGen passes credentials to the bot's encrypted storage adapter over stdin and retains only non-secret identity metadata.
 - Changed external credentials to remain unmanaged by default. HachiGen can write them only when a reviewed definition explicitly opts into adapter mode and the `secretEncryption` capability.
 - Redesigned Fleet around neutral additional-bot onboarding, removed built-in bot references and project-specific placeholders, and moved technical support-file JSON behind an explained advanced disclosure that matches the rest of the interface.

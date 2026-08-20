@@ -345,21 +345,6 @@ h2 {
 	min-width: 220px;
 }
 
-.inline-select-field {
-	display: flex;
-	flex-direction: row;
-	align-items: center;
-	gap: 10px;
-}
-
-.inline-select-field > span {
-	white-space: nowrap;
-}
-
-.fleet-header-actions {
-	align-items: center;
-}
-
 .status-card,
 .panel {
 	border: 1px solid var(--line);
@@ -560,6 +545,27 @@ h2 {
 .select-field select:focus {
 	border-color: var(--info);
 	outline: 3px solid rgba(63, 111, 159, 0.18);
+}
+
+/* Fleet's compact selector is a toolbar control, not a stacked form field. */
+.fleet-header-actions .select-field.inline-select-field {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 10px;
+	margin-top: 0;
+}
+
+.fleet-header-actions .inline-select-field > span {
+	white-space: nowrap;
+}
+
+.fleet-header-actions .inline-select-field select {
+	width: 220px;
+}
+
+.fleet-header-actions > .button {
+	height: 38px;
 }
 
 .choice-option {

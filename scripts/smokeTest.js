@@ -300,6 +300,8 @@ function validateRendererAndMenuWiring() {
 			fleetSection.includes('<div class="card-label">Database</div>') &&
 			!fleetSection.includes('<div class="card-label">Security</div>') &&
 			rendererSource.includes('"Remote" : "Local"') &&
+			stylesSource.includes(".fleet-header-actions .select-field.inline-select-field") &&
+			stylesSource.includes("margin-top: 0;") &&
 			preloadSource.includes("getFleetDeploymentOverview") &&
 			mainSource.includes("manager:get-fleet-deployment-overview"),
 		"Dashboard should be Hachi-specific and Fleet should own selected-bot overview cards.",
