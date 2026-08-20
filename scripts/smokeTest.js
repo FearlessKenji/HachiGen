@@ -273,6 +273,7 @@ function validateRendererAndMenuWiring() {
 		"Database transfer IPC actions are not wired.",
 	);
 	const databaseSection = indexSource.match(/<section class="view" data-view-panel="database">[\s\S]*?<section class="view" data-view-panel="logs">/u)?.[0] || "";
+	const dashboardSection = indexSource.match(/<section class="view active" data-view-panel="dashboard">[\s\S]*?<section class="view" data-view-panel="setup">/u)?.[0] || "";
 	const fleetSection = indexSource.match(/<section class="view" data-view-panel="fleet">[\s\S]*?<section class="view" data-view-panel="security">/u)?.[0] || "";
 	assert(
 		fleetSection.includes("Bot Profiles") &&
@@ -284,6 +285,18 @@ function validateRendererAndMenuWiring() {
 			!fleetSection.includes("Hachi is native") &&
 			rendererSource.includes('type => type.source === "external"'),
 		"Fleet should use profile-based onboarding, assume production, and exclude the built-in runtime.",
+	);
+	assert(
+		dashboardSection.includes('<div class="card-label">Hachi</div>') &&
+			!dashboardSection.includes('<div class="card-label">Fleet</div>') &&
+			fleetSection.includes('id="fleetSelectedDeploymentSelect"') &&
+			fleetSection.includes('id="fleetRuntimeStatus"') &&
+			fleetSection.includes('id="fleetRepositoryStatus"') &&
+			fleetSection.includes('id="fleetOverviewSecurityStatus"') &&
+			fleetSection.includes('id="fleetConnectionStatus"') &&
+			preloadSource.includes("getFleetDeploymentOverview") &&
+			mainSource.includes("manager:get-fleet-deployment-overview"),
+		"Dashboard should be Hachi-specific and Fleet should own selected-bot overview cards.",
 	);
 	assert(
 		rendererSource.includes('candidate.detected.ecosystemFound ? definition.runtime.ecosystemFile : "Not detected"') &&
@@ -1039,6 +1052,13 @@ async function validateFleetCredentialAndBackupSecurity() {
 			environment: "test",
 		});
 		const deployment = manager.fleet.deployments.find(item => item.botTypeId === "optional-bot");
+		const overview = await manager.getFleetDeploymentOverview(deployment.id);
+		assert(
+			overview.deployment.name === "Optional Bot Test" &&
+				overview.server.id === "local" &&
+				overview.security.database.status === "noncompliant",
+			"Fleet overview did not aggregate the selected deployment's status.",
+		);
 		await manager.saveFleetDeploymentCredentials(deployment.id, { token: "very-secret-token", clientId: "123" });
 		assert(!fs.existsSync(path.join(userDataPath, "credential-vault.json")), "HachiGen created a secondary credential vault.");
 		assert(!fs.readFileSync(path.join(deploymentPath, "credentials.enc"), "utf8").includes("very-secret-token"), "Bot credential adapter persisted a plaintext token.");

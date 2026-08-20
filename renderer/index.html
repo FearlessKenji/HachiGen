@@ -65,13 +65,8 @@
 				<!-- Dashboard: high-level health cards plus common actions. -->
 				<section class="view active" data-view-panel="dashboard">
 					<div class="status-grid">
-						<article class="status-card status-card-action" data-action="show-fleet" role="button" tabindex="0">
-							<div class="card-label">Fleet</div>
-							<div class="status-value"><span class="dot" id="fleetDot"></span><span id="fleetStatus">Loading</span></div>
-							<div class="card-detail" id="fleetDetail">Additional bots and connections</div>
-						</article>
 						<article class="status-card">
-							<div class="card-label">Bot</div>
+							<div class="card-label">Hachi</div>
 							<div class="status-value">
 								<span class="dot" id="botDot"></span>
 								<span id="botStatus">Checking</span>
@@ -629,7 +624,13 @@
 							<h2>Fleet</h2>
 							<div class="panel-meta">Manage additional bots on this computer or remote servers</div>
 						</div>
-						<button class="button info" type="button" data-action="refresh-fleet">Refresh</button>
+						<div class="button-row"><label class="select-field compact-select"><span>Selected bot</span><select id="fleetSelectedDeploymentSelect"></select></label><button class="button info" type="button" data-action="refresh-fleet">Refresh</button></div>
+					</div>
+					<div class="status-grid fleet-status-grid">
+						<article class="status-card"><div class="card-label">Runtime</div><div class="status-value"><span class="dot" id="fleetRuntimeDot"></span><span id="fleetRuntimeStatus">No bot selected</span></div><div class="card-detail" id="fleetRuntimeDetail">Select an additional bot</div></article>
+						<article class="status-card"><div class="card-label">Repository</div><div class="status-value"><span class="dot" id="fleetRepositoryDot"></span><span id="fleetRepositoryStatus">Not checked</span></div><div class="card-detail" id="fleetRepositoryDetail">Git status</div></article>
+						<article class="status-card"><div class="card-label">Security</div><div class="status-value"><span class="dot" id="fleetOverviewSecurityDot"></span><span id="fleetOverviewSecurityStatus">Not checked</span></div><div class="card-detail" id="fleetOverviewSecurityDetail">Database protection</div></article>
+						<article class="status-card"><div class="card-label">Connection</div><div class="status-value"><span class="dot" id="fleetConnectionDot"></span><span id="fleetConnectionStatus">Not selected</span></div><div class="card-detail" id="fleetConnectionDetail">Deployment location</div></article>
 					</div>
 					<div class="panel-stack">
 						<div class="panel">

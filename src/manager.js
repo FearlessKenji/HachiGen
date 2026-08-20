@@ -2865,6 +2865,27 @@ class HachiManager {
 		};
 	}
 
+	async getFleetDeploymentOverview(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		const [healthResult, repositoryResult, securityResult] = await Promise.allSettled([
+			this.checkFleetDeploymentHealth(deploymentId),
+			this.getFleetRepositoryStatus(deploymentId),
+			this.auditFleetDeploymentSecurity(deploymentId),
+		]);
+		const failure = result => result.status === "rejected" ? { error: readableCause(result.reason) } : result.value;
+		return {
+			deployment: { id: context.deployment.id, name: context.deployment.name, installPath: context.deployment.installPath },
+			health: failure(healthResult),
+			repository: failure(repositoryResult),
+			security: failure(securityResult),
+			server: {
+				id: context.server.id,
+				name: context.server.name,
+				type: context.server.connection.type,
+			},
+		};
+	}
+
 	getFleetBackupVault() {
 		return readJson(path.join(this.userDataPath, "fleet-backup-vault.json"), { version: 1, records: {} }) || { version: 1, records: {} };
 	}

@@ -286,6 +286,7 @@ let setupGuideOpen = false;
 let setupGuideAutoShown = false;
 let diagnosticsState = null;
 let fleetState = null;
+let fleetOverviewRequestId = 0;
 let testingProfiles = [];
 let selectedTestingProfileId = null;
 let testingRuns = [];
@@ -907,6 +908,12 @@ function showView(viewName) {
 	if (activeView === "diagnostics") {
 		loadDiagnostics().catch(error => {
 			toast(error.message || "Diagnostics refresh failed.", "error", { label: "Diagnostics" });
+		});
+	}
+
+	if (activeView === "fleet") {
+		refreshFleetOverview().catch(error => {
+			toast(error.message || "Fleet overview refresh failed.", "error", { label: "Fleet" });
 		});
 	}
 }
@@ -3270,12 +3277,62 @@ function renderFleet(nextFleet) {
 		`Credentials: ${type.credentials?.mode === "adapter" ? "approved secure writer" : "managed by bot"} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "status only"}`,
 		[{ action: "remove-bot-definition", id: type.id, label: "Remove" }],
 	)) : [fleetEmpty("No bot profiles have been added yet.")]));
+	replaceSelectOptions("#fleetSelectedDeploymentSelect", managedDeployments, deployment => deployment.name);
+	const selectedDeployment = managedDeployments.find(deployment => deployment.id === fleetState.activeDeploymentId) || managedDeployments[0];
+	if (selectedDeployment) $("#fleetSelectedDeploymentSelect").value = selectedDeployment.id;
 	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name || (item.id === "local" ? "Local Computer" : item.id));
 	setDisabled("#addFleetBotButton", !fleetState.servers.length);
 	replaceSelectOptions("#securityDeploymentSelect", fleetState.deployments, item => item.name);
 	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
 	renderFleetSecurityCapabilities();
 	renderFleetFolderMode();
+	if (activeView === "fleet") void refreshFleetOverview();
+}
+
+function renderFleetOverview(overview = null) {
+	if (!overview) {
+		for (const prefix of ["#fleetRuntime", "#fleetRepository", "#fleetOverviewSecurity", "#fleetConnection"]) setDot(`${prefix}Dot`, "muted");
+		setText("#fleetRuntimeStatus", "No bot selected");
+		setText("#fleetRuntimeDetail", "Add or select an additional bot");
+		setText("#fleetRepositoryStatus", "Not checked");
+		setText("#fleetRepositoryDetail", "Git status");
+		setText("#fleetOverviewSecurityStatus", "Not checked");
+		setText("#fleetOverviewSecurityDetail", "Database protection");
+		setText("#fleetConnectionStatus", "Not selected");
+		setText("#fleetConnectionDetail", "Deployment location");
+		return;
+	}
+	const runtime = overview.health?.runtime;
+	const runtimeGood = runtime?.status === "online";
+	const runtimeBad = overview.health?.error || ["error", "pm2-missing"].includes(runtime?.status);
+	setDot("#fleetRuntimeDot", runtimeGood ? "good" : runtimeBad ? "bad" : "warn");
+	setText("#fleetRuntimeStatus", runtime?.status || (overview.health?.error ? "Unavailable" : "Unknown"));
+	setText("#fleetRuntimeDetail", runtime?.message || overview.health?.error || "Runtime status unavailable");
+	const repository = overview.repository || {};
+	const repositoryBad = repository.error || repository.isGit === false || repository.originMatches === false;
+	setDot("#fleetRepositoryDot", repositoryBad ? "bad" : repository.dirty ? "warn" : "good");
+	setText("#fleetRepositoryStatus", repositoryBad ? "Needs attention" : repository.dirty ? "Local changes" : "Clean");
+	setText("#fleetRepositoryDetail", repository.error || repository.message || `${repository.branch || "Unknown branch"} · ${repository.targetBranch || "No target"}`);
+	const security = overview.security || {};
+	const databaseStatus = security.database?.status || (security.error ? "error" : "unknown");
+	setDot("#fleetOverviewSecurityDot", ["protected", "not-applicable"].includes(databaseStatus) ? "good" : databaseStatus === "encrypted-unverified" ? "warn" : "bad");
+	setText("#fleetOverviewSecurityStatus", databaseStatus.replace(/-/gu, " "));
+	setText("#fleetOverviewSecurityDetail", security.error || security.database?.message || "Security status unavailable");
+	setDot("#fleetConnectionDot", overview.health?.installFound ? "good" : "bad");
+	setText("#fleetConnectionStatus", overview.server?.type === "ssh" ? "Remote SSH" : "Local");
+	setText("#fleetConnectionDetail", `${overview.server?.name || "Unknown"} · ${overview.deployment?.installPath || "No path"}`);
+}
+
+async function refreshFleetOverview() {
+	const deploymentId = $("#fleetSelectedDeploymentSelect")?.value;
+	const requestId = ++fleetOverviewRequestId;
+	if (!deploymentId) {
+		renderFleetOverview(null);
+		return null;
+	}
+	const overview = await api.getFleetDeploymentOverview(deploymentId);
+	if (requestId === fleetOverviewRequestId && deploymentId === $("#fleetSelectedDeploymentSelect")?.value) renderFleetOverview(overview);
+	return overview;
 }
 
 function renderFleetFolderMode() {
@@ -3425,13 +3482,6 @@ function renderState(nextState) {
 	setText("#sidebarRepoBranch", repositoryBranchLabel(state.repository));
 	setText("#sidebarStatusText", install.label);
 	setDot("#sidebarStatusDot", install.dot);
-	const externalTypeIds = new Set((state.fleet?.botTypes || []).filter(type => type.source === "external").map(type => type.id));
-	const fleetDeploymentCount = (state.fleet?.deployments || []).filter(deployment => externalTypeIds.has(deployment.botTypeId)).length;
-	const fleetDefinitionErrorCount = state.fleet?.botDefinitionErrors?.length || 0;
-	setText("#fleetStatus", fleetDefinitionErrorCount ? "Needs attention" : `${fleetDeploymentCount} bot${fleetDeploymentCount === 1 ? "" : "s"}`);
-	setText("#fleetDetail", `${state.fleet?.servers?.length || 0} connection(s) · bot-owned credentials`);
-	setDot("#fleetDot", fleetDefinitionErrorCount ? "warn" : "good");
-
 	// Dashboard status cards.
 	setText("#botStatus", bot.label);
 	setText("#botDetail", bot.detail);
@@ -3728,6 +3778,14 @@ function handleChange(event) {
 
 	if (event.target.id === "fleetServerSelect") {
 		renderFleetFolderMode();
+	}
+
+	if (event.target.id === "fleetSelectedDeploymentSelect") {
+		runAction("Select fleet bot", async () => {
+			const fleet = await api.setActiveFleetDeployment(event.target.value);
+			renderFleet(fleet);
+			return { message: "Selected Fleet bot changed." };
+		});
 	}
 
 	if (["testingDeploymentSelect", "testingIdentitySelect"].includes(event.target.id)) {
@@ -4132,6 +4190,7 @@ function handleAction(event) {
 			else if (operation === "health") result = await api.checkFleetDeploymentHealth(deploymentId);
 			else result = await api.getFleetDeploymentLogs(deploymentId, 240);
 			setText("#fleetDeploymentOutput", operation === "logs" ? (result.logs || "No logs returned.") : JSON.stringify(result, null, 2));
+			await refreshFleetOverview();
 			return { message: `${operation[0].toUpperCase()}${operation.slice(1)} completed.` };
 		});
 		return;
@@ -4143,6 +4202,7 @@ function handleAction(event) {
 			runAction("Check deployment updates", async () => {
 				const result = await api.getFleetRepositoryStatus(deploymentId, { fetch: true });
 				setText("#fleetDeploymentOutput", JSON.stringify(result, null, 2));
+				await refreshFleetOverview();
 				return result;
 			}).then(result => {
 				if (!result?.updateAvailable) return;

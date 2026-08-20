@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	controlFleetDeployment: (deploymentId, action) => invoke("manager:control-fleet-deployment", deploymentId, action),
 	getFleetDeploymentLogs: (deploymentId, lines) => invoke("manager:get-fleet-deployment-logs", deploymentId, lines),
 	checkFleetDeploymentHealth: deploymentId => invoke("manager:check-fleet-deployment-health", deploymentId),
+	getFleetDeploymentOverview: deploymentId => invoke("manager:get-fleet-deployment-overview", deploymentId),
 	saveFleetDeploymentCredentials: (deploymentId, values) => invoke("manager:save-fleet-deployment-credentials", deploymentId, values),
 	runFleetDefinitionCommand: (deploymentId, commandName) => invoke("manager:run-fleet-definition-command", deploymentId, commandName),
 	auditFleetDeploymentSecurity: deploymentId => invoke("manager:audit-fleet-deployment-security", deploymentId),

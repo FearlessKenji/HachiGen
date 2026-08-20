@@ -337,6 +337,14 @@ h2 {
 	margin-bottom: 12px;
 }
 
+.fleet-status-grid {
+	grid-template-columns: repeat(4, minmax(150px, 1fr));
+}
+
+.compact-select {
+	min-width: 220px;
+}
+
 .status-card,
 .panel {
 	border: 1px solid var(--line);

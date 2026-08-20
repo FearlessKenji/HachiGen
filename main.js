@@ -907,6 +907,7 @@ function registerIpc() {
 	ipcMain.handle("manager:control-fleet-deployment", (_event, deploymentId, action) => manager.controlFleetDeployment(deploymentId, action));
 	ipcMain.handle("manager:get-fleet-deployment-logs", (_event, deploymentId, lines) => manager.getFleetDeploymentLogs(deploymentId, lines));
 	ipcMain.handle("manager:check-fleet-deployment-health", (_event, deploymentId) => manager.checkFleetDeploymentHealth(deploymentId));
+	ipcMain.handle("manager:get-fleet-deployment-overview", (_event, deploymentId) => manager.getFleetDeploymentOverview(deploymentId));
 	ipcMain.handle("manager:save-fleet-deployment-credentials", (_event, deploymentId, values) => manager.saveFleetDeploymentCredentials(deploymentId, values));
 	ipcMain.handle("manager:run-fleet-definition-command", (_event, deploymentId, commandName) => manager.runFleetDefinitionCommand(deploymentId, commandName));
 	ipcMain.handle("manager:audit-fleet-deployment-security", (_event, deploymentId) => manager.auditFleetDeploymentSecurity(deploymentId));
