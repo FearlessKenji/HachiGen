@@ -929,8 +929,11 @@ function registerIpc() {
 	});
 	ipcMain.handle("manager:inspect-fleet-bot-candidate", (_event, values) => manager.inspectFleetBotCandidate(values));
 	ipcMain.handle("manager:get-testing-profiles", () => manager.getTestingProfiles());
+	ipcMain.handle("manager:get-testing-runs", () => manager.getTestingRunState());
 	ipcMain.handle("manager:save-testing-profile", (_event, values) => manager.saveTestingProfile(values));
 	ipcMain.handle("manager:delete-testing-profile", (_event, profileId) => manager.deleteTestingProfile(profileId));
+	ipcMain.handle("manager:start-testing-bot", (_event, deploymentId, profileId) => manager.startTestingBot(deploymentId, profileId));
+	ipcMain.handle("manager:stop-testing-bot", (_event, deploymentId) => manager.stopTestingBot(deploymentId));
 	ipcMain.handle("manager:copy-testing-secret", (_event, profileId, field) => {
 		const secret = manager.readTestingSecretForCopy(profileId, field);
 		clipboard.writeText(secret.value);
@@ -1176,6 +1179,7 @@ app.on("before-quit", () => {
 	saveMainWindowState();
 
 	if (manager) {
+		manager.stopAllTestingBots();
 		manager.stopLogCleanup();
 		manager.stopFleetMaintenance();
 	}

@@ -54,6 +54,11 @@ const ICON_PATHS = {
 		["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" }],
 	],
 	folder: [["path", { d: "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" }]],
+	flask: [
+		["path", { d: "M10 2v7.3L4.5 19a2 2 0 0 0 1.74 3h11.52a2 2 0 0 0 1.74-3L14 9.3V2" }],
+		["path", { d: "M8.5 2h7" }],
+		["path", { d: "M6.5 17h11" }],
+	],
 	key: [
 		["path", { d: "M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" }],
 		["circle", { cx: "16.5", cy: "7.5", fill: "currentColor", r: ".5" }],
@@ -139,6 +144,7 @@ const VIEW_ICONS = {
 	database: "database",
 	diagnostics: "shieldCheck",
 	logs: "logs",
+	testing: "flask",
 	remote: "remote",
 	setup: "settings",
 	updates: "download",
@@ -178,6 +184,7 @@ const ACTION_ICONS = {
 	refresh: "refresh",
 	"refresh-database-viewer": "refresh",
 	"refresh-diagnostics": "refresh",
+	"refresh-testing-run": "refresh",
 	restart: "restore",
 	"restore-database": "restore",
 	"restore-stash": "restore",
@@ -194,7 +201,9 @@ const ACTION_ICONS = {
 	"show-setup-guide": "check",
 	"show-updates": "download",
 	"start": "play",
+	"start-testing-bot": "play",
 	stop: "square",
+	"stop-testing-bot": "square",
 	"test-remote": "search",
 	update: "download",
 	"update-hachi": "download",
@@ -279,6 +288,7 @@ let diagnosticsState = null;
 let fleetState = null;
 let testingProfiles = [];
 let selectedTestingProfileId = null;
+let testingRuns = [];
 
 function setDatabaseView(nextView) {
 	// Keep database viewer state assignment outside async loader internals.
@@ -3318,10 +3328,31 @@ function renderTestingProfiles(profiles) {
 	const selected = testingProfiles.find(profile => profile.id === selectedTestingProfileId);
 	if (selectedTestingProfileId && !selected) renderTestingProfileEditor(null);
 	else if (selected) renderTestingProfileEditor(selected);
+	renderTestingRunner();
+}
+
+function renderTestingRunner(runs = testingRuns) {
+	testingRuns = Array.isArray(runs) ? runs : [];
+	const deployments = (fleetState?.deployments || []).filter(deployment => {
+		const server = fleetState.servers.find(item => item.id === deployment.serverId);
+		return server?.connection?.type === "local";
+	});
+	replaceSelectOptions("#testingDeploymentSelect", deployments, deployment => deployment.name);
+	replaceSelectOptions("#testingIdentitySelect", testingProfiles, profile => `${profile.name}${profile.isDefault ? " · Default" : ""}`);
+	const deploymentId = $("#testingDeploymentSelect")?.value || "";
+	const runState = testingRuns.find(run => run.deploymentId === deploymentId);
+	const running = ["running", "starting", "stopping"].includes(runState?.status);
+	setDisabled("#startTestingBotButton", !deploymentId || !$("#testingIdentitySelect")?.value || running);
+	setDisabled("#stopTestingBotButton", !running);
+	setText("#testingRunOutput", runState ?
+		`Status: ${runState.status}${runState.exitCode === null ? "" : ` · Exit code: ${runState.exitCode}`}\n${runState.output || "No process output yet."}` :
+		"Select a local bot and testing identity.");
 }
 
 async function refreshTestingProfiles() {
-	renderTestingProfiles(await api.getTestingProfiles());
+	const [profiles, runs] = await Promise.all([api.getTestingProfiles(), api.getTestingRuns()]);
+	renderTestingProfiles(profiles);
+	renderTestingRunner(runs);
 }
 
 async function handleTestingProfileSubmit(event) {
@@ -3699,6 +3730,10 @@ function handleChange(event) {
 		renderFleetFolderMode();
 	}
 
+	if (["testingDeploymentSelect", "testingIdentitySelect"].includes(event.target.id)) {
+		renderTestingRunner();
+	}
+
 	if (event.target.name === "runtimeTarget") {
 		const nextTarget = event.target.value === "remote" ? "remote" : "local";
 
@@ -3858,6 +3893,28 @@ function handleAction(event) {
 				renderTestingProfiles(result.profiles);
 				renderTestingProfileEditor(null);
 			});
+		});
+		return;
+	}
+
+	if (action === "refresh-testing-run") {
+		runAction("Refresh testing process", refreshTestingProfiles);
+		return;
+	}
+
+	if (action === "start-testing-bot") {
+		const deploymentId = $("#testingDeploymentSelect")?.value;
+		const profileId = $("#testingIdentitySelect")?.value;
+		runAction("Start testing bot", () => api.startTestingBot(deploymentId, profileId)).then(result => {
+			if (result) renderTestingRunner(result.runs);
+		});
+		return;
+	}
+
+	if (action === "stop-testing-bot") {
+		const deploymentId = $("#testingDeploymentSelect")?.value;
+		runAction("Stop testing bot", () => api.stopTestingBot(deploymentId)).then(result => {
+			if (result) renderTestingRunner(result.runs);
 		});
 		return;
 	}

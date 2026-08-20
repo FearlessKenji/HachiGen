@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const childProcess = require("node:child_process");
 const https = require("node:https");
 const zlib = require("node:zlib");
 const { Buffer } = require("node:buffer");
@@ -218,7 +219,7 @@ function normalizeProfileId(value, fallback = "profile") {
 	return normalized || `${fallback}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-function fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, logCandidates) {
+function fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, logCandidates, testEntryCandidates) {
 	// Emit exactly one JSON object so empty optional fields cannot shift positional shell output.
 	return `const fs=require('node:fs'),cp=require('node:child_process');` +
 		`const first=(items,type)=>items.find(item=>{try{return fs.statSync(item)[type]();}catch{return false;}})||null;` +
@@ -228,7 +229,8 @@ function fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, lo
 		`packageLockFound:fs.existsSync('package-lock.json'),` +
 		`ecosystemFile:first(${JSON.stringify(ecosystemCandidates)},'isFile'),` +
 		`databasePath:first(${JSON.stringify(databaseCandidates)},'isFile'),` +
-		`logsPath:first(${JSON.stringify(logCandidates)},'isDirectory')};` +
+		`logsPath:first(${JSON.stringify(logCandidates)},'isDirectory'),` +
+		`testEntry:first(${JSON.stringify(testEntryCandidates)},'isFile')};` +
 		`process.stdout.write(JSON.stringify(output));`;
 }
 
@@ -1983,6 +1985,7 @@ class HachiManager {
 		this.checkUpdatesPromise = null;
 		this.databaseCipherTest = null;
 		this.fleetMaintenanceTimer = null;
+		this.testingRuns = new Map();
 
 		ensureDir(this.userDataPath);
 		this.migrateLegacyBotProfiles();
@@ -2105,6 +2108,138 @@ class HachiManager {
 		return { field, profileId: safeId, ttlMs: 60000, value: this.unprotectSecret(protectedValue.slice("os:v1:".length)) };
 	}
 
+	readTestingIdentity(profileId) {
+		if (!this.unprotectSecret) {
+			throw new Error("Operating-system secret protection is unavailable.");
+		}
+		const safeId = normalizeProfileId(profileId);
+		const metadata = readJson(path.join(this.testingProfilesDir, safeId, "profile.json"), null);
+		const secrets = parseDotEnv(path.join(this.testingProfilesDir, safeId, "secrets.env"));
+		if (!metadata) {
+			throw new Error("Testing identity was not found.");
+		}
+		const values = {};
+		for (const field of ["TOKEN", "clientId", "publicKey", "clientSecret"]) {
+			const protectedValue = String(secrets[field] || "");
+			values[field] = protectedValue.startsWith("os:v1:") ? this.unprotectSecret(protectedValue.slice("os:v1:".length)) : "";
+		}
+		if (!values.TOKEN || !values.clientId) {
+			throw new Error("Testing identity requires a bot token and application ID.");
+		}
+		return { id: safeId, guildIds: normalizeConfigIdList(metadata.guildIds), name: metadata.name || safeId, values };
+	}
+
+	getTestingRunState() {
+		return [...this.testingRuns.values()].map(runState => ({
+			deploymentId: runState.deploymentId,
+			exitedAt: runState.exitedAt || null,
+			exitCode: runState.exitCode ?? null,
+			output: runState.output || "",
+			profileId: runState.profileId,
+			startedAt: runState.startedAt,
+			status: runState.status,
+		}));
+	}
+
+	async startTestingBot(deploymentId, profileId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		if (context.server.connection.type !== "local") {
+			throw new Error("Testing identities currently run local bot deployments only.");
+		}
+		const existing = this.testingRuns.get(deploymentId);
+		if (existing?.status === "running") {
+			throw new Error("This bot already has a testing process running.");
+		}
+		const production = await this.getFleetDeploymentStatus(deploymentId);
+		if (production.registered && production.status === "online") {
+			throw new Error("Stop this bot's production PM2 process before starting a test identity.");
+		}
+		const detectedTestEntry = ["start-test.js", "test.js", "scripts/start-test.js"]
+			.find(candidate => fileExists(path.join(context.deployment.installPath, candidate)));
+		const command = context.definition.commands?.testStart ||
+			(detectedTestEntry ? { executable: "node", args: [detectedTestEntry] } : null) ||
+			(context.definition.id === "hachi" ? { executable: "node", args: ["index.js"] } : null);
+		if (context.definition.source === "external" && context.deployment.definitionFingerprint !== context.definition.fingerprint) {
+			throw new Error(`${context.definition.displayName} profile changed after approval. Review the deployment before testing it.`);
+		}
+		if (!command || command.executable !== "node" || !command.args?.length) {
+			throw new Error(`${context.definition.displayName} does not have a recognized local testing entry point.`);
+		}
+		const entryPath = path.resolve(context.deployment.installPath, command.args[0]);
+		const relativeEntry = path.relative(path.resolve(context.deployment.installPath), entryPath);
+		if (!relativeEntry || relativeEntry.startsWith("..") || path.isAbsolute(relativeEntry) || !fileExists(entryPath)) {
+			throw new Error("The bot's testing entry point is missing or outside its repository.");
+		}
+		const identity = this.readTestingIdentity(profileId);
+		const env = {
+			...process.env,
+			TOKEN: identity.values.TOKEN,
+			clientId: identity.values.clientId,
+			clientSecret: identity.values.clientSecret,
+			guildIds: identity.guildIds.join(","),
+			HACHIGEN_TEST_MODE: "true",
+			publicKey: identity.values.publicKey,
+			testID: identity.values.clientId,
+			testTOKEN: identity.values.TOKEN,
+		};
+		// Use the bot host's Node runtime; process.execPath is HachiGen.exe in packaged builds.
+		const child = childProcess.spawn("node", [entryPath, ...command.args.slice(1)], {
+			cwd: context.deployment.installPath,
+			env,
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		const runState = { child, deploymentId, exitedAt: null, exitCode: null, output: "", profileId: identity.id, startedAt: new Date().toISOString(), status: "starting" };
+		this.testingRuns.set(deploymentId, runState);
+		const appendOutput = chunk => {
+			let output = `${runState.output}${chunk}`;
+			for (const secret of Object.values(identity.values).filter(Boolean)) {
+				output = output.split(secret).join("[REDACTED]");
+			}
+			runState.output = redactHachiGenLogText(output).slice(-20000);
+		};
+		child.stdout.on("data", appendOutput);
+		child.stderr.on("data", appendOutput);
+		child.on("exit", code => {
+			runState.status = "exited";
+			runState.exitCode = code;
+			runState.exitedAt = new Date().toISOString();
+			this.log(`Testing process exited for ${context.deployment.name}.`, { area: "testing", deploymentId, exitCode: code });
+		});
+		await new Promise((resolve, reject) => {
+			child.once("spawn", () => {
+				runState.status = "running";
+				resolve();
+			});
+			child.once("error", error => {
+				runState.status = "exited";
+				runState.exitedAt = new Date().toISOString();
+				reject(error);
+			});
+		});
+		this.log(`Testing process started for ${context.deployment.name} with ${identity.name}.`, { area: "testing", deploymentId, profileId: identity.id });
+		return { message: "Testing process started without changing bot credential files.", runs: this.getTestingRunState() };
+	}
+
+	stopTestingBot(deploymentId) {
+		const runState = this.testingRuns.get(deploymentId);
+		if (!runState || runState.status !== "running") {
+			throw new Error("This bot does not have a running testing process.");
+		}
+		runState.status = "stopping";
+		runState.child.kill("SIGTERM");
+		this.log(`Testing process stop requested.`, { area: "testing", deploymentId });
+		return { message: "Testing process is stopping.", runs: this.getTestingRunState() };
+	}
+
+	stopAllTestingBots() {
+		for (const runState of this.testingRuns.values()) {
+			if (["running", "starting"].includes(runState.status)) {
+				runState.child.kill("SIGTERM");
+			}
+		}
+	}
+
 	deleteTestingProfile(profileId) {
 		const safeId = normalizeProfileId(profileId);
 		const root = path.join(this.testingProfilesDir, safeId);
@@ -2197,6 +2332,7 @@ class HachiManager {
 		const ecosystemCandidates = ["ecosystem.config.js", "ecosystem.config.cjs", "config/ecosystem.config.js", "config/ecosystem.config.cjs"];
 		const databaseCandidates = ["database/database.sqlite", "data/database.sqlite", "data/bot.sqlite", "database.sqlite"];
 		const logCandidates = ["logs", "log"];
+		const testEntryCandidates = ["start-test.js", "test.js", "scripts/start-test.js"];
 		let origin;
 		let branch;
 		let packageJson;
@@ -2205,8 +2341,9 @@ class HachiManager {
 		let databasePath;
 		let logsPath;
 		let packageLockFound;
+		let testEntry;
 		if (server.connection.type === "ssh") {
-			const inspectionSource = fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, logCandidates);
+			const inspectionSource = fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, logCandidates, testEntryCandidates);
 			const inspectScript = `cd ${quoteRemotePath(installPath)} && node -e ${quotePosix(inspectionSource)}`;
 			const result = await this.runFleetRemoteCommand(server, inspectScript, { allowFailure: true, log: false, timeoutMs: 30000 });
 			if (result.code !== 0) {
@@ -2217,6 +2354,7 @@ class HachiManager {
 				throw new Error("Remote repository inspection returned an invalid response.");
 			}
 			({ origin, branch, packageJson, packageLockFound, databasePath, logsPath } = inspection);
+			testEntry = inspection.testEntry;
 			ecosystemFile = inspection.ecosystemFile || "ecosystem.config.js";
 			ecosystemFound = Boolean(inspection.ecosystemFile);
 		} else {
@@ -2236,6 +2374,7 @@ class HachiManager {
 			ecosystemFound = fileExists(path.join(installPath, ecosystemFile));
 			databasePath = databaseCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
 			logsPath = logCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
+			testEntry = testEntryCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
 		}
 		if (!String(origin || "").trim() || String(origin).trim() === "-" || !String(branch || "").trim() || String(branch).trim() === "-") {
 			throw new Error("Bot folder must be a Git checkout with an origin remote.");
@@ -2261,6 +2400,9 @@ class HachiManager {
 		if (deployScript) {
 			definition.commands.deployCommands = { executable: "npm", args: ["run", deployScript] };
 			definition.capabilities.discordCommands = true;
+		}
+		if (testEntry) {
+			definition.commands.testStart = { executable: "node", args: [testEntry] };
 		}
 		if (databasePath) {
 			definition.paths.database = databasePath;
@@ -7229,6 +7371,7 @@ process.stdout.write(JSON.stringify({
 			updates: this.updateState,
 			pm2: await this.getPm2Status(),
 			recentEvents: this.logger.readRecentEvents(80),
+			fleet: this.getFleetState(),
 		};
 	}
 

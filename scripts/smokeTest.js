@@ -294,12 +294,18 @@ function validateRendererAndMenuWiring() {
 		indexSource.includes('data-view="testing"') &&
 			indexSource.includes('data-view-panel="testing"') &&
 			indexSource.includes('id="testingProfileForm"') &&
+			indexSource.includes('id="testingDeploymentSelect"') &&
+			indexSource.includes('data-action="start-testing-bot"') &&
 			preloadSource.includes("getTestingProfiles") &&
+			preloadSource.includes("startTestingBot") &&
 			preloadSource.includes("copyTestingSecret") &&
 			mainSource.includes("manager:copy-testing-secret") &&
+			mainSource.includes("manager:start-testing-bot") &&
 			managerSource.includes('path.join(this.profilesDir, "Testing")') &&
-			managerSource.includes("os:v1:"),
-		"Testing identities should be locally protected, copyable, and managed from the Testing tab.",
+			managerSource.includes("os:v1:") &&
+			rendererSource.includes('testing: "flask"') &&
+			managerSource.includes("fleet: this.getFleetState()"),
+		"Testing identities should be protected, runnable, and iconized, while Fleet hydrates in the startup state.",
 	);
 	assert(
 		!/<label>/u.test(indexSource) &&
@@ -996,12 +1002,14 @@ async function validateFleetCredentialAndBackupSecurity() {
 		"const p=JSON.parse(fs.readFileSync(0,'utf8'));",
 		"fs.writeFileSync('credentials.enc',JSON.stringify({clientId:p.clientId,tokenHash:crypto.createHash('sha256').update(p.token).digest('hex')}));",
 	].join(""));
+	fs.writeFileSync(path.join(deploymentPath, "start-test.js"), "console.log(process.env.TOKEN);setInterval(()=>{},1000);\n");
 	childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: deploymentPath, stdio: "ignore" });
 	childProcess.execFileSync("git", ["remote", "add", "origin", "https://example.invalid/optional-bot.git"], { cwd: deploymentPath, stdio: "ignore" });
 	const originalDatabase = Buffer.from("SQLite format 3\0smoke database contents");
 	fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), originalDatabase);
+	let manager = null;
 	try {
-		const manager = new HachiManager({
+		manager = new HachiManager({
 			defaultInstallPath: tempDir,
 			managerRoot: projectRoot,
 			userDataPath,
@@ -1016,7 +1024,10 @@ async function validateFleetCredentialAndBackupSecurity() {
 			paths: { database: "data/bot.sqlite" },
 			credentials: { mode: "adapter" },
 			capabilities: { backups: true, databaseEncryption: true, secretEncryption: true },
-			commands: { credentialsWrite: { executable: "node", args: ["credentials-write.js"] } },
+			commands: {
+				credentialsWrite: { executable: "node", args: ["credentials-write.js"] },
+				testStart: { executable: "node", args: ["start-test.js"] },
+			},
 		}));
 		await manager.addFleetDeployment({
 			name: "Optional Bot Test",
@@ -1030,6 +1041,14 @@ async function validateFleetCredentialAndBackupSecurity() {
 		assert(!fs.existsSync(path.join(userDataPath, "credential-vault.json")), "HachiGen created a secondary credential vault.");
 		assert(!fs.readFileSync(path.join(deploymentPath, "credentials.enc"), "utf8").includes("very-secret-token"), "Bot credential adapter persisted a plaintext token.");
 		assert(!JSON.stringify(manager.getFleetState()).includes("very-secret-token"), "Renderer fleet state exposed a Discord token.");
+		manager.saveTestingProfile({ name: "Runtime Test", TOKEN: "runtime-test-token", clientId: "456" });
+		const testingStart = await manager.startTestingBot(deployment.id, "runtime-test");
+		await new Promise(resolve => {
+			setTimeout(resolve, 100);
+		});
+		const testingRun = manager.getTestingRunState().find(item => item.deploymentId === deployment.id);
+		assert(testingStart.runs[0].status === "running" && testingRun.output.includes("[REDACTED]") && !testingRun.output.includes("runtime-test-token"), "Testing process did not start with redacted output.");
+		manager.stopTestingBot(deployment.id);
 		const audit = await manager.auditFleetDeploymentSecurity(deployment.id);
 		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");
 		const backup = await manager.backupFleetDatabase(deployment.id);
@@ -1038,6 +1057,8 @@ async function validateFleetCredentialAndBackupSecurity() {
 		await manager.restoreFleetDatabaseBackup(deployment.id, backup.backupId);
 		assert(fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase), "Encrypted fleet backup did not restore original database bytes.");
 	} finally {
+		// Ensure a failed assertion cannot leave the smoke-test child alive.
+		manager?.stopAllTestingBots();
 		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
 }

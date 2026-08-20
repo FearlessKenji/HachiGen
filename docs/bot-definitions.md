@@ -74,6 +74,10 @@ Testing identities are separate from production-bot credentials. HachiGen stores
 
 The renderer receives only field-presence metadata. A Copy action asks the main process to decrypt one value, places it on the clipboard, and clears the clipboard after 60 seconds if it has not changed. Plaintext is not returned to the renderer or written to logs.
 
+To run a test, add the bot as a local Fleet deployment, save a Testing identity, stop that deployment's production PM2 process, and select both under **Run a Bot with a Testing Identity**. HachiGen recognizes `start-test.js`, `test.js`, or `scripts/start-test.js`; Hachi uses `index.js`. It starts the entry point as a temporary child process with `TOKEN`, `clientId`, `testTOKEN`, and `testID` injected in memory. This supports bots that read the standard variables as well as test entry points that map `testTOKEN`/`testID` onto them. The bot's `.env`, JSON, YAML, and other credential files are not rewritten.
+
+Testing launches are currently local-only. Process output is truncated and redacted in the Testing tab, and active testing children receive a stop signal when HachiGen exits.
+
 ## Backup format
 
 Fleet backups use the `HGBK1` container with AES-256-GCM authenticated encryption. Each backup gets an independent random key; the key is protected locally by the operating system and is never written beside the backup. Backup records are bound to their source server and deployment to prevent accidental cross-target restores.

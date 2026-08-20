@@ -767,6 +767,16 @@
 							<div class="form-actions"><button class="button danger" id="deleteTestingProfileButton" type="button" data-action="delete-testing-profile" disabled>Delete</button></div>
 						</form>
 					</div>
+					<div class="panel">
+						<div class="section-header"><div><h2>Run a Bot with a Testing Identity</h2><div class="panel-meta">Credentials are injected into a temporary local process; bot files are not changed</div></div><button class="button secondary compact" type="button" data-action="refresh-testing-run">Refresh</button></div>
+						<div class="fleet-form">
+							<label class="select-field">Bot<select id="testingDeploymentSelect"></select></label>
+							<label class="select-field">Testing identity<select id="testingIdentitySelect"></select></label>
+							<div class="fleet-form-wide form-help">Stop the production PM2 process first. Only local bots with a recognized test entry point can be launched.</div>
+							<div class="fleet-form-wide form-actions button-row wrap"><button class="button primary" id="startTestingBotButton" type="button" data-action="start-testing-bot">Start Test</button><button class="button secondary" id="stopTestingBotButton" type="button" data-action="stop-testing-bot">Stop Test</button></div>
+						</div>
+						<pre class="output compact-output" id="testingRunOutput">Select a local bot and testing identity.</pre>
+					</div>
 				</section>
 
 				<section class="view" data-view-panel="diagnostics">
