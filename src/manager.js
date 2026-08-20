@@ -2874,7 +2874,12 @@ class HachiManager {
 		]);
 		const failure = result => result.status === "rejected" ? { error: readableCause(result.reason) } : result.value;
 		return {
-			deployment: { id: context.deployment.id, name: context.deployment.name, installPath: context.deployment.installPath },
+			deployment: {
+				capabilities: context.definition.source === "native" ? context.definition.capabilities : context.deployment.approvedCapabilities,
+				id: context.deployment.id,
+				installPath: context.deployment.installPath,
+				name: context.deployment.name,
+			},
 			health: failure(healthResult),
 			repository: failure(repositoryResult),
 			security: failure(securityResult),

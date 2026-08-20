@@ -4,7 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
-- The main Dashboard is now explicitly Hachi-focused. Its Bot card is named Hachi, while Fleet has its own Runtime, Repository, Security, and Connection cards that follow the selected additional bot.
+- The main Dashboard is now explicitly Hachi-focused. Its Bot card is named Hachi, while Fleet has its own status cards that follow the selected additional bot.
+- Fleet's cards now mirror Dashboard language and order: the selected bot, Install, Updates, Deployment, and Database. The selected-bot label sits beside its dropdown, and duplicate bot names identify whether each deployment is Local or Remote.
 - Began the multi-server, multi-bot foundation while keeping existing Hachi management intact. Hachi remains the only built-in bot, and optional bots use separately approved profiles.
 - Added Fleet and Credentials pages for managing servers, bot deployments, deployment-local encrypted Discord identities, runtime controls, health checks, and logs. HachiGen does not retain a second token copy, while shared test identities remain protected from accidental concurrent use.
 - Added fleet security audits, encrypted database backups and restores, automatic retention, safe bot updates with rollback, and external bot profiles for optional projects.

@@ -3277,7 +3277,10 @@ function renderFleet(nextFleet) {
 		`Credentials: ${type.credentials?.mode === "adapter" ? "approved secure writer" : "managed by bot"} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "status only"}`,
 		[{ action: "remove-bot-definition", id: type.id, label: "Remove" }],
 	)) : [fleetEmpty("No bot profiles have been added yet.")]));
-	replaceSelectOptions("#fleetSelectedDeploymentSelect", managedDeployments, deployment => deployment.name);
+	replaceSelectOptions("#fleetSelectedDeploymentSelect", managedDeployments, deployment => {
+		const server = fleetState.servers.find(item => item.id === deployment.serverId);
+		return `${deployment.name} - ${server?.connection?.type === "ssh" ? "Remote" : "Local"}`;
+	});
 	const selectedDeployment = managedDeployments.find(deployment => deployment.id === fleetState.activeDeploymentId) || managedDeployments[0];
 	if (selectedDeployment) $("#fleetSelectedDeploymentSelect").value = selectedDeployment.id;
 	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name || (item.id === "local" ? "Local Computer" : item.id));
@@ -3289,38 +3292,51 @@ function renderFleet(nextFleet) {
 	if (activeView === "fleet") void refreshFleetOverview();
 }
 
+function readableStatus(value) {
+	const text = String(value || "Unknown").replace(/-/gu, " ");
+	return `${text[0].toUpperCase()}${text.slice(1)}`;
+}
+
 function renderFleetOverview(overview = null) {
 	if (!overview) {
-		for (const prefix of ["#fleetRuntime", "#fleetRepository", "#fleetOverviewSecurity", "#fleetConnection"]) setDot(`${prefix}Dot`, "muted");
+		for (const prefix of ["#fleetRuntime", "#fleetConnection", "#fleetRepository", "#fleetDeployment", "#fleetOverviewSecurity"]) setDot(`${prefix}Dot`, "muted");
+		setText("#fleetBotCardLabel", "Bot");
 		setText("#fleetRuntimeStatus", "No bot selected");
 		setText("#fleetRuntimeDetail", "Add or select an additional bot");
-		setText("#fleetRepositoryStatus", "Not checked");
-		setText("#fleetRepositoryDetail", "Git status");
-		setText("#fleetOverviewSecurityStatus", "Not checked");
-		setText("#fleetOverviewSecurityDetail", "Database protection");
 		setText("#fleetConnectionStatus", "Not selected");
 		setText("#fleetConnectionDetail", "Deployment location");
+		setText("#fleetRepositoryStatus", "Not checked");
+		setText("#fleetRepositoryDetail", "Git status");
+		setText("#fleetDeploymentStatus", "Not checked");
+		setText("#fleetDeploymentDetail", "Discord commands");
+		setText("#fleetOverviewSecurityStatus", "Not checked");
+		setText("#fleetOverviewSecurityDetail", "Database protection");
 		return;
 	}
 	const runtime = overview.health?.runtime;
 	const runtimeGood = runtime?.status === "online";
 	const runtimeBad = overview.health?.error || ["error", "pm2-missing"].includes(runtime?.status);
+	setText("#fleetBotCardLabel", overview.deployment?.name || "Bot");
 	setDot("#fleetRuntimeDot", runtimeGood ? "good" : runtimeBad ? "bad" : "warn");
-	setText("#fleetRuntimeStatus", runtime?.status || (overview.health?.error ? "Unavailable" : "Unknown"));
+	setText("#fleetRuntimeStatus", readableStatus(runtime?.status || (overview.health?.error ? "Unavailable" : "Unknown")));
 	setText("#fleetRuntimeDetail", runtime?.message || overview.health?.error || "Runtime status unavailable");
+	setDot("#fleetConnectionDot", overview.health?.installFound ? "good" : "bad");
+	setText("#fleetConnectionStatus", overview.health?.installFound ? "Found" : "Missing");
+	setText("#fleetConnectionDetail", `${overview.server?.type === "ssh" ? "Remote" : "Local"} · ${overview.deployment?.installPath || "No path"}`);
 	const repository = overview.repository || {};
 	const repositoryBad = repository.error || repository.isGit === false || repository.originMatches === false;
 	setDot("#fleetRepositoryDot", repositoryBad ? "bad" : repository.dirty ? "warn" : "good");
 	setText("#fleetRepositoryStatus", repositoryBad ? "Needs attention" : repository.dirty ? "Local changes" : "Clean");
 	setText("#fleetRepositoryDetail", repository.error || repository.message || `${repository.branch || "Unknown branch"} · ${repository.targetBranch || "No target"}`);
+	const deployable = overview.deployment?.capabilities?.discordCommands;
+	setDot("#fleetDeploymentDot", deployable ? "good" : "muted");
+	setText("#fleetDeploymentStatus", deployable ? "Ready" : "Not configured");
+	setText("#fleetDeploymentDetail", deployable ? "Discord command deployment available" : "No command deployment profile");
 	const security = overview.security || {};
 	const databaseStatus = security.database?.status || (security.error ? "error" : "unknown");
 	setDot("#fleetOverviewSecurityDot", ["protected", "not-applicable"].includes(databaseStatus) ? "good" : databaseStatus === "encrypted-unverified" ? "warn" : "bad");
-	setText("#fleetOverviewSecurityStatus", databaseStatus.replace(/-/gu, " "));
+	setText("#fleetOverviewSecurityStatus", readableStatus(databaseStatus));
 	setText("#fleetOverviewSecurityDetail", security.error || security.database?.message || "Security status unavailable");
-	setDot("#fleetConnectionDot", overview.health?.installFound ? "good" : "bad");
-	setText("#fleetConnectionStatus", overview.server?.type === "ssh" ? "Remote SSH" : "Local");
-	setText("#fleetConnectionDetail", `${overview.server?.name || "Unknown"} · ${overview.deployment?.installPath || "No path"}`);
 }
 
 async function refreshFleetOverview() {

@@ -294,6 +294,12 @@ function validateRendererAndMenuWiring() {
 			fleetSection.includes('id="fleetRepositoryStatus"') &&
 			fleetSection.includes('id="fleetOverviewSecurityStatus"') &&
 			fleetSection.includes('id="fleetConnectionStatus"') &&
+			fleetSection.includes('id="fleetDeploymentStatus"') &&
+			fleetSection.includes('<div class="card-label">Install</div>') &&
+			fleetSection.includes('<div class="card-label">Updates</div>') &&
+			fleetSection.includes('<div class="card-label">Database</div>') &&
+			!fleetSection.includes('<div class="card-label">Security</div>') &&
+			rendererSource.includes('"Remote" : "Local"') &&
 			preloadSource.includes("getFleetDeploymentOverview") &&
 			mainSource.includes("manager:get-fleet-deployment-overview"),
 		"Dashboard should be Hachi-specific and Fleet should own selected-bot overview cards.",

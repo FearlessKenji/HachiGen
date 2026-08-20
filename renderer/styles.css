@@ -338,11 +338,26 @@ h2 {
 }
 
 .fleet-status-grid {
-	grid-template-columns: repeat(4, minmax(150px, 1fr));
+	grid-template-columns: repeat(5, minmax(150px, 1fr));
 }
 
 .compact-select {
 	min-width: 220px;
+}
+
+.inline-select-field {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 10px;
+}
+
+.inline-select-field > span {
+	white-space: nowrap;
+}
+
+.fleet-header-actions {
+	align-items: center;
 }
 
 .status-card,

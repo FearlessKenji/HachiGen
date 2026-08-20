@@ -624,13 +624,14 @@
 							<h2>Fleet</h2>
 							<div class="panel-meta">Manage additional bots on this computer or remote servers</div>
 						</div>
-						<div class="button-row"><label class="select-field compact-select"><span>Selected bot</span><select id="fleetSelectedDeploymentSelect"></select></label><button class="button info" type="button" data-action="refresh-fleet">Refresh</button></div>
+						<div class="button-row fleet-header-actions"><label class="select-field compact-select inline-select-field"><span>Selected bot</span><select id="fleetSelectedDeploymentSelect"></select></label><button class="button info" type="button" data-action="refresh-fleet">Refresh</button></div>
 					</div>
 					<div class="status-grid fleet-status-grid">
-						<article class="status-card"><div class="card-label">Runtime</div><div class="status-value"><span class="dot" id="fleetRuntimeDot"></span><span id="fleetRuntimeStatus">No bot selected</span></div><div class="card-detail" id="fleetRuntimeDetail">Select an additional bot</div></article>
-						<article class="status-card"><div class="card-label">Repository</div><div class="status-value"><span class="dot" id="fleetRepositoryDot"></span><span id="fleetRepositoryStatus">Not checked</span></div><div class="card-detail" id="fleetRepositoryDetail">Git status</div></article>
-						<article class="status-card"><div class="card-label">Security</div><div class="status-value"><span class="dot" id="fleetOverviewSecurityDot"></span><span id="fleetOverviewSecurityStatus">Not checked</span></div><div class="card-detail" id="fleetOverviewSecurityDetail">Database protection</div></article>
-						<article class="status-card"><div class="card-label">Connection</div><div class="status-value"><span class="dot" id="fleetConnectionDot"></span><span id="fleetConnectionStatus">Not selected</span></div><div class="card-detail" id="fleetConnectionDetail">Deployment location</div></article>
+						<article class="status-card"><div class="card-label" id="fleetBotCardLabel">Bot</div><div class="status-value"><span class="dot" id="fleetRuntimeDot"></span><span id="fleetRuntimeStatus">No bot selected</span></div><div class="card-detail" id="fleetRuntimeDetail">Select an additional bot</div></article>
+						<article class="status-card"><div class="card-label">Install</div><div class="status-value"><span class="dot" id="fleetConnectionDot"></span><span id="fleetConnectionStatus">Not selected</span></div><div class="card-detail" id="fleetConnectionDetail">Deployment location</div></article>
+						<article class="status-card"><div class="card-label">Updates</div><div class="status-value"><span class="dot" id="fleetRepositoryDot"></span><span id="fleetRepositoryStatus">Not checked</span></div><div class="card-detail" id="fleetRepositoryDetail">Git status</div></article>
+						<article class="status-card"><div class="card-label">Deployment</div><div class="status-value"><span class="dot" id="fleetDeploymentDot"></span><span id="fleetDeploymentStatus">Not checked</span></div><div class="card-detail" id="fleetDeploymentDetail">Discord commands</div></article>
+						<article class="status-card"><div class="card-label">Database</div><div class="status-value"><span class="dot" id="fleetOverviewSecurityDot"></span><span id="fleetOverviewSecurityStatus">Not checked</span></div><div class="card-detail" id="fleetOverviewSecurityDetail">Database protection</div></article>
 					</div>
 					<div class="panel-stack">
 						<div class="panel">
