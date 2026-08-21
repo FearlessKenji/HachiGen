@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Logs remain readable through the previously approved capability when a Bot Profile changes, while commands and modifications still wait for Review Profile. Dashboard database checks also avoid running an unapproved changed verification command.
+- Fleet's Open Folder and generated inventory buttons now use the same icons as the rest of HachiGen. Icons were also added to the remaining Fleet, Testing, database, and profile actions.
 - Packaged-build verification now checks the shared bot selector, navigation, Configuration, local/remote controls, and Testing controls instead of only checking whether the window opens.
 - Packaged verification now tests the freshly built unpacked application before considering an older portable executable.
 - Internal configuration handling is now isolated from the main bot manager, reducing the chance that future bot-format changes affect runtime, update, or database operations.

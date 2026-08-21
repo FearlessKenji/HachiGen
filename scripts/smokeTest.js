@@ -410,6 +410,12 @@ function validateRendererAndMenuWiring() {
 		"Fleet bot rows should retain inventory selection, health, and removal instead of duplicating shared operational controls.",
 	);
 	assert(
+		rendererSource.includes('"choose-fleet-bot-folder": "folder"') &&
+			rendererSource.includes('"fleet-runtime-health": "shieldCheck"') &&
+			/fleetEntry[\s\S]*decorateControlIcon\(button, iconNameForControl\(button\)\)/u.test(rendererSource),
+		"Fleet static and generated action buttons should use the shared icon system.",
+	);
+	assert(
 		databaseSection.includes("Backup / Transfer") &&
 			!databaseSection.includes("Backup / Transfer...") &&
 			!databaseSection.includes("data-action=\"restore-database\""),
@@ -1133,6 +1139,18 @@ async function validateFleetCredentialAndBackupSecurity() {
 		});
 		const deployment = manager.fleet.deployments.find(item => item.botTypeId === "optional-bot");
 		assert(deployment.repositoryBranch === "test-feature", "Fleet should record each installation's checked-out branch instead of forcing the profile branch.");
+		const changedContext = {
+			definition: { source: "external", fingerprint: "changed", capabilities: { logs: true, pm2: true }, displayName: "Optional Bot" },
+			deployment: { definitionFingerprint: "approved", approvedCapabilities: { logs: true, pm2: true } },
+		};
+		manager.assertFleetCapability(changedContext, "logs", { allowChangedDefinition: true });
+		let changedMutationRejected = false;
+		try {
+			manager.assertFleetCapability(changedContext, "pm2");
+		} catch {
+			changedMutationRejected = true;
+		}
+		assert(changedMutationRejected, "Changed profiles should allow approved observation but continue blocking runtime mutations.");
 		const configuration = manager.getFleetDeploymentConfiguration(deployment.id);
 		const yamlFile = configuration.files.find(file => file.path === "bot-settings.yaml");
 		assert(yamlFile?.format === "yaml" && yamlFile.fields.find(field => field.key === "apiToken")?.sensitive, "Profile-declared YAML configuration should load with sensitive fields hidden.");

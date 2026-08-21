@@ -58,6 +58,8 @@ Notable changes to HachiGen are documented here.
 
 ### Fixed
 
+- Allowed previously approved read-only PM2 log retrieval while a changed Bot Profile awaits reapproval, while continuing to block changed-profile commands and mutations. Database audits now skip changed-profile verification adapters instead of executing them.
+- Added shared icons to Fleet's generated Select, Health, Edit, and Remove buttons and filled the icon map for the remaining Fleet, Testing, database, and profile actions.
 - Added explicit editing for saved Fleet SSH connections, including key rotation and duplicate-endpoint validation while preserving stable server ids for attached deployments.
 - Fixed remote Hachi Configuration reads intermittently timing out by replacing four concurrent 15-second SSH sessions with one structured, allowlisted remote read and a 30-second operation timeout. Remote saves reuse the same read path.
 - Consolidated native and Fleet SSH connection tests onto one validated execution path, and stopped additional-bot remote saves from silently ignoring a newly selected key when a matching server connection already exists.

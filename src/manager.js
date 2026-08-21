@@ -2827,11 +2827,11 @@ class HachiManager {
 		return { definition, deployment, server };
 	}
 
-	assertFleetCapability(context, capability) {
+	assertFleetCapability(context, capability, { allowChangedDefinition = false } = {}) {
 		if (context.definition.source === "native") {
 			return;
 		}
-		if (context.deployment.definitionFingerprint !== context.definition.fingerprint) {
+		if (!allowChangedDefinition && context.deployment.definitionFingerprint !== context.definition.fingerprint) {
 			throw new Error(`${context.definition.displayName} definition changed after approval. Review and reapprove this deployment before modifying it.`);
 		}
 		if (!context.definition.capabilities?.[capability] || !context.deployment.approvedCapabilities?.[capability]) {
@@ -2945,7 +2945,9 @@ class HachiManager {
 
 	async getFleetDeploymentLogs(deploymentId, lines = 200) {
 		const context = this.getFleetDeploymentContext(deploymentId);
-		this.assertFleetCapability(context, "logs");
+		// PM2 log reads do not execute profile-supplied commands. Continue honoring
+		// the immutable approved snapshot while a changed profile awaits review.
+		this.assertFleetCapability(context, "logs", { allowChangedDefinition: true });
 		const safeLines = Math.min(1000, Math.max(20, Number.parseInt(String(lines), 10) || 200));
 		const result = await this.runFleetDeploymentCommand(
 			context,
@@ -3058,7 +3060,8 @@ class HachiManager {
 		let verified = false;
 		let verificationMessage = "Encrypted-looking header has not been verified with the database key.";
 		const databaseVerificationApproved = context.definition.native ||
-			(context.definition.capabilities?.databaseEncryption && context.deployment.approvedCapabilities?.databaseEncryption);
+			(context.deployment.definitionFingerprint === context.definition.fingerprint &&
+			context.definition.capabilities?.databaseEncryption && context.deployment.approvedCapabilities?.databaseEncryption);
 		if (!plaintext && context.definition.commands?.databaseVerify && databaseVerificationApproved) {
 			const result = await this.runFleetDefinitionCommand(deploymentId, "databaseVerify", { timeoutMs: 120000 });
 			verified = result.code === 0;
