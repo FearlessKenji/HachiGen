@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	getState: () => invoke("manager:get-state"),
 	getFleet: () => invoke("manager:get-fleet"),
 	addFleetServer: values => invoke("manager:add-fleet-server", values),
+	updateFleetServer: (serverId, values) => invoke("manager:update-fleet-server", serverId, values),
 	removeFleetServer: serverId => invoke("manager:remove-fleet-server", serverId),
 	addFleetDeployment: values => invoke("manager:add-fleet-deployment", values),
 	setActiveFleetDeployment: deploymentId => invoke("manager:set-active-fleet-deployment", deploymentId),

@@ -896,6 +896,7 @@ function registerIpc() {
 	ipcMain.handle("manager:get-state", () => manager.getState());
 	ipcMain.handle("manager:get-fleet", () => manager.getFleetState());
 	ipcMain.handle("manager:add-fleet-server", (_event, values) => manager.addFleetServer(values));
+	ipcMain.handle("manager:update-fleet-server", (_event, serverId, values) => manager.updateFleetServer(serverId, values));
 	ipcMain.handle("manager:remove-fleet-server", (_event, serverId) => manager.removeFleetServer(serverId));
 	ipcMain.handle("manager:add-fleet-deployment", (_event, values) => manager.addFleetDeployment(values));
 	ipcMain.handle("manager:set-active-fleet-deployment", (_event, deploymentId) => manager.setActiveFleetDeployment(deploymentId));

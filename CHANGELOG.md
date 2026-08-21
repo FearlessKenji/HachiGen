@@ -20,6 +20,7 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
+- Reduced Fleet bot inventory rows to Select, Health, and Remove. Runtime, logs, updates, command deployment, credentials, and database operations remain in Dashboard and the selected bot's shared views.
 - Removed the separate additional-bot setup composition. The selected bot now uses Hachi's native Install, validation, cron reference, Runtime Location, Remote Connection controls, connection testing, and Connection Preview directly; only Configuration swaps to repository-derived fields.
 - Additional-bot remote saves now resolve or create the server-level Fleet connection from the shared Hachi remote form, then attach the bot installation without creating another credential store.
 - Separated profile default branches from installation branches. Local setup may use a feature branch while remote production tracks `main`; repository-origin and named-branch validation remain enforced. Live Git status now overrides onboarding snapshots so Bot Profile and updates follow a branch changed after the installation was added.
@@ -50,6 +51,7 @@ Notable changes to HachiGen are documented here.
 
 ### Fixed
 
+- Added explicit editing for saved Fleet SSH connections, including key rotation and duplicate-endpoint validation while preserving stable server ids for attached deployments.
 - Fixed remote Hachi Configuration reads intermittently timing out by replacing four concurrent 15-second SSH sessions with one structured, allowlisted remote read and a 30-second operation timeout. Remote saves reuse the same read path.
 - Consolidated native and Fleet SSH connection tests onto one validated execution path, and stopped additional-bot remote saves from silently ignoring a newly selected key when a matching server connection already exists.
 - Fixed the smoke-test CI workflow parser so split CI job assertions do not fail with an undefined helper.

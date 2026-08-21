@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Fleet bot rows now stay focused on inventory with Select, Health, and Remove. Start, stop, restart, logs, updates, commands, credentials, and database tools remain available through Dashboard and the selected bot's normal tabs.
+- Saved Fleet connections can now be edited safely, including changing an SSH private key without removing attached bot installations.
 - Fixed remote Hachi Configuration sometimes failing with an SSH timeout. HachiGen now reads the required remote configuration files through one connection instead of opening four connections at once.
 - Hachi and additional bots now use the same underlying SSH connection test. HachiGen also warns when an existing Fleet server uses a different private key instead of silently keeping the old key while appearing to save the new one.
 - The selected bot now uses Hachi's actual bot-page layout rather than a separately assembled additional-bot page. Install, validation, cron help, every Remote Connection field and action, remote testing, and Connection Preview are shared directly; only Configuration changes to match the selected repository.

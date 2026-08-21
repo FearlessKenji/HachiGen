@@ -2408,6 +2408,35 @@ class HachiManager {
 		return this.getFleetState();
 	}
 
+	updateFleetServer(serverId, values) {
+		const index = this.fleet.servers.findIndex(item => item.id === serverId);
+		const current = this.fleet.servers[index];
+		if (!current) {
+			throw new Error("Server was not found.");
+		}
+		if (current.id === "local") {
+			throw new Error("The built-in local connection cannot be edited.");
+		}
+		const updated = normalizeServer({ ...values, id: current.id });
+		if (updated.connection.type !== "ssh") {
+			throw new Error("Saved remote connections must remain SSH connections.");
+		}
+		const duplicate = this.fleet.servers.find(item => item.id !== current.id && item.connection.type === "ssh" &&
+			item.connection.host.toLowerCase() === updated.connection.host.toLowerCase() &&
+			item.connection.username === updated.connection.username &&
+			item.connection.port === updated.connection.port);
+		if (duplicate) {
+			throw new Error(`That SSH connection already exists as ${duplicate.name}.`);
+		}
+		assertSshPrivateKeyFile(updated.connection.sshKeyPath);
+		// Server ids stay stable so every attached deployment follows deliberate
+		// endpoint or key rotations without registry rewrites.
+		this.fleet.servers[index] = updated;
+		this.saveFleetRegistry();
+		this.log(`Fleet server updated: ${updated.name}.`, { area: "fleet", serverId: updated.id });
+		return this.getFleetState();
+	}
+
 	removeFleetServer(serverId) {
 		const server = this.fleet.servers.find(item => item.id === serverId);
 		if (!server) {

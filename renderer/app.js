@@ -1024,6 +1024,10 @@ function renderSelectedBotContext() {
 	if ($("#externalConfigurationFields")) $("#externalConfigurationFields").hidden = !external;
 	if ($("#externalConfigurationMeta")) $("#externalConfigurationMeta").hidden = !external;
 	if (!external) setDisabled("#saveConfigurationButton", false);
+	if ($("#manageBotCredentialsButton")) {
+		const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
+		$("#manageBotCredentialsButton").hidden = !external || !canManageFleetCredentials(deployment, definition);
+	}
 	if ($("#dashboardGuideButton")) $("#dashboardGuideButton").hidden = external;
 	for (const selector of ["#externalUpdatesPanel", "#externalDatabasePanel"]) {
 		const element = $(selector);
@@ -3413,28 +3417,21 @@ function renderFleet(nextFleet) {
 		server.connection.type === "local" ?
 			`Local · ${managedDeployments.filter(deployment => deployment.serverId === server.id).length} bot(s)` :
 			`${server.connection.username}@${server.connection.host}:${server.connection.port} · ${managedDeployments.filter(deployment => deployment.serverId === server.id).length} bot(s)`,
-		server.id === "local" ? [] : [{ action: "remove-fleet-server", id: server.id, label: "Remove" }],
+		server.id === "local" ? [] : [
+			{ action: "edit-fleet-server", id: server.id, label: "Edit", kind: "info" },
+			{ action: "remove-fleet-server", id: server.id, label: "Remove" },
+		],
 	)));
 	deploymentList?.replaceChildren(...(managedDeployments.length ? managedDeployments.map(deployment => {
 		const server = fleetState.servers.find(item => item.id === deployment.serverId);
 		const type = supportedBotTypes.find(item => item.id === deployment.botTypeId);
 		const active = deployment.id === fleetState.activeDeploymentId;
-		const capabilities = type?.source === "native" ? type.capabilities : (deployment.approvedCapabilities || {});
 		return fleetEntry(
 			`${deployment.name}${active ? " · Active" : ""}`,
 			`${type?.displayName || deployment.botTypeId} · ${server?.name || deployment.serverId} · ${deployment.environment} · ${deployment.installPath}`,
 			[
 				...(!active ? [{ action: "activate-fleet-deployment", id: deployment.id, label: "Select", kind: "info" }] : []),
-				...(capabilities.pm2 ? [
-					{ action: "fleet-runtime-start", id: deployment.id, label: "Start", kind: "primary" },
-					{ action: "fleet-runtime-stop", id: deployment.id, label: "Stop" },
-					{ action: "fleet-runtime-restart", id: deployment.id, label: "Restart" },
-				] : []),
 				{ action: "fleet-runtime-health", id: deployment.id, label: "Health", kind: "info" },
-				...(capabilities.logs ? [{ action: "fleet-runtime-logs", id: deployment.id, label: "Logs" }] : []),
-				...(capabilities.gitUpdates ? [{ action: "fleet-repository-check", id: deployment.id, label: "Updates", kind: "info" }] : []),
-				...(capabilities.discordCommands ? [{ action: "fleet-deploy-commands", id: deployment.id, label: "Deploy" }] : []),
-				...(canManageFleetCredentials(deployment, type) ? [{ action: "fleet-edit-credentials", id: deployment.id, label: "Credentials" }] : []),
 				{ action: "remove-fleet-deployment", id: deployment.id, label: "Remove" },
 			],
 		);
@@ -4393,15 +4390,44 @@ function handleAction(event) {
 	if (action === "add-fleet-server") {
 		const form = $("#fleetServerForm");
 		const values = Object.fromEntries(new window.FormData(form));
-		runAction("Add server", async () => {
-			const fleet = await api.addFleetServer({
+		const serverId = values.serverId;
+		runAction(serverId ? "Update server" : "Add server", async () => {
+			const payload = {
 				name: values.name,
 				connection: { type: values.type, host: values.host, username: values.username, port: values.port, sshKeyPath: values.sshKeyPath },
-			});
+			};
+			const fleet = serverId ? await api.updateFleetServer(serverId, payload) : await api.addFleetServer(payload);
 			renderFleet(fleet);
 			form.reset();
-			return { message: "Server added." };
+			setText("#saveFleetServerButton", "Add Server");
+			$("#cancelFleetServerEditButton").hidden = true;
+			return { message: serverId ? "Server updated." : "Server added." };
 		});
+		return;
+	}
+
+	if (action === "edit-fleet-server") {
+		const server = fleetState?.servers?.find(item => item.id === button.dataset.itemId);
+		const form = $("#fleetServerForm");
+		if (!server || !form || server.connection.type !== "ssh") return;
+		form.elements.serverId.value = server.id;
+		form.elements.name.value = server.name;
+		form.elements.type.value = server.connection.type;
+		form.elements.host.value = server.connection.host;
+		form.elements.username.value = server.connection.username;
+		form.elements.port.value = server.connection.port;
+		form.elements.sshKeyPath.value = server.connection.sshKeyPath;
+		setText("#saveFleetServerButton", "Update Server");
+		$("#cancelFleetServerEditButton").hidden = false;
+		form.scrollIntoView({ behavior: "smooth", block: "center" });
+		return;
+	}
+
+	if (action === "cancel-fleet-server-edit") {
+		const form = $("#fleetServerForm");
+		form?.reset();
+		setText("#saveFleetServerButton", "Add Server");
+		$("#cancelFleetServerEditButton").hidden = true;
 		return;
 	}
 
@@ -4510,7 +4536,7 @@ function handleAction(event) {
 	}
 
 	if (action === "fleet-edit-credentials") {
-		showFleetCredentialModal(button.dataset.itemId);
+		showFleetCredentialModal(button.dataset.itemId || selectedBotId);
 		return;
 	}
 

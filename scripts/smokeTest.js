@@ -383,9 +383,17 @@ function validateRendererAndMenuWiring() {
 		!indexSource.includes('data-view="credentials"') &&
 			!indexSource.includes('data-view-panel="credentials"') &&
 			indexSource.includes('id="fleetCredentialFormTemplate"') &&
-			rendererSource.includes('action: "fleet-edit-credentials"') &&
-			rendererSource.includes("showFleetCredentialModal(button.dataset.itemId)"),
-		"Additional-bot credentials should be an approved contextual Fleet action and not a separate page.",
+			indexSource.includes('id="manageBotCredentialsButton"') &&
+			rendererSource.includes("showFleetCredentialModal(button.dataset.itemId || selectedBotId)"),
+		"Approved additional-bot credentials should live in the selected bot Configuration header rather than Fleet inventory.",
+	);
+	assert(
+		!rendererSource.includes('{ action: "fleet-runtime-start"') &&
+			!rendererSource.includes('{ action: "fleet-runtime-stop"') &&
+			!rendererSource.includes('{ action: "fleet-runtime-restart"') &&
+			rendererSource.includes('{ action: "fleet-runtime-health"') &&
+			rendererSource.includes('{ action: "remove-fleet-deployment"'),
+		"Fleet bot rows should retain inventory selection, health, and removal instead of duplicating shared operational controls.",
 	);
 	assert(
 		databaseSection.includes("Backup / Transfer") &&
@@ -1157,6 +1165,17 @@ function validateTestingIdentityProtection() {
 		}
 		assert(duplicateServerRejected, "Duplicate SSH endpoints should not create multiple Fleet connections.");
 		const remoteServer = manager.fleet.servers.find(server => server.name === "Primary");
+		const replacementKey = path.join(tempDir, "replacement.key");
+		fs.writeFileSync(replacementKey, "-----BEGIN OPENSSH PRIVATE KEY-----\ntest-only\n-----END OPENSSH PRIVATE KEY-----\n");
+		manager.updateFleetServer(remoteServer.id, {
+			name: "Updated Primary",
+			connection: { type: "ssh", host: "new.example", username: "runner", port: 2222, sshKeyPath: replacementKey },
+		});
+		assert(
+			remoteServer.id === manager.fleet.servers.find(server => server.name === "Updated Primary")?.id &&
+			manager.fleet.servers.find(server => server.id === remoteServer.id)?.connection.sshKeyPath === replacementKey,
+			"Editing a Fleet SSH connection should preserve its stable id and update its key.",
+		);
 		const nativeHachi = manager.fleet.deployments.find(deployment => deployment.botTypeId === "hachi");
 		nativeHachi.serverId = remoteServer.id;
 		nativeHachi.installPath = "/srv/hachi";

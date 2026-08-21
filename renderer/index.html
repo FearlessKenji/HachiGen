@@ -221,7 +221,7 @@
 						<form class="panel config-form" id="configForm">
 							<div class="form-header">
 								<div><h2>Configuration</h2><div class="panel-meta" id="externalConfigurationMeta" hidden></div></div>
-								<button class="button primary compact" id="saveConfigurationButton" type="submit">Save Config</button>
+								<div class="button-row"><button class="button secondary compact" id="manageBotCredentialsButton" type="button" data-action="fleet-edit-credentials" hidden>Credentials</button><button class="button primary compact" id="saveConfigurationButton" type="submit">Save Config</button></div>
 							</div>
 
 							<div class="form-grid" id="hachiConfigurationFields">
@@ -649,13 +649,14 @@
 							</div>
 							<div class="fleet-list" id="fleetServerList">No servers loaded.</div>
 							<form class="fleet-form" id="fleetServerForm">
+								<input name="serverId" type="hidden">
 								<label class="field">Connection name<input name="name" required maxlength="80" placeholder="Production server"></label>
 								<label class="select-field">Connection<select name="type"><option value="ssh">Remote SSH</option><option value="local">Local</option></select></label>
 								<label class="field">Host<input name="host" placeholder="server.example.com"></label>
 								<label class="field">Username<input name="username" placeholder="botrunner"></label>
 								<label class="field">Port<input name="port" type="number" min="1" max="65535" value="22"></label>
 								<label class="field"><span>SSH key path</span><div class="input-row"><input name="sshKeyPath" spellcheck="false" placeholder="Choose a private key file" readonly data-action="browse-fleet-ssh-key"><button class="button secondary compact" type="button" data-action="browse-fleet-ssh-key">Choose Key</button></div></label>
-								<div class="fleet-form-wide form-actions"><button class="button primary" type="button" data-action="add-fleet-server">Add Server</button></div>
+								<div class="fleet-form-wide form-actions"><button class="button secondary" id="cancelFleetServerEditButton" type="button" data-action="cancel-fleet-server-edit" hidden>Cancel</button><button class="button primary" id="saveFleetServerButton" type="button" data-action="add-fleet-server">Add Server</button></div>
 							</form>
 						</div>
 						<div class="panel">
