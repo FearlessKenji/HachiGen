@@ -900,6 +900,7 @@ function registerIpc() {
 	ipcMain.handle("manager:remove-fleet-server", (_event, serverId) => manager.removeFleetServer(serverId));
 	ipcMain.handle("manager:add-fleet-deployment", (_event, values) => manager.addFleetDeployment(values));
 	ipcMain.handle("manager:set-active-fleet-deployment", (_event, deploymentId) => manager.setActiveFleetDeployment(deploymentId));
+	ipcMain.handle("manager:reapprove-fleet-deployment", (_event, deploymentId) => manager.reapproveFleetDeployment(deploymentId));
 	ipcMain.handle("manager:remove-fleet-deployment", (_event, deploymentId) => manager.removeFleetDeployment(deploymentId));
 	ipcMain.handle("manager:install-external-bot-definition", (_event, jsonText) => manager.installExternalBotDefinition(jsonText));
 	ipcMain.handle("manager:preview-external-bot-definition", (_event, jsonText) => manager.previewExternalBotDefinition(jsonText));

@@ -1027,6 +1027,7 @@ function renderSelectedBotContext() {
 	if ($("#manageBotCredentialsButton")) {
 		const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
 		$("#manageBotCredentialsButton").hidden = !external || !canManageFleetCredentials(deployment, definition);
+		$("#reapproveBotProfileButton").hidden = !external || deployment.definitionFingerprint === definition?.fingerprint;
 	}
 	if ($("#dashboardGuideButton")) $("#dashboardGuideButton").hidden = external;
 	for (const selector of ["#externalUpdatesPanel", "#externalDatabasePanel"]) {
@@ -4537,6 +4538,32 @@ function handleAction(event) {
 
 	if (action === "fleet-edit-credentials") {
 		showFleetCredentialModal(button.dataset.itemId || selectedBotId);
+		return;
+	}
+
+	if (action === "reapprove-fleet-deployment") {
+		const deployment = selectedFleetDeployment();
+		const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
+		const capabilities = Object.entries(definition?.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name);
+		showConfirmModal({
+			confirmText: "Validate & Approve",
+			details: [
+				`Repository: ${definition?.repository?.url || "Not declared"}`,
+				`Branch: ${deployment?.repositoryBranch || definition?.repository?.branch || "Not declared"}`,
+				`Requested capabilities: ${capabilities.join(", ") || "Status only"}`,
+			],
+			meta: "Changed Bot Profile permission review",
+			summary: "HachiGen will validate this installation before replacing its previous capability snapshot.",
+			title: `Reapprove ${deployment?.name || "bot"}?`,
+			variant: "warning",
+		}).then(confirmed => {
+			if (!confirmed) return;
+			runAction("Reapprove bot profile", async () => {
+				const fleet = await api.reapproveFleetDeployment(deployment.id);
+				renderFleet(fleet);
+				return { message: "Bot Profile validated and reapproved." };
+			});
+		});
 		return;
 	}
 

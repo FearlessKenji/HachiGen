@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- If an additional-bot update fails, HachiGen now reports each recovery result separately while restoring the previous code, dependencies, database, and previously running process where applicable.
+- When an additional bot's Profile changes, its Bot page now offers Review Profile. HachiGen shows the requested permissions and revalidates the repository before enabling the changed profile.
 - Additional-bot Configuration now discovers YAML and YML files as well as `.env` and JSON. Bot Profiles can safely declare other configuration filenames, and YAML comments and formatting are retained when values are changed.
 - Fleet bot rows now stay focused on inventory with Select, Health, and Remove. Start, stop, restart, logs, updates, commands, credentials, and database tools remain available through Dashboard and the selected bot's normal tabs.
 - Saved Fleet connections can now be edited safely, including changing an SSH private key without removing attached bot installations.

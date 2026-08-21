@@ -6,6 +6,7 @@ Notable changes to HachiGen are documented here.
 
 ### Added
 
+- Added an explicit changed-profile reapproval workflow that shows requested capabilities, revalidates the selected installation, and only then refreshes its immutable permission snapshot.
 - Added comment-preserving YAML configuration management and reviewed per-profile configuration file manifests, with safe relative-path validation and the same sensitive-field protections used for `.env` and JSON.
 - Added the rollback-safe fleet registry foundation for multiple servers and bot deployments, with automatic migration of the current Hachi target.
 - Added a native Hachi bot definition and validated external JSON bot profiles for optional bots; Hachi remains the only bundled bot type.
@@ -21,6 +22,7 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
+- Expanded failed Fleet update recovery to restore the prior commit, reinstall its dependencies, restore the encrypted database backup, and restart a previously online runtime; every recovery step is logged and included in the returned error.
 - Reduced Fleet bot inventory rows to Select, Health, and Remove. Runtime, logs, updates, command deployment, credentials, and database operations remain in Dashboard and the selected bot's shared views.
 - Removed the separate additional-bot setup composition. The selected bot now uses Hachi's native Install, validation, cron reference, Runtime Location, Remote Connection controls, connection testing, and Connection Preview directly; only Configuration swaps to repository-derived fields.
 - Additional-bot remote saves now resolve or create the server-level Fleet connection from the shared Hachi remote form, then attach the bot installation without creating another credential store.

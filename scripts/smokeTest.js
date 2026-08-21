@@ -320,6 +320,20 @@ function validateRendererAndMenuWiring() {
 		"Live checked-out branches should override saved installation branch snapshots.",
 	);
 	assert(
+		preloadSource.includes("reapproveFleetDeployment") &&
+			mainSource.includes("manager:reapprove-fleet-deployment") &&
+			managerSource.includes("async reapproveFleetDeployment(deploymentId)") &&
+			indexSource.includes('id="reapproveBotProfileButton"'),
+		"Changed external profiles should have an explicit validated reapproval workflow.",
+	);
+	assert(
+		managerSource.includes('await attempt("restore code"') &&
+			managerSource.includes('await attempt("restore dependencies"') &&
+			managerSource.includes('await attempt("restore database"') &&
+			managerSource.includes('await attempt("restart previous runtime"'),
+		"Fleet update rollback should report code, dependency, database, and runtime recovery separately.",
+	);
+	assert(
 		managerSource.includes("async readRemoteConfigurationFiles()") &&
 			managerSource.includes("const files = await this.readRemoteConfigurationFiles();") &&
 			!managerSource.includes("const [blankEnv, env, blankConfigText, configText] = await Promise.all(["),

@@ -2624,6 +2624,24 @@ class HachiManager {
 		return this.getFleetState();
 	}
 
+	async reapproveFleetDeployment(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		if (context.definition.source !== "external") {
+			throw new Error("Native Hachi does not require profile reapproval.");
+		}
+		const verified = await this.verifyFleetDeploymentCandidate(context);
+		// Approval snapshots prevent a profile file from silently gaining powers.
+		// Reapproval refreshes them only after the installation is revalidated.
+		context.deployment.definitionFingerprint = context.definition.fingerprint;
+		context.deployment.approvedCapabilities = Object.fromEntries(
+			Object.entries(context.definition.capabilities || {}).filter(([, enabled]) => enabled),
+		);
+		context.deployment.repositoryBranch = verified.branch;
+		this.saveFleetRegistry();
+		this.log(`Fleet deployment profile reapproved: ${context.deployment.name}.`, { area: "fleet", deploymentId });
+		return this.getFleetState();
+	}
+
 	removeFleetDeployment(deploymentId) {
 		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
 		if (!deployment) {
@@ -2835,6 +2853,7 @@ class HachiManager {
 		if (!before.updateAvailable) {
 			return { ...before, ok: true, message: "Deployment is already current." };
 		}
+		const runtimeBefore = context.definition.capabilities?.pm2 ? await this.getFleetDeploymentStatus(deploymentId) : null;
 		let databaseBackup = null;
 		if (context.definition.paths?.database) {
 			this.assertFleetCapability(context, "backups");
@@ -2856,13 +2875,31 @@ class HachiManager {
 			this.log(`Fleet deployment updated: ${context.deployment.name}.`, { area: "fleet-update", deploymentId, from: before.head, to: after.head });
 			return { ...after, backupId: databaseBackup?.backupId || null, ok: true, message: "Deployment updated and validated." };
 		} catch (error) {
+			const rollback = [];
+			const attempt = async (label, operation) => {
+				try {
+					const result = await operation();
+					const ok = result?.code === undefined || result.code === 0;
+					rollback.push({ label, ok, detail: ok ? "completed" : (result.stderr || `exit ${result.code}`) });
+				} catch (rollbackError) {
+					rollback.push({ label, ok: false, detail: readableCause(rollbackError) });
+				}
+			};
 			// The worktree was verified clean before updating, so returning to the
-			// recorded commit cannot overwrite user changes created before this run.
-			await this.runFleetGit(context, ["reset", "--hard", before.head], { allowFailure: true, timeoutMs: 300000 });
-			if (databaseBackup) {
-				await this.restoreFleetDatabaseBackup(deploymentId, databaseBackup.backupId);
+			// recorded commit cannot overwrite changes that existed before this run.
+			await attempt("restore code", () => this.runFleetGit(context, ["reset", "--hard", before.head], { allowFailure: true, timeoutMs: 300000 }));
+			if (context.definition.commands?.install) {
+				await attempt("restore dependencies", () => this.runFleetDefinitionCommand(deploymentId, "install", { timeoutMs: 600000 }));
 			}
-			throw new Error(`${error.message} Code and database rollback attempted.`);
+			if (databaseBackup) {
+				await attempt("restore database", () => this.restoreFleetDatabaseBackup(deploymentId, databaseBackup.backupId));
+			}
+			if (runtimeBefore?.status === "online") {
+				await attempt("restart previous runtime", () => this.controlFleetDeployment(deploymentId, "start"));
+			}
+			this.log(`Fleet update rollback finished for ${context.deployment.name}.`, { area: "fleet-update", deploymentId, rollback });
+			const summary = rollback.map(step => `${step.label}: ${step.ok ? "ok" : `failed (${step.detail})`}`).join("; ");
+			throw new Error(`${error.message} Rollback results: ${summary || "no recovery steps were available"}.`);
 		}
 	}
 
