@@ -1072,6 +1072,7 @@ function registerIpc() {
 	// Database viewer and maintenance channels. The renderer controls what the
 	// user sees and confirms; HachiManager owns actual file/database mutations.
 	ipcMain.handle("manager:read-database-table", (_event, tableName, sort) => manager.readDatabaseTable(tableName, sort));
+	ipcMain.handle("manager:read-fleet-database-table", (_event, deploymentId, tableName, sort) => manager.readFleetDatabaseTable(deploymentId, tableName, sort));
 	ipcMain.handle("manager:migrate-database", () => manager.migrateDatabase({ force: false }));
 	ipcMain.handle("manager:force-migrate-database", () => manager.migrateDatabase({ force: true }));
 	ipcMain.handle("manager:review-database-sanitation", () => manager.reviewDatabaseSanitation());

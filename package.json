@@ -12,7 +12,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "check": "node --check main.js && node --check preload.js && node --check src/shell.js && node --check src/hachigenLogger.js && node --check src/configuration.js && node --check src/botRegistry.js && node --check src/manager.js && node --check src/database-worker.js && node --check renderer/app.js",
+    "check": "node --check main.js && node --check preload.js && node --check src/shell.js && node --check src/hachigenLogger.js && node --check src/configuration.js && node --check src/botRegistry.js && node --check src/manager.js && node --check src/database-worker.js && node --check src/sqlite-viewer-worker.js && node --check renderer/app.js",
     "dist": "electron-builder --win --publish=never && node scripts/copyRootInstaller.js",
     "dist:installer": "electron-builder --win nsis --publish=never && node scripts/copyRootInstaller.js",
     "dist:portable": "electron-builder --win portable --publish=never",

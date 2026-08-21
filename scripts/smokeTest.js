@@ -192,7 +192,7 @@ function validateProjectFiles() {
 		"config/eslint.config.js", "docs/bot-definitions.md", "docs/patch-notes.md", "icon.ico", "main.js", "package-lock.json",
 		"package.json", "preload.js", "renderer/app.js", "renderer/assets/KenjiBotProfile.svg",
 		"renderer/index.html", "renderer/styles.css", "scripts/copyRootInstaller.js", "scripts/packagedUiSmoke.js", "scripts/smokeTest.js",
-		"src/botRegistry.js", "src/configuration.js", "src/database-worker.js", "src/hachigenLogger.js", "src/manager.js", "src/shell.js",
+		"src/botRegistry.js", "src/configuration.js", "src/database-worker.js", "src/hachigenLogger.js", "src/manager.js", "src/shell.js", "src/sqlite-viewer-worker.js",
 	];
 	for (const file of requiredFiles) {
 		assert(fs.existsSync(resolveProject(file)), `Missing required project file: ${file}.`);
@@ -425,9 +425,14 @@ function validateRendererAndMenuWiring() {
 		!databaseSection.includes('id="externalDatabasePanel"') &&
 			databaseSection.includes('id="hachiDatabaseActions"') &&
 			databaseSection.includes('id="fleetDatabaseActions"') &&
-			databaseSection.includes('id="fleetDatabaseMaintenancePanel"') &&
+			databaseSection.includes('id="fleetDatabaseMaintenanceControls"') &&
 			rendererSource.includes("function renderExternalDatabase(overview)"),
 		"Hachi and additional bots should share the Database page composition with capability-aware actions.",
+	);
+	assert(
+		rendererSource.includes("api.readFleetDatabaseTable(selectedBotId, selectedTable, sort)") &&
+			!rendererSource.includes('"#hachiDatabaseViewerPanel", "#hachiDatabaseReviewPanel"'),
+		"Additional bots should use the generic read-only database viewer while retaining the shared sanitation panel.",
 	);
 	assert(
 		rendererSource.includes("function showDatabaseBackupTransferModal(") &&
@@ -987,6 +992,26 @@ function validateDatabaseWorkerStaging() {
 	}
 }
 
+function validateGenericSqliteViewerWorker() {
+	const { DatabaseSync } = require("node:sqlite");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-sqlite-viewer-"));
+	try {
+		const databasePath = path.join(tempDir, "bot.sqlite");
+		const database = new DatabaseSync(databasePath);
+		database.exec("CREATE TABLE cards (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO cards (name) VALUES ('Smoke');");
+		database.close();
+		const output = childProcess.execFileSync(
+			process.execPath,
+			[resolveProject("src", "sqlite-viewer-worker.js")],
+			{ cwd: tempDir, input: JSON.stringify({ dbPath: "bot.sqlite", root: ".", table: "cards" }), encoding: "utf8" },
+		);
+		const result = JSON.parse(output);
+		assert(result.ok && result.selectedTable === "cards" && result.rows[0]?.name === "Smoke", "Generic SQLite viewer did not return the selected bot table.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
+	}
+}
+
 async function validateLoggingAndQuietState() {
 	const { HachiManager } = requireFresh("src", "manager.js");
 	const { dateFolderName, getDefaultHachiGenUserDataPath } = requireFresh("src", "hachigenLogger.js");
@@ -1054,7 +1079,7 @@ async function validateLoggingAndQuietState() {
 			"Hidden Git command was not persisted with uiVisible=false.",
 		);
 	} finally {
-		fs.rmSync(tempDir, { force: true, recursive: true });
+		fs.rmSync(tempDir, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
 	}
 }
 
@@ -1182,11 +1207,17 @@ async function validateFleetCredentialAndBackupSecurity() {
 		assert(!JSON.stringify(manager.getFleetState()).includes("very-secret-token"), "Renderer fleet state exposed a Discord token.");
 		manager.saveTestingProfile({ name: "Runtime Test", TOKEN: "runtime-test-token", clientId: "456" });
 		const testingStart = await manager.startTestingBot(deployment.id, "runtime-test");
-		await new Promise(resolve => {
-			setTimeout(resolve, 100);
-		});
-		const testingRun = manager.getTestingRunState().find(item => item.deploymentId === deployment.id);
-		assert(testingStart.runs[0].status === "running" && testingRun.output.includes("[REDACTED]") && !testingRun.output.includes("runtime-test-token"), "Testing process did not start with redacted output.");
+		let testingRun;
+		for (let attempt = 0; attempt < 20; attempt += 1) {
+			testingRun = manager.getTestingRunState().find(item => item.deploymentId === deployment.id);
+			if (testingRun?.output.includes("[REDACTED]")) {
+				break;
+			}
+			await new Promise(resolve => {
+				setTimeout(resolve, 50);
+			});
+		}
+		assert(testingStart.runs[0].status === "running" && testingRun?.output.includes("[REDACTED]") && !testingRun.output.includes("runtime-test-token"), "Testing process did not start with redacted output.");
 		manager.stopTestingBot(deployment.id);
 		const audit = await manager.auditFleetDeploymentSecurity(deployment.id);
 		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");
@@ -1198,7 +1229,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 	} finally {
 		// Ensure a failed assertion cannot leave the smoke-test child alive.
 		manager?.stopAllTestingBots();
-		fs.rmSync(tempDir, { force: true, recursive: true });
+		fs.rmSync(tempDir, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
 	}
 }
 
@@ -1276,6 +1307,7 @@ async function main() {
 	await test("HachiGen update downloads are verified before install", validateHachiGenUpdateVerification);
 	await test("shell wrapper resolves allowed commands safely", validateShellWrapperHardening);
 	await test("database worker stages from standalone manager source", validateDatabaseWorkerStaging);
+	await test("generic SQLite viewer reads additional bot databases", validateGenericSqliteViewerWorker);
 	await test("logs redact secrets and hide Git plumbing", validateLoggingAndQuietState);
 	await test("update checks are deduplicated", validateUpdateCheckDeduplication);
 	await test("fleet credentials and database backups stay encrypted", validateFleetCredentialAndBackupSecurity);

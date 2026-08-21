@@ -971,8 +971,11 @@ function showView(viewName) {
 		refreshLogs();
 	}
 
-	if (activeView === "database" && state?.database?.exists && !databaseView) {
-		loadDatabaseViewer();
+	if (activeView === "database" && !databaseView) {
+		const external = selectedBotId !== HACHI_BOT_ID;
+		if (external || state?.database?.exists) {
+			loadDatabaseViewer();
+		}
 	}
 
 	if (activeView === "diagnostics" && selectedBotId === HACHI_BOT_ID) {
@@ -1060,12 +1063,13 @@ function renderSelectedBotContext() {
 		const element = $(selector);
 		if (element) element.hidden = !external;
 	}
-	for (const selector of ["#hachiDatabaseActions", "#hachiProtectionActions", "#hachiDatabaseViewerPanel", "#hachiDatabaseReviewPanel"]) {
+	for (const selector of ["#hachiDatabaseActions", "#hachiProtectionActions"]) {
 		if ($(selector)) $(selector).hidden = external;
 	}
-	for (const selector of ["#fleetDatabaseActions", "#fleetProtectionActions", "#fleetDatabaseMaintenancePanel"]) {
+	for (const selector of ["#fleetDatabaseActions", "#fleetProtectionActions", "#fleetDatabaseMaintenanceControls"]) {
 		if ($(selector)) $(selector).hidden = !external;
 	}
+	if ($("#fleetLogMaintenancePanel")) $("#fleetLogMaintenancePanel").hidden = !external;
 	if (external) {
 		setInputValue("#installPathInput", deployment.installPath);
 		setText("#externalUpdatesName", `${deployment.name} updates`);
@@ -1173,6 +1177,8 @@ function renderExternalDatabase(overview) {
 	setText("#databaseProtectionRuntime", overview?.health?.runtime?.status || "Unknown");
 	setText("#databaseProtectionChecked", formatDateTime(overview?.security?.checkedAt));
 	setText("#databaseProtectionMessage", overview?.security?.error || "");
+	setText("#databaseSanitizeSummary", "Sanitation is not supported by this Bot Profile.");
+	renderSimpleList("#databaseSanitizeList", [], "A bot-specific sanitation adapter is required.", () => document.createElement("li"));
 }
 
 function renderExternalDatabaseBackups(backups = []) {
@@ -3366,13 +3372,18 @@ async function loadDatabaseViewer(tableName = "", sort = databaseSort) {
 	renderDatabaseViewer(databaseView);
 
 	try {
-		const result = await api.readDatabaseTable(selectedTable, sort);
+		const external = selectedBotId !== HACHI_BOT_ID;
+		const result = external ?
+			await api.readFleetDatabaseTable(selectedBotId, selectedTable, sort) :
+			await api.readDatabaseTable(selectedTable, sort);
 		setDatabaseSort({
 			column: result.sortColumn || "",
 			direction: result.sortDirection || "",
 		});
 		setDatabaseView(result);
-		renderDatabase(result.database);
+		if (!external) {
+			renderDatabase(result.database);
+		}
 		renderDatabaseViewer(result);
 		return result;
 	} catch (error) {
@@ -3390,7 +3401,7 @@ function refreshCurrentDatabaseViewer() {
 	// The viewer caches the last table payload for fast redraws. After database
 	// maintenance actions, reload that payload so stale IDs/rows are not shown as
 	// if they still exist.
-	if (!state?.database?.exists) {
+	if (selectedBotId === HACHI_BOT_ID && !state?.database?.exists) {
 		databaseView = null;
 		renderDatabaseViewer(null);
 		return Promise.resolve(null);
@@ -4677,6 +4688,7 @@ function handleAction(event) {
 			else if (action === "encrypt-fleet-database") result = await api.encryptFleetDatabase(deploymentId);
 			else result = await api.restoreFleetDatabaseBackup(deploymentId, $("#fleetBackupIdInput").value);
 			setText("#fleetSecurityOutput", JSON.stringify(result, null, 2));
+			setText("#fleetLogMaintenanceOutput", JSON.stringify(result, null, 2));
 			if (result.backupId) $("#fleetBackupIdInput").value = result.backupId;
 			return { message: result.message || "Security operation completed." };
 		};

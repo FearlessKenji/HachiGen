@@ -226,6 +226,7 @@ const SQLITE_HEADER = Buffer.from([
 // The database worker is copied to Electron's user-data folder before running.
 // External Node cannot reliably execute files inside a packaged app.asar.
 const DATABASE_WORKER_FILE = "database-worker.js";
+const SQLITE_VIEWER_WORKER_FILE = "sqlite-viewer-worker.js";
 
 // Check whether a file or folder exists. This tiny wrapper keeps the rest of
 // the file readable when many validation steps ask "does this path exist?".
@@ -2956,6 +2957,56 @@ class HachiManager {
 			{ allowFailure: true, log: false, timeoutMs: 30000 },
 		);
 		return { deploymentId, logs: redactHachiGenLogText(`${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`), ok: result.code === 0 };
+	}
+
+	async readFleetDatabaseTable(deploymentId, tableName = "", sort = {}) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		if (context.deployment.definitionFingerprint !== context.definition.fingerprint) {
+			throw new Error(`${context.definition.displayName} definition changed after approval. Review and reapprove this deployment before reading its database.`);
+		}
+		const databasePath = context.definition.paths?.database;
+		if (!databasePath) {
+			throw new Error("This Bot Profile does not declare a database.");
+		}
+		const request = { dbPath: databasePath, root: ".", sort, table: tableName };
+		const workerSource = fs.readFileSync(path.join(this.managerRoot, "src", SQLITE_VIEWER_WORKER_FILE), "utf8");
+		let result;
+		if (context.server.connection.type === "ssh") {
+			// Keep the generic viewer outside the managed bot repository and remove it
+			// after every attempt so read-only inspection leaves no support files behind.
+			const workerPath = `/tmp/hachigen-sqlite-viewer-${crypto.randomUUID()}.js`;
+			try {
+				await this.runFleetRemoteCommand(
+					context.server,
+					`cat > ${quotePosix(workerPath)}`,
+					{ input: workerSource, log: false, timeoutMs: 30000 },
+				);
+				result = await this.runFleetRemoteCommand(
+					context.server,
+					`cd ${quoteRemotePath(context.deployment.installPath)} && node ${quotePosix(workerPath)}`,
+					{ allowFailure: true, input: JSON.stringify(request), log: false, timeoutMs: 120000 },
+				);
+			} finally {
+				await this.runFleetRemoteCommand(context.server, `rm -f ${quotePosix(workerPath)}`, { allowFailure: true, log: false, timeoutMs: 30000 });
+			}
+		} else {
+			const absoluteDatabasePath = path.join(context.deployment.installPath, databasePath);
+			if (!isPathInside(context.deployment.installPath, absoluteDatabasePath) || !fileExists(absoluteDatabasePath)) {
+				throw new Error("The declared database is missing or outside the deployment root.");
+			}
+			result = await run("node", [path.join(this.managerRoot, "src", SQLITE_VIEWER_WORKER_FILE)], {
+				allowFailure: true,
+				cwd: context.deployment.installPath,
+				input: JSON.stringify(request),
+				timeoutMs: 120000,
+			});
+		}
+		const parsed = parseJsonText((result.stdout || "").trim(), null);
+		if (!parsed?.ok) {
+			throw new Error(parsed?.error || result.stderr || "Database viewer did not return valid data.");
+		}
+		this.log(`Fleet database viewer loaded ${parsed.selectedTable || "no table"}.`, { area: "fleet", deploymentId });
+		return parsed;
 	}
 
 	async checkFleetDeploymentHealth(deploymentId) {

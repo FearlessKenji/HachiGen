@@ -109,6 +109,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 
 	// Database viewing, maintenance, encryption, and backup actions.
 	readDatabaseTable: (tableName, sort) => invoke("manager:read-database-table", tableName, sort),
+	readFleetDatabaseTable: (deploymentId, tableName, sort) => invoke("manager:read-fleet-database-table", deploymentId, tableName, sort),
 	migrateDatabase: () => invoke("manager:migrate-database"),
 	forceMigrateDatabase: () => invoke("manager:force-migrate-database"),
 	backupDatabase: options => invoke("manager:backup-database", options),
