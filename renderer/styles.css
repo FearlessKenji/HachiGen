@@ -236,23 +236,6 @@ h2 {
 	height: 38px;
 }
 
-/* Updates and Database retain capability-specific bodies. Setup itself is one
-   shared native layout whose data changes with the global bot selection. */
-.external-bot-selected [data-view-panel="updates"] > :not(.external-bot-summary) {
-	display: none;
-}
-
-.external-bot-summary[hidden] {
-	display: none;
-}
-
-/* External bot pages contain nested layout grids. Give their major sections
-   one gap here so panel margins cannot compound at grid boundaries. */
-.external-bot-summary {
-	display: grid;
-	gap: var(--section-gap);
-}
-
 #externalConfigurationMeta:empty {
 	display: none;
 }

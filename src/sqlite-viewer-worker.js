@@ -18,8 +18,22 @@ function jsonValue(value) {
 	return value;
 }
 
-function main() {
-	const request = JSON.parse(fs.readFileSync(0, "utf8") || "{}");
+function readRequest() {
+	return new Promise((resolve, reject) => {
+		let input = "";
+		process.stdin.setEncoding("utf8");
+		process.stdin.on("data", chunk => {
+			input += chunk;
+		});
+		process.stdin.on("end", () => resolve(JSON.parse(input || "{}")));
+		process.stdin.on("error", reject);
+	});
+}
+
+async function main() {
+	// SSH can expose stdin as a temporarily non-blocking handle on Windows.
+	// Stream it asynchronously instead of using readFileSync(0), which can throw EAGAIN.
+	const request = await readRequest();
 	const root = path.resolve(request.root || ".");
 	const dbPath = path.resolve(root, request.dbPath || "");
 	const relative = path.relative(root, dbPath);
@@ -57,8 +71,6 @@ function main() {
 	}
 }
 
-try {
-	main();
-} catch (error) {
+main().catch(error => {
 	process.stdout.write(JSON.stringify({ error: error.message, ok: false }));
-}
+});

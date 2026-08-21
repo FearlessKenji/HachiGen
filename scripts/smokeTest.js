@@ -424,10 +424,16 @@ function validateRendererAndMenuWiring() {
 	assert(
 		!databaseSection.includes('id="externalDatabasePanel"') &&
 			databaseSection.includes('id="hachiDatabaseActions"') &&
-			databaseSection.includes('id="fleetDatabaseActions"') &&
-			databaseSection.includes('id="fleetDatabaseMaintenanceControls"') &&
+			!databaseSection.includes('id="fleetDatabaseActions"') &&
+			!databaseSection.includes('id="fleetDatabaseMaintenanceControls"') &&
 			rendererSource.includes("function renderExternalDatabase(overview)"),
-		"Hachi and additional bots should share the Database page composition with capability-aware actions.",
+		"Hachi and additional bots should use one Database composition and one shared action row.",
+	);
+	assert(
+		!rendererSource.includes("externalUpdatesOutput") &&
+			!indexSource.includes('id="externalUpdatesPanel"') &&
+			rendererSource.includes("function renderExternalUpdates(overview)"),
+		"Additional bots should populate the shared Updates view instead of rendering a parallel panel.",
 	);
 	assert(
 		rendererSource.includes("api.readFleetDatabaseTable(selectedBotId, selectedTable, sort)") &&

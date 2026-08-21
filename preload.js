@@ -103,7 +103,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	getLogs: () => invoke("manager:get-logs"),
 	getPm2Status: () => invoke("manager:get-pm2-status"),
 	recordRendererEvent: payload => invoke("manager:record-renderer-event", payload),
-	copyDiagnosticInfo: () => invoke("manager:copy-diagnostic-info"),
+	copyDiagnosticInfo: deploymentId => invoke("manager:copy-diagnostic-info", deploymentId),
 	exportSupportBundle: () => invoke("manager:export-support-bundle"),
 	openHachiGenLogFolder: () => invoke("manager:open-hachigen-log-folder"),
 

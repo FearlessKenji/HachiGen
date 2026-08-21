@@ -22,6 +22,7 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
+- Reused the native Hachi Dashboard, Setup, Updates, Database, Logs, Testing, and Diagnostics compositions for selected additional bots instead of maintaining parallel Fleet panels and action rows; adapters now populate the shared controls and disable only unsupported capabilities.
 - Reduced Fleet deployment rows to Select and Remove and removed the redundant Fleet Activity panel; operational status and controls remain on Dashboard and the selected bot's shared views.
 - Replaced the alternate external-bot Database page with Hachi's shared Database composition. Capability-aware backup, restore, verification, encryption, protection status, current database, backup history, retention controls, and a generic read-only SQLite viewer now render in the same sections; unsupported sanitation is identified explicitly.
 - Fixed additional-bot database viewing incorrectly invoking Hachi's remote database worker, which could surface an unrelated `EAGAIN` read failure.
@@ -62,6 +63,8 @@ Notable changes to HachiGen are documented here.
 - Updated vulnerable transitive build dependencies to patched releases, clearing npm audit findings for `brace-expansion`, `fast-uri`, `tar`, and `undici`.
 
 ### Fixed
+
+- Fixed the generic remote SQLite viewer synchronously reading SSH stdin, which could still surface `EAGAIN: resource temporarily unavailable`.
 
 - Allowed previously approved read-only PM2 log retrieval while a changed Bot Profile awaits reapproval, while continuing to block changed-profile commands and mutations. Database audits now skip changed-profile verification adapters instead of executing them.
 - Added shared icons to Fleet's generated Select, Health, Edit, and Remove buttons and filled the icon map for the remaining Fleet, Testing, database, and profile actions.

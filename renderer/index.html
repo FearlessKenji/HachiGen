@@ -407,10 +407,6 @@
 
 				<!-- Updates: version summaries plus saved-change recovery when needed. -->
 				<section class="view" data-view-panel="updates">
-					<div class="panel external-bot-summary" id="externalUpdatesPanel" hidden>
-						<div class="split-panel"><div><h2 id="externalUpdatesName">Bot updates</h2><div class="panel-meta">Repository status and transactional updates</div></div><div class="button-row"><button class="button info" type="button" data-action="check-all-updates">Check Updates</button><button class="button primary" type="button" data-action="update">Update</button><button class="button secondary" type="button" data-action="deploy">Deploy Commands</button></div></div>
-						<pre class="output compact-output" id="externalUpdatesOutput">No update check has run yet.</pre>
-					</div>
 					<div class="panel split-panel">
 						<div>
 							<h2>Updates</h2>
@@ -425,10 +421,10 @@
 						<div class="panel update-version-panel">
 							<div class="split-panel">
 								<div>
-									<h2>Hachi</h2>
+									<h2 id="selectedBotUpdateName">Hachi</h2>
 									<div class="panel-meta" id="updatesMeta">Not checked</div>
 								</div>
-								<button class="button primary" type="button" data-action="update-hachi" id="hachiUpdateButton" disabled>Update Hachi</button>
+								<div class="button-row"><button class="button primary" type="button" data-action="update-hachi" id="hachiUpdateButton" disabled>Update Hachi</button><button class="button secondary" type="button" data-action="deploy" id="selectedBotDeployButton">Deploy Commands</button></div>
 							</div>
 							<dl class="detail-list">
 								<div>
@@ -502,9 +498,8 @@
 							<button class="button info" type="button" data-action="backup-database">Backup / Transfer</button>
 							<button class="button warning" type="button" data-action="migrate-database" id="migrateDatabaseButton" disabled>Migrate</button>
 							<button class="button danger" type="button" data-action="force-migrate-database" id="forceMigrateDatabaseButton" disabled>Force Migrate</button>
-							<button class="button primary" type="button" data-action="sanitize-database">Sanitize</button>
+							<button class="button primary" type="button" data-action="sanitize-database" id="sanitizeDatabaseButton">Sanitize</button>
 						</div>
-						<div class="button-row" id="fleetDatabaseActions" hidden><button class="button secondary" type="button" data-action="backup-fleet-database" id="fleetBackupButton">Backup</button><button class="button secondary" type="button" data-action="restore-fleet-database" id="fleetRestoreButton">Restore</button></div>
 					</div>
 
 					<div class="panel database-protection-panel">
@@ -517,9 +512,8 @@
 								<button class="button primary" type="button" data-action="generate-database-key" id="databaseKeyActionButton">Generate Key</button>
 								<button class="button secondary" type="button" data-action="export-database-key-backup" id="exportDatabaseKeyBackupButton">Export Key Backup</button>
 								<button class="button secondary" type="button" data-action="rotate-database-backups" id="rotateDatabaseBackupsButton">Rotate Backups</button>
-								<button class="button info" type="button" data-action="verify-database-protection">Verify</button>
+								<button class="button info" type="button" data-action="verify-database-protection" id="verifyDatabaseProtectionButton">Verify</button>
 							</div>
-							<div class="button-row" id="fleetProtectionActions" hidden><button class="button info" type="button" data-action="audit-fleet-security">Verify</button><button class="button primary" type="button" data-action="encrypt-fleet-database" id="fleetEncryptButton">Encrypt Database</button></div>
 						</div>
 						<div class="database-protection-status">
 							<span class="dot" id="databaseProtectionDot"></span>
@@ -590,15 +584,6 @@
 							<h2>Backups</h2>
 							<div class="update-summary" id="databaseBackupSummary">No backups loaded.</div>
 							<ul class="update-list" id="databaseBackupList"></ul>
-							<div id="fleetDatabaseMaintenanceControls" hidden>
-								<div class="fleet-form external-database-controls">
-									<label class="field fleet-form-wide">Backup to restore<input id="fleetBackupIdInput" spellcheck="false" placeholder="Select a backup below"></label>
-									<label class="field">Backups to keep<input id="fleetBackupRetentionInput" type="number" min="1" max="365" value="14"></label>
-									<label class="field">Automatic backup interval (hours)<input id="fleetAutoBackupHoursInput" type="number" min="0" max="720" value="0"></label>
-									<div class="fleet-form-wide form-actions button-row wrap"><button class="button primary" type="button" data-action="save-fleet-policies">Save Backup Policy</button><button class="button secondary" type="button" data-action="list-fleet-backups">Refresh Backups</button><button class="button secondary" type="button" data-action="prune-fleet-backups" id="fleetPruneBackupsButton">Apply Backup Retention</button></div>
-								</div>
-								<pre class="output compact-output" id="fleetSecurityOutput">Database activity will appear here.</pre>
-							</div>
 						</div>
 
 						<div class="panel database-viewer-panel" id="hachiDatabaseViewerPanel">

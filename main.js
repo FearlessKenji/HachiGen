@@ -171,7 +171,24 @@ async function exportHachiGenLogs() {
 	manager.log(`HachiGen logs exported to ${result.filePath}.`);
 }
 
-async function copyDiagnosticInfo() {
+async function copyDiagnosticInfo(deploymentId = "") {
+	if (deploymentId && manager) {
+		const overview = await manager.getFleetDeploymentOverview(deploymentId);
+		const lines = [
+			`HachiGen: ${managerPackage.version}`,
+			`Bot: ${overview.deployment?.name || deploymentId}`,
+			`Runtime target: ${overview.server?.type === "ssh" ? "remote" : "local"}`,
+			`Install path: ${overview.deployment?.installPath || "unknown"}`,
+			`Branch: ${overview.repository?.branch || "unknown"}`,
+			`Update target: ${overview.repository?.targetBranch || "unknown"}`,
+			`Project found: ${overview.health?.installFound === undefined ? "unknown" : overview.health.installFound}`,
+			`PM2: ${overview.health?.runtime?.status || "unknown"}`,
+			`Database: ${overview.security?.database?.status || "unknown"}`,
+		].join("\n");
+		clipboard.writeText(lines);
+		manager.log(`Diagnostic info copied for ${overview.deployment?.name || deploymentId}.`, { area: "fleet", deploymentId });
+		return { ok: true, message: "Diagnostic info copied to clipboard." };
+	}
 	const diagnostics = manager ? await manager.getDiagnostics().catch(() => null) : null;
 	const lines = [
 		`HachiGen: ${diagnostics?.app?.hachiGenVersion || managerPackage.version}`,
@@ -1065,7 +1082,7 @@ function registerIpc() {
 	ipcMain.handle("manager:get-logs", () => manager.getLogs());
 	ipcMain.handle("manager:get-pm2-status", () => manager.getPm2Status());
 	ipcMain.handle("manager:record-renderer-event", (_event, payload) => manager.recordRendererEvent(payload));
-	ipcMain.handle("manager:copy-diagnostic-info", () => copyDiagnosticInfo());
+	ipcMain.handle("manager:copy-diagnostic-info", (_event, deploymentId) => copyDiagnosticInfo(deploymentId));
 	ipcMain.handle("manager:export-support-bundle", () => exportSupportBundle());
 	ipcMain.handle("manager:open-hachigen-log-folder", () => openHachiGenLogFolder());
 

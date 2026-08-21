@@ -159,7 +159,6 @@ const ACTION_ICONS = {
 	"audit-fleet-security": "shieldCheck",
 	"about-close": "square",
 	"backup-database": "archive",
-	"backup-fleet-database": "archive",
 	"database-transfer-backup": "archive",
 	"database-transfer-close": "square",
 	"database-transfer-pull": "download",
@@ -207,7 +206,6 @@ const ACTION_ICONS = {
 	"refresh-testing-run": "refresh",
 	restart: "restore",
 	"restore-database": "restore",
-	"restore-fleet-database": "restore",
 	"restore-stash": "restore",
 	"reapprove-fleet-deployment": "shieldCheck",
 	"remove-bot-definition": "trash",
@@ -318,6 +316,7 @@ let fleetState = null;
 let fleetOverviewRequestId = 0;
 let selectedBotId = window.localStorage.getItem(SELECTED_BOT_KEY) || HACHI_BOT_ID;
 let externalConfiguration = null;
+let fleetBackupState = [];
 let testingProfiles = [];
 let selectedTestingProfileId = null;
 let testingRuns = [];
@@ -1059,20 +1058,11 @@ function renderSelectedBotContext() {
 		$("#reapproveBotProfileButton").hidden = !external || deployment.definitionFingerprint === definition?.fingerprint;
 	}
 	if ($("#dashboardGuideButton")) $("#dashboardGuideButton").hidden = external;
-	for (const selector of ["#externalUpdatesPanel"]) {
-		const element = $(selector);
-		if (element) element.hidden = !external;
-	}
-	for (const selector of ["#hachiDatabaseActions", "#hachiProtectionActions"]) {
-		if ($(selector)) $(selector).hidden = external;
-	}
-	for (const selector of ["#fleetDatabaseActions", "#fleetProtectionActions", "#fleetDatabaseMaintenanceControls"]) {
-		if ($(selector)) $(selector).hidden = !external;
-	}
+	if ($("#hachiDatabaseActions")) $("#hachiDatabaseActions").hidden = false;
+	if ($("#hachiProtectionActions")) $("#hachiProtectionActions").hidden = false;
 	if ($("#fleetLogMaintenancePanel")) $("#fleetLogMaintenancePanel").hidden = !external;
 	if (external) {
 		setInputValue("#installPathInput", deployment.installPath);
-		setText("#externalUpdatesName", `${deployment.name} updates`);
 		renderExternalDatabaseBackups([]);
 		renderExternalRemote(deployment);
 		setDisabled("#openFolderButton", server?.connection?.type !== "local");
@@ -1122,6 +1112,7 @@ function renderExternalDashboard(overview) {
 		label: readableStatus(databaseStatus),
 	});
 	renderExternalDatabase(overview);
+	renderExternalUpdates(overview);
 	setText("#runtimeMeta", runtime?.message || `${overview.deployment?.pm2Name || "Bot"} process`);
 	setText("#dashboardTargetMode", overview.server?.type === "ssh" ? "Remote" : "Local");
 	setText("#dashboardTargetLocation", overview.deployment?.installPath || "Not set");
@@ -1150,6 +1141,21 @@ function renderExternalDashboard(overview) {
 		["Runtime profile", Boolean(overview.deployment?.capabilities?.pm2), overview.deployment?.capabilities?.pm2 ? "PM2 available" : "No PM2 adapter"],
 		["Testing", Boolean(selectedFleetDeployment()?.testCommandsAvailable), selectedFleetDeployment()?.testCommandsAvailable ? "Test command deployment available" : "Runtime testing only"],
 	]);
+}
+
+function renderExternalUpdates(overview) {
+	const repository = overview?.repository || {};
+	const name = selectedBotName();
+	setText("#combinedUpdatesMeta", `${name} and HachiGen update status`);
+	setText("#selectedBotUpdateName", name);
+	setText("#updatesMeta", repository.message || (repository.error ? "Unavailable" : "Repository status loaded"));
+	setText("#hachiCurrentVersion", repository.branch || "Unknown branch");
+	setText("#hachiAvailableVersion", repository.updateAvailable ? (repository.targetBranch || "Update available") : "Current");
+	setText("#updateMessage", repository.error || (repository.dirty ? "Local changes must be handled before updating." : repository.updateAvailable ? "An update is available." : "Repository is current."));
+	setElementText($("#hachiUpdateButton"), `Update ${name}`);
+	setDisabled("#hachiUpdateButton", Boolean(repository.error || repository.dirty || !repository.updateAvailable));
+	setDisabled("#selectedBotDeployButton", !overview?.deployment?.capabilities?.discordCommands);
+	if ($("#savedChangesPanel")) $("#savedChangesPanel").hidden = true;
 }
 
 function renderExternalDatabase(overview) {
@@ -1182,6 +1188,7 @@ function renderExternalDatabase(overview) {
 }
 
 function renderExternalDatabaseBackups(backups = []) {
+	fleetBackupState = backups;
 	setText("#databaseBackupSummary", backups.length ? `${pluralize(backups.length, "encrypted backup")} available.` : "No encrypted backups found.");
 	renderSimpleList("#databaseBackupList", backups, "No backups yet.", backup => {
 		const item = document.createElement("li");
@@ -1853,11 +1860,15 @@ function renderStashedChanges(updates) {
 function renderHachiUpdateSummary() {
 	const canUpdate = Boolean(state?.updates?.available);
 
+	setText("#selectedBotUpdateName", "Hachi");
+	setText("#combinedUpdatesMeta", "Hachi and HachiGen update status");
 	setText("#updatesMeta", updateMetaLabel(state?.updates, state?.repository));
 	setText("#hachiCurrentVersion", hachiCurrentVersionLabel());
 	setText("#hachiAvailableVersion", hachiAvailableVersionLabel());
 	setText("#updateMessage", hachiStatusMessage());
 	setDisabled("#hachiUpdateButton", !canUpdate);
+	setElementText($("#hachiUpdateButton"), "Update Hachi");
+	setDisabled("#selectedBotDeployButton", !state?.scan?.configurationReady);
 }
 
 function renderHachiGenUpdate(update) {
@@ -2870,6 +2881,25 @@ async function runDatabaseTransferAction({ action, details, label, successSummar
 }
 
 function showDatabaseBackupTransferModal() {
+	const external = selectedBotId !== HACHI_BOT_ID;
+	if (external) {
+		const backups = fleetBackupState || [];
+		showSharedModal({
+			actions: [
+				{ action: "database-transfer-close", label: "Close", variant: "secondary" },
+				{ action: "database-transfer-backup", label: "Backup Current", variant: "info" },
+				{ action: "database-transfer-restore", disabled: !backups.length, label: "Restore Latest", variant: "warning" },
+				{ action: "prune-fleet-backups", label: "Rotate Backups", variant: "secondary" },
+			],
+			content: [
+				createModalSummary(`Back up or restore the ${selectedBotName()} database without leaving HachiGen.`),
+				createModalDetails(["Backups are encrypted by HachiGen.", "Restore Latest uses the newest backup shown on this Database page."]),
+			],
+			meta: `${selectedBotName()} database`,
+			title: "Backup / Transfer Database",
+		});
+		return;
+	}
 	const remoteConfigured = Boolean(state?.remote?.configured);
 	const activeRemote = state?.runtimeTarget === "remote";
 	const currentSource = activeRemote ? "remote" : "local";
@@ -2919,6 +2949,15 @@ function showDatabaseBackupTransferModal() {
 }
 
 function runDatabaseBackupFlow() {
+	if (selectedBotId !== HACHI_BOT_ID) {
+		runAction("Backup database", async () => {
+			const result = await api.backupFleetDatabase(selectedBotId);
+			fleetBackupState = await api.listFleetBackups(selectedBotId);
+			renderExternalDatabaseBackups(fleetBackupState);
+			return result;
+		});
+		return;
+	}
 	// Make a dated copy of database/database.sqlite in manager/backups.
 	// If today's backup already exists, ask with the themed confirmation modal.
 	runAction("Backup database", () => api.backupDatabase(), { toast: false })
@@ -2951,6 +2990,31 @@ function runDatabaseBackupFlow() {
 }
 
 function runDatabaseRestoreFlow() {
+	if (selectedBotId !== HACHI_BOT_ID) {
+		const latest = fleetBackupState?.[0];
+		if (!latest) {
+			toast("No backup is available to restore.", "error", { label: "Restore database" });
+			return;
+		}
+		showConfirmModal({
+			confirmText: "Restore",
+			meta: "Database safety confirmation",
+			summary: `Restore the latest ${selectedBotName()} database backup?`,
+			title: "Restore database backup?",
+			variant: "danger",
+		}).then(confirmed => {
+			if (confirmed) {
+				runAction("Restore database", async () => {
+					const result = await api.restoreFleetDatabaseBackup(selectedBotId, latest.backupId);
+					databaseView = null;
+					await refreshFleetOverview();
+					await refreshCurrentDatabaseViewer();
+					return result;
+				});
+			}
+		});
+		return;
+	}
 	// Let the native picker choose a backup, then use a themed confirmation
 	// before the backend replaces the current database file.
 	runAction("Choose database backup", () => api.chooseDatabaseBackup(), { toast: false })
@@ -3615,10 +3679,23 @@ function renderFleetSecurityCapabilities() {
 	const deployment = selectedFleetDeployment();
 	const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
 	const capabilities = definition?.source === "native" ? definition.capabilities : (deployment?.approvedCapabilities || {});
-	setDisabled("#fleetBackupButton", !capabilities?.backups);
-	setDisabled("#fleetRestoreButton", !capabilities?.backups);
-	setDisabled("#fleetPruneBackupsButton", !capabilities?.backups);
-	setDisabled("#fleetEncryptButton", !capabilities?.databaseEncryption);
+	const external = selectedBotId !== HACHI_BOT_ID;
+	setDisabled("#migrateDatabaseButton", external);
+	setDisabled("#forceMigrateDatabaseButton", external);
+	setDisabled("#sanitizeDatabaseButton", external);
+	setDisabled("#databaseKeyActionButton", external && !capabilities?.databaseEncryption);
+	setDisabled("#exportDatabaseKeyBackupButton", external);
+	setDisabled("#rotateDatabaseBackupsButton", external && !capabilities?.backups);
+	if (external) {
+		$("#databaseKeyActionButton").dataset.action = "encrypt-fleet-database";
+		$("#rotateDatabaseBackupsButton").dataset.action = "prune-fleet-backups";
+		$("#verifyDatabaseProtectionButton").dataset.action = "audit-fleet-security";
+		setElementText($("#databaseKeyActionButton"), "Encrypt Database");
+	} else {
+		$("#databaseKeyActionButton").dataset.action = "generate-database-key";
+		$("#rotateDatabaseBackupsButton").dataset.action = "rotate-database-backups";
+		$("#verifyDatabaseProtectionButton").dataset.action = "verify-database-protection";
+	}
 	setDisabled("#fleetPruneLogsButton", !capabilities?.logs);
 }
 
@@ -4246,6 +4323,7 @@ function handleMenuAction(payload = {}) {
 }
 
 function runInlineAction(action) {
+	const externalDeployment = selectedBotId !== HACHI_BOT_ID ? selectedFleetDeployment() : null;
 	if (action === "show-setup") {
 		showView("setup");
 		return;
@@ -4274,6 +4352,32 @@ function runInlineAction(action) {
 
 	if (action === "show-diagnostics") {
 		showView("diagnostics");
+		return;
+	}
+
+	if (externalDeployment && ["install-validate", "validate"].includes(action)) {
+		runAction(`Check ${externalDeployment.name} health`, () => api.checkFleetDeploymentHealth(externalDeployment.id));
+		return;
+	}
+
+	if (externalDeployment && action === "start") {
+		runAction(`Start ${externalDeployment.name}`, () => api.controlFleetDeployment(externalDeployment.id, "start"));
+		return;
+	}
+
+	if (externalDeployment && action === "deploy") {
+		runAction(`Deploy ${externalDeployment.name} commands`, () => api.deployFleetDiscordCommands(externalDeployment.id));
+		return;
+	}
+
+	if (externalDeployment && action === "update") {
+		showView("updates");
+		return;
+	}
+
+	if (externalDeployment && action === "check-updates") {
+		showView("updates");
+		runAction(`Check ${externalDeployment.name} updates`, () => api.getFleetRepositoryStatus(externalDeployment.id, { fetch: true }));
 		return;
 	}
 
@@ -4357,7 +4461,6 @@ function handleAction(event) {
 	if (externalDeployment && action === "check-all-updates") {
 		runAction(`Check ${externalDeployment.name} updates`, async () => {
 			const result = await api.getFleetRepositoryStatus(externalDeployment.id, { fetch: true });
-			setText("#externalUpdatesOutput", JSON.stringify(result, null, 2));
 			await refreshFleetOverview();
 			return result;
 		});
@@ -4373,7 +4476,7 @@ function handleAction(event) {
 		return;
 	}
 
-	if (externalDeployment && action === "update") {
+	if (externalDeployment && ["update", "update-hachi"].includes(action)) {
 		showConfirmModal({
 			confirmText: "Update",
 			meta: "Transactional bot update",
@@ -4383,7 +4486,6 @@ function handleAction(event) {
 			if (!confirmed) return;
 			runAction(`Update ${externalDeployment.name}`, async () => {
 				const result = await api.updateFleetDeployment(externalDeployment.id);
-				setText("#externalUpdatesOutput", JSON.stringify(result, null, 2));
 				await refreshFleetOverview();
 				return result;
 			});
@@ -4679,27 +4781,24 @@ function handleAction(event) {
 		return;
 	}
 
-	if (["audit-fleet-security", "backup-fleet-database", "encrypt-fleet-database", "restore-fleet-database"].includes(action)) {
+	if (["audit-fleet-security", "encrypt-fleet-database"].includes(action)) {
 		const deploymentId = selectedBotId;
 		const execute = async () => {
-			let result;
-			if (action === "audit-fleet-security") result = await api.auditFleetDeploymentSecurity(deploymentId);
-			else if (action === "backup-fleet-database") result = await api.backupFleetDatabase(deploymentId);
-			else if (action === "encrypt-fleet-database") result = await api.encryptFleetDatabase(deploymentId);
-			else result = await api.restoreFleetDatabaseBackup(deploymentId, $("#fleetBackupIdInput").value);
-			setText("#fleetSecurityOutput", JSON.stringify(result, null, 2));
+			const result = action === "audit-fleet-security" ?
+				await api.auditFleetDeploymentSecurity(deploymentId) :
+				await api.encryptFleetDatabase(deploymentId);
 			setText("#fleetLogMaintenanceOutput", JSON.stringify(result, null, 2));
-			if (result.backupId) $("#fleetBackupIdInput").value = result.backupId;
+			await refreshFleetOverview();
 			return { message: result.message || "Security operation completed." };
 		};
-		if (action === "audit-fleet-security" || action === "backup-fleet-database") {
+		if (action === "audit-fleet-security") {
 			runAction("Fleet security", execute);
 		} else {
 			showConfirmModal({
-				title: action === "encrypt-fleet-database" ? "Encrypt deployment database?" : "Restore deployment database?",
+				title: "Encrypt deployment database?",
 				meta: "Database safety confirmation",
 				summary: "HachiGen will stop the selected deployment and retain or create a recovery copy. Verify the selected deployment before continuing.",
-				confirmText: action === "encrypt-fleet-database" ? "Encrypt" : "Restore",
+				confirmText: "Encrypt",
 				variant: "danger",
 			}).then(confirmed => {
 				if (confirmed) runAction("Fleet database security", execute);
@@ -4710,12 +4809,13 @@ function handleAction(event) {
 
 	if (["save-fleet-policies", "list-fleet-backups", "prune-fleet-backups", "prune-fleet-logs"].includes(action)) {
 		const deploymentId = selectedBotId;
+		if (action === "prune-fleet-backups") closeSharedModal();
 		runAction("Fleet retention", async () => {
 			let result;
 			if (action === "save-fleet-policies") {
 				result = await api.setFleetDeploymentPolicies(deploymentId, {
-					backupRetention: $("#fleetBackupRetentionInput").value,
-					autoBackupHours: $("#fleetAutoBackupHoursInput").value,
+					backupRetention: $("#fleetBackupRetentionInput")?.value || selectedFleetDeployment()?.policies?.backupRetention || 14,
+					autoBackupHours: $("#fleetAutoBackupHoursInput")?.value || selectedFleetDeployment()?.policies?.autoBackupHours || 0,
 					logRetentionDays: $("#fleetLogRetentionInput").value,
 					requireEncryptedDatabase: true,
 				});
@@ -4726,7 +4826,11 @@ function handleAction(event) {
 			}
 			else if (action === "prune-fleet-backups") result = await api.pruneFleetBackups(deploymentId);
 			else result = await api.pruneFleetLogs(deploymentId);
-			setText("#fleetSecurityOutput", JSON.stringify(result, null, 2));
+			setText("#fleetLogMaintenanceOutput", JSON.stringify(result, null, 2));
+			if (["list-fleet-backups", "prune-fleet-backups"].includes(action)) {
+				fleetBackupState = await api.listFleetBackups(deploymentId);
+				renderExternalDatabaseBackups(fleetBackupState);
+			}
 			return { message: "Retention operation completed." };
 		});
 		return;
@@ -4801,12 +4905,12 @@ function handleAction(event) {
 	}
 
 	if (action === "refresh-diagnostics") {
-		runAction("Refresh diagnostics", loadDiagnostics);
+		runAction("Refresh diagnostics", selectedBotId === HACHI_BOT_ID ? loadDiagnostics : refreshFleetOverview);
 		return;
 	}
 
 	if (action === "copy-diagnostic-info") {
-		runAction("Copy diagnostic info", () => api.copyDiagnosticInfo());
+		runAction("Copy diagnostic info", () => api.copyDiagnosticInfo(selectedBotId === HACHI_BOT_ID ? "" : selectedBotId));
 		return;
 	}
 

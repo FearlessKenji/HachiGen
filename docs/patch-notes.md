@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Selected additional bots now use Hachi's existing layouts and controls across Dashboard, Setup, Updates, Database, Logs, Testing, and Diagnostics. Bot-specific adapters supply the data, while unsupported operations are simply disabled.
+- Fixed the remaining `EAGAIN` error when a remote additional bot's Data Viewer reads its request over SSH.
 - Fleet bot rows now contain only Select and Remove, and the redundant Activity box has been removed. Dashboard remains the place to check health and operate the selected bot.
 - Additional bots now use the same Database page structure as Hachi, including Database, Protection, Current database, Backups, and a read-only SQLite Data Viewer. Backup maintenance lives with Backups, and Sanitation remains visible with a clear explanation when the bot has no sanitation adapter.
 - Opening an additional bot's Data Viewer no longer starts Hachi's database worker, preventing the unrelated `EAGAIN` read error seen with remote databases.
