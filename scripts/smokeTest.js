@@ -1255,7 +1255,9 @@ async function validateFleetCredentialAndBackupSecurity() {
 		assert(!fs.readFileSync(path.join(deploymentPath, "credentials.enc"), "utf8").includes("very-secret-token"), "Bot credential adapter persisted a plaintext token.");
 		assert(!JSON.stringify(manager.getFleetState()).includes("very-secret-token"), "Renderer fleet state exposed a Discord token.");
 		manager.saveTestingProfile({ name: "Runtime Test", TOKEN: "runtime-test-token", clientId: "456" });
-		const testingStart = await manager.startTestingBot(deployment.id, "runtime-test");
+		manager.setActiveFleetDeployment(remoteDeployment.id);
+		assert(manager.getLocalTestingDeploymentContext("optional-bot").deployment.id === deployment.id, "Testing should resolve the logical bot's local repository while production targets remote.");
+		const testingStart = await manager.startTestingBot("optional-bot", "runtime-test");
 		let testingRun;
 		for (let attempt = 0; attempt < 20; attempt += 1) {
 			testingRun = manager.getTestingRunState().find(item => item.deploymentId === deployment.id);
@@ -1273,7 +1275,8 @@ async function validateFleetCredentialAndBackupSecurity() {
 				fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase),
 			"Testing should store its database in the identity profile without modifying production data.",
 		);
-		manager.stopTestingBot(deployment.id);
+		manager.stopTestingBot("optional-bot");
+		manager.setActiveFleetDeployment(deployment.id);
 		const audit = await manager.auditFleetDeploymentSecurity("optional-bot");
 		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");
 		const backup = await manager.backupFleetDatabase("optional-bot");

@@ -976,7 +976,9 @@ function showView(viewName) {
 	}
 
 	if (activeView === "testing") {
-		refreshTestingProfiles().catch(error => toast(error.message || "Testing refresh failed.", "error", { label: "Testing" }));
+		Promise.all([refreshFleet(), refreshTestingProfiles()])
+			.then(() => renderTestingRunner())
+			.catch(error => toast(error.message || "Testing refresh failed.", "error", { label: "Testing" }));
 	}
 
 	if (activeView === "database" && !databaseView) {
@@ -4574,8 +4576,9 @@ function handleAction(event) {
 
 	if (action === "start-testing-bot") {
 		const deploymentId = $("#testingDeploymentSelect")?.value;
+		const botTypeId = fleetState?.deployments?.find(item => item.id === deploymentId)?.botTypeId || selectedBotId;
 		const profileId = $("#testingIdentitySelect")?.value;
-		runAction("Start testing bot", () => api.startTestingBot(deploymentId, profileId)).then(result => {
+		runAction("Start testing bot", () => api.startTestingBot(botTypeId, profileId)).then(result => {
 			if (result) renderTestingRunner(result.runs);
 		});
 		return;
@@ -4583,7 +4586,8 @@ function handleAction(event) {
 
 	if (action === "stop-testing-bot") {
 		const deploymentId = $("#testingDeploymentSelect")?.value;
-		runAction("Stop testing bot", () => api.stopTestingBot(deploymentId)).then(result => {
+		const botTypeId = fleetState?.deployments?.find(item => item.id === deploymentId)?.botTypeId || selectedBotId;
+		runAction("Stop testing bot", () => api.stopTestingBot(botTypeId)).then(result => {
 			if (result) renderTestingRunner(result.runs);
 		});
 		return;
@@ -4591,6 +4595,7 @@ function handleAction(event) {
 
 	if (action === "reset-testing-commands") {
 		const deploymentId = $("#testingDeploymentSelect")?.value;
+		const botTypeId = fleetState?.deployments?.find(item => item.id === deploymentId)?.botTypeId || selectedBotId;
 		const profileId = $("#testingIdentitySelect")?.value;
 		const deployment = fleetState?.deployments?.find(item => item.id === deploymentId);
 		const profile = testingProfiles.find(item => item.id === profileId);
@@ -4607,7 +4612,7 @@ function handleAction(event) {
 			variant: "warning",
 		}).then(confirmed => {
 			if (!confirmed) return;
-			runAction("Reset test commands", () => api.resetTestingCommands(deploymentId, profileId)).then(result => {
+			runAction("Reset test commands", () => api.resetTestingCommands(botTypeId, profileId)).then(result => {
 				if (result) setText("#testingRunOutput", result.message || "Test commands reset.");
 			});
 		});

@@ -2168,10 +2168,8 @@ class HachiManager {
 	}
 
 	async resetTestingCommands(deploymentId, profileId) {
-		const context = this.getFleetDeploymentContext(deploymentId);
-		if (context.server.connection.type !== "local") {
-			throw new Error("Test commands can be managed only from a local bot repository.");
-		}
+		const context = this.getLocalTestingDeploymentContext(deploymentId);
+		const concreteDeploymentId = context.deployment.id;
 		const packageJson = readJson(path.join(context.deployment.installPath, "package.json"), {});
 		const hasDetectedTestDeploy = packageJson.scripts?.["deploy:test"];
 		if (context.definition.id !== "hachi" && !context.definition.commands?.testDeployCommands && !hasDetectedTestDeploy) {
@@ -2194,7 +2192,7 @@ class HachiManager {
 
 		const env = this.testingIdentityEnvironment(identity);
 		if (context.definition.id === "hachi") {
-			await this.runFleetDefinitionCommand(deploymentId, "deployGlobalCommands", { env, timeoutMs: 300000 });
+			await this.runFleetDefinitionCommand(concreteDeploymentId, "deployGlobalCommands", { env, timeoutMs: 300000 });
 			if (identity.guildIds.length) {
 				const source = [
 					"const {getCommandData,redeployCommands}=require('./utils/commandLoader.js');",
@@ -2206,7 +2204,7 @@ class HachiManager {
 				await this.runFleetDeploymentCommand(context, { command: "node", args: ["-e", source] }, "", { env, timeoutMs: 300000 });
 			}
 		} else if (context.definition.commands?.testDeployCommands) {
-			await this.runFleetDefinitionCommand(deploymentId, "testDeployCommands", { env, timeoutMs: 300000 });
+			await this.runFleetDefinitionCommand(concreteDeploymentId, "testDeployCommands", { env, timeoutMs: 300000 });
 		} else if (hasDetectedTestDeploy) {
 			// Preserve older generated profiles: deploy:test is a deliberately named,
 			// local-only test adapter and still requires the UI confirmation.
@@ -2216,10 +2214,10 @@ class HachiManager {
 		}
 		this.log(`Test commands reset for ${context.deployment.name} using ${identity.name}.`, {
 			area: "testing",
-			deploymentId,
+			deploymentId: concreteDeploymentId,
 			profileId: identity.id,
 		});
-		return { deploymentId, guildCount: guildIds.size, ok: true, message: "Test application commands were deleted and redeployed." };
+		return { deploymentId: concreteDeploymentId, guildCount: guildIds.size, ok: true, message: "Test application commands were deleted and redeployed." };
 	}
 
 	getTestingRunState() {
@@ -2236,11 +2234,9 @@ class HachiManager {
 	}
 
 	async startTestingBot(deploymentId, profileId) {
-		const context = this.getFleetDeploymentContext(deploymentId);
-		if (context.server.connection.type !== "local") {
-			throw new Error("Testing identities currently run local bot deployments only.");
-		}
-		const existing = this.testingRuns.get(deploymentId);
+		const context = this.getLocalTestingDeploymentContext(deploymentId);
+		const concreteDeploymentId = context.deployment.id;
+		const existing = this.testingRuns.get(concreteDeploymentId);
 		if (existing?.status === "running") {
 			throw new Error("This bot already has a testing process running.");
 		}
@@ -2250,7 +2246,7 @@ class HachiManager {
 			(detectedTestEntry ? { executable: "node", args: [detectedTestEntry] } : null) ||
 			(context.definition.id === "hachi" ? { executable: "node", args: ["index.js"] } : null);
 		if (context.definition.source === "external" && context.deployment.definitionFingerprint !== context.definition.fingerprint) {
-			throw new Error(`${context.definition.displayName} profile changed after approval. Review the deployment before testing it.`);
+			throw new Error(`${context.definition.displayName} profile changed after approval. Open ${context.definition.displayName}, then use Review & Reapprove before testing it.`);
 		}
 		if (!command || command.executable !== "node" || !command.args?.length) {
 			throw new Error(`${context.definition.displayName} does not have a recognized local testing entry point.`);
@@ -2270,8 +2266,18 @@ class HachiManager {
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 		});
-		const runState = { child, databasePath: testDatabase.databasePath, deploymentId, exitedAt: null, exitCode: null, output: "", profileId: identity.id, startedAt: new Date().toISOString(), status: "starting" };
-		this.testingRuns.set(deploymentId, runState);
+		const runState = {
+			child,
+			databasePath: testDatabase.databasePath,
+			deploymentId: concreteDeploymentId,
+			exitedAt: null,
+			exitCode: null,
+			output: "",
+			profileId: identity.id,
+			startedAt: new Date().toISOString(),
+			status: "starting",
+		};
+		this.testingRuns.set(concreteDeploymentId, runState);
 		const appendOutput = chunk => {
 			let output = `${runState.output}${chunk}`;
 			for (const secret of Object.values(identity.values).filter(Boolean)) {
@@ -2285,7 +2291,7 @@ class HachiManager {
 			runState.status = "exited";
 			runState.exitCode = code;
 			runState.exitedAt = new Date().toISOString();
-			this.log(`Testing process exited for ${context.deployment.name}.`, { area: "testing", deploymentId, exitCode: code });
+			this.log(`Testing process exited for ${context.deployment.name}.`, { area: "testing", deploymentId: concreteDeploymentId, exitCode: code });
 		});
 		await new Promise((resolve, reject) => {
 			child.once("spawn", () => {
@@ -2298,18 +2304,19 @@ class HachiManager {
 				reject(error);
 			});
 		});
-		this.log(`Testing process started for ${context.deployment.name} with ${identity.name}.`, { area: "testing", deploymentId, profileId: identity.id });
+		this.log(`Testing process started for ${context.deployment.name} with ${identity.name}.`, { area: "testing", deploymentId: concreteDeploymentId, profileId: identity.id });
 		return { message: "Testing process started without changing bot credential files.", runs: this.getTestingRunState() };
 	}
 
 	stopTestingBot(deploymentId) {
-		const runState = this.testingRuns.get(deploymentId);
+		const concreteDeploymentId = this.getLocalTestingDeploymentContext(deploymentId).deployment.id;
+		const runState = this.testingRuns.get(concreteDeploymentId);
 		if (!runState || runState.status !== "running") {
 			throw new Error("This bot does not have a running testing process.");
 		}
 		runState.status = "stopping";
 		runState.child.kill("SIGTERM");
-		this.log(`Testing process stop requested.`, { area: "testing", deploymentId });
+		this.log(`Testing process stop requested.`, { area: "testing", deploymentId: concreteDeploymentId });
 		return { message: "Testing process is stopping.", runs: this.getTestingRunState() };
 	}
 
@@ -2909,6 +2916,19 @@ class HachiManager {
 			throw new Error(`Bot type ${deployment.botTypeId} is not installed.`);
 		}
 		return { definition, deployment, server };
+	}
+
+	getLocalTestingDeploymentContext(deploymentId) {
+		// Testing always executes from a local source checkout, independently of
+		// the production runtime target. Accept logical bot IDs so removed or
+		// replaced deployment IDs cannot remain embedded in renderer controls.
+		const exact = this.fleet.deployments.find(item => item.id === deploymentId);
+		const botTypeId = exact?.botTypeId || deploymentId;
+		const local = this.fleet.deployments.find(item => item.botTypeId === botTypeId && item.serverId === "local");
+		if (!local) {
+			throw new Error("A local repository installation is required for testing this bot.");
+		}
+		return this.getFleetDeploymentContext(local.id);
 	}
 
 	assertFleetCapability(context, capability, { allowChangedDefinition = false } = {}) {

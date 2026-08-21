@@ -66,6 +66,7 @@ Notable changes to HachiGen are documented here.
 
 ### Fixed
 
+- Testing actions now resolve the selected bot's current local installation by logical bot identity, refresh Fleet before rendering testing controls, and no longer submit stale or removed deployment IDs after Fleet changes.
 - Fixed additional-bot local/remote switches retaining the prior installation's cached database rows; all location-bound Database, Configuration, backup, and log state now reloads for the active deployment.
 - Isolated testing databases under each testing identity profile and refused to start database-backed bots that do not expose a supported test database-path environment variable.
 - Fixed the generic remote SQLite viewer synchronously reading SSH stdin, which could still surface `EAGAIN: resource temporarily unavailable`.
