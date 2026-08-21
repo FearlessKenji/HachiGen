@@ -2428,6 +2428,8 @@ class HachiManager {
 		const verifiedDeployment = { ...deployment, repositoryBranch: verified.branch };
 		this.fleet.deployments.push(verifiedDeployment);
 		this.fleet.activeDeploymentId = verifiedDeployment.id;
+		this.fleet.activeDeploymentByBotType ||= {};
+		this.fleet.activeDeploymentByBotType[verifiedDeployment.botTypeId] = verifiedDeployment.id;
 		this.saveFleetRegistry();
 		this.log(`Fleet deployment added: ${verifiedDeployment.name}.`, { area: "fleet", deploymentId: verifiedDeployment.id, serverId: verifiedDeployment.serverId });
 		return this.getFleetState();
@@ -2569,10 +2571,13 @@ class HachiManager {
 	}
 
 	setActiveFleetDeployment(deploymentId) {
-		if (!this.fleet.deployments.some(item => item.id === deploymentId)) {
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		if (!deployment) {
 			throw new Error("Deployment was not found.");
 		}
 		this.fleet.activeDeploymentId = deploymentId;
+		this.fleet.activeDeploymentByBotType ||= {};
+		this.fleet.activeDeploymentByBotType[deployment.botTypeId] = deploymentId;
 		this.saveFleetRegistry();
 		return this.getFleetState();
 	}
@@ -2606,6 +2611,14 @@ class HachiManager {
 		this.fleet.deployments = this.fleet.deployments.filter(item => item.id !== deploymentId);
 		if (this.fleet.activeDeploymentId === deploymentId) {
 			this.fleet.activeDeploymentId = this.fleet.deployments[0]?.id || null;
+		}
+		if (this.fleet.activeDeploymentByBotType?.[deployment.botTypeId] === deploymentId) {
+			const replacement = this.fleet.deployments.find(item => item.botTypeId === deployment.botTypeId);
+			if (replacement) {
+				this.fleet.activeDeploymentByBotType[deployment.botTypeId] = replacement.id;
+			} else {
+				delete this.fleet.activeDeploymentByBotType[deployment.botTypeId];
+			}
 		}
 		this.saveFleetRegistry();
 		this.log(`Fleet deployment removed: ${deployment.name}.`, { area: "fleet", deploymentId });
@@ -2875,7 +2888,14 @@ class HachiManager {
 	}
 
 	getFleetDeploymentContext(deploymentId) {
-		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		// Accept a concrete installation id or a stable logical bot id. Logical
+		// selections resolve through the bot's active target just as Hachi resolves
+		// its local/remote runtimeTarget before every operation.
+		const activeId = this.fleet.activeDeploymentByBotType?.[deploymentId];
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId) ||
+			this.fleet.deployments.find(item => item.id === activeId && item.botTypeId === deploymentId) ||
+			this.fleet.deployments.find(item => item.botTypeId === deploymentId && item.serverId === "local") ||
+			this.fleet.deployments.find(item => item.botTypeId === deploymentId);
 		if (!deployment) {
 			throw new Error("Deployment was not found.");
 		}
@@ -3244,7 +3264,7 @@ class HachiManager {
 		vault.records[backupId] = {
 			backupPath,
 			createdAt: new Date().toISOString(),
-			deploymentId,
+			deploymentId: context.deployment.id,
 			key: this.protectSecret(key.toString("base64")),
 			serverId: context.server.id,
 		};
@@ -3261,7 +3281,7 @@ class HachiManager {
 		const context = this.getFleetDeploymentContext(deploymentId);
 		this.assertFleetCapability(context, "backups");
 		const record = this.getFleetBackupVault().records[backupId];
-		if (!record || record.deploymentId !== deploymentId || record.serverId !== context.server.id) {
+		if (!record || record.deploymentId !== context.deployment.id || record.serverId !== context.server.id) {
 			throw new Error("Backup does not belong to this deployment and server.");
 		}
 		const databaseRelativePath = context.definition.paths?.database;
@@ -3320,10 +3340,7 @@ class HachiManager {
 	}
 
 	setFleetDeploymentPolicies(deploymentId, values = {}) {
-		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
-		if (!deployment) {
-			throw new Error("Deployment was not found.");
-		}
+		const { deployment } = this.getFleetDeploymentContext(deploymentId);
 		deployment.policies = {
 			...deployment.policies,
 			backupRetention: Math.min(365, Math.max(1, Number.parseInt(String(values.backupRetention), 10) || 14)),
@@ -3384,8 +3401,9 @@ class HachiManager {
 	}
 
 	listFleetBackups(deploymentId) {
+		const concreteDeploymentId = this.getFleetDeploymentContext(deploymentId).deployment.id;
 		return Object.entries(this.getFleetBackupVault().records)
-			.filter(([, record]) => record.deploymentId === deploymentId)
+			.filter(([, record]) => record.deploymentId === concreteDeploymentId)
 			.map(([backupId, record]) => ({ backupId, backupPath: record.backupPath, createdAt: record.createdAt, serverId: record.serverId, encrypted: true }))
 			.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
 	}
@@ -3460,12 +3478,12 @@ class HachiManager {
 	}
 
 	async assertCredentialLeaseAvailable(deploymentId) {
-		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		const deployment = this.getFleetDeploymentContext(deploymentId).deployment;
 		if (!deployment?.credentialFingerprint || deployment.allowConcurrentCredentials) {
 			return;
 		}
 		const conflicts = this.fleet.deployments.filter(item =>
-			item.id !== deploymentId && item.credentialFingerprint === deployment.credentialFingerprint,
+			item.id !== deployment.id && item.credentialFingerprint === deployment.credentialFingerprint,
 		);
 		for (const conflict of conflicts) {
 			const status = await this.getFleetDeploymentStatus(conflict.id);
@@ -3531,6 +3549,7 @@ class HachiManager {
 
 		return {
 			activeDeploymentId: this.fleet.activeDeploymentId,
+			activeDeploymentByBotType: { ...(this.fleet.activeDeploymentByBotType || {}) },
 			botDefinitionErrors: botTypes.errors,
 			botTypes: botTypes.definitions,
 			deployments: this.fleet.deployments.map(deployment => {

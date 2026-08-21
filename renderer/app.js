@@ -991,7 +991,15 @@ function showView(viewName) {
 }
 
 function selectedFleetDeployment() {
-	return fleetState?.deployments?.find(deployment => deployment.id === selectedBotId) || null;
+	const deployments = fleetState?.deployments || [];
+	const legacySelection = deployments.find(deployment => deployment.id === selectedBotId);
+	const botTypeId = legacySelection?.botTypeId || selectedBotId;
+	const activeId = fleetState?.activeDeploymentByBotType?.[botTypeId];
+	return deployments.find(deployment => deployment.id === activeId && deployment.botTypeId === botTypeId) ||
+		legacySelection ||
+		deployments.find(deployment => deployment.botTypeId === botTypeId && fleetState.servers.find(server => server.id === deployment.serverId)?.connection?.type === "local") ||
+		deployments.find(deployment => deployment.botTypeId === botTypeId) ||
+		null;
 }
 
 function selectedBotName() {
@@ -3579,7 +3587,7 @@ function renderFleet(nextFleet) {
 	deploymentList?.replaceChildren(...(managedDeployments.length ? managedDeployments.map(deployment => {
 		const server = fleetState.servers.find(item => item.id === deployment.serverId);
 		const type = supportedBotTypes.find(item => item.id === deployment.botTypeId);
-		const active = deployment.id === fleetState.activeDeploymentId;
+		const active = deployment.id === fleetState.activeDeploymentByBotType?.[deployment.botTypeId];
 		return fleetEntry(
 			`${deployment.name}${active ? " · Active" : ""}`,
 			`${type?.displayName || deployment.botTypeId} · ${server?.name || deployment.serverId} · ${deployment.environment} · ${deployment.installPath}`,
@@ -3596,9 +3604,16 @@ function renderFleet(nextFleet) {
 	)) : [fleetEmpty("No bot profiles have been added yet.")]));
 	const logicalDeployments = [...new Set(managedDeployments.map(item => item.botTypeId))].map(botTypeId => {
 		const deployments = managedDeployments.filter(item => item.botTypeId === botTypeId);
-		return deployments.find(item => item.id === selectedBotId) || deployments.find(item => fleetState.servers.find(server => server.id === item.serverId)?.connection?.type === "local") || deployments[0];
+		const activeId = fleetState.activeDeploymentByBotType?.[botTypeId];
+		const deployment = deployments.find(item => item.id === activeId) || deployments.find(item => fleetState.servers.find(server => server.id === item.serverId)?.connection?.type === "local") || deployments[0];
+		return { id: botTypeId, name: deployment.name };
 	});
 	const botChoices = [{ id: HACHI_BOT_ID, name: "Hachi" }, ...logicalDeployments];
+	const legacySelection = managedDeployments.find(item => item.id === selectedBotId);
+	if (legacySelection) {
+		selectedBotId = legacySelection.botTypeId;
+		window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
+	}
 	replaceSelectOptions("#globalBotSelect", botChoices, item => item.name);
 	if (!botChoices.some(item => item.id === selectedBotId)) selectedBotId = HACHI_BOT_ID;
 	$("#globalBotSelect").value = selectedBotId;
@@ -3742,7 +3757,7 @@ function renderTestingRunner(runs = testingRuns) {
 	const contextualDeployment = selectedBotId === HACHI_BOT_ID ? deployments.find(deployment => {
 		const definition = fleetState?.botTypes?.find(type => type.id === deployment.botTypeId);
 		return definition?.source === "native";
-	}) : deployments.find(deployment => deployment.id === selectedBotId);
+	}) : deployments.find(deployment => deployment.botTypeId === selectedBotId);
 	if (contextualDeployment && $("#testingDeploymentSelect")) $("#testingDeploymentSelect").value = contextualDeployment.id;
 	replaceSelectOptions("#testingIdentitySelect", testingProfiles, profile => `${profile.name}${profile.isDefault ? " · Default" : ""}`);
 	const deploymentId = $("#testingDeploymentSelect")?.value || "";
@@ -4132,10 +4147,7 @@ function handleChange(event) {
 		if (selectedBotId === HACHI_BOT_ID) {
 			renderState(state);
 		} else {
-			api.setActiveFleetDeployment(selectedBotId).then(renderFleet).catch(error => {
-				recordRendererEvent("error", `Could not persist selected bot: ${error.message || error}`, { label: "Select bot" });
-			});
-			if ($("#testingDeploymentSelect")) $("#testingDeploymentSelect").value = selectedBotId;
+			if ($("#testingDeploymentSelect")) $("#testingDeploymentSelect").value = selectedFleetDeployment()?.id || "";
 			renderTestingRunner();
 			refreshFleetOverview().catch(error => toast(error.message || "Bot status refresh failed.", "error"));
 			loadExternalConfiguration().catch(error => setText("#externalConfigurationMessage", error.message));
@@ -4155,14 +4167,12 @@ function handleChange(event) {
 				return deployment.botTypeId === externalDeployment.botTypeId && (server?.connection?.type === "ssh" ? "remote" : "local") === nextTarget;
 			});
 			if (matchingDeployment) {
-				selectedBotId = matchingDeployment.id;
-				window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
 				// Installation-bound data must never survive a local/remote switch.
 				databaseView = null;
 				sanitizeReport = null;
 				fleetBackupState = [];
 				renderDatabaseViewer(null);
-				api.setActiveFleetDeployment(selectedBotId)
+				api.setActiveFleetDeployment(matchingDeployment.id)
 					.then(async fleet => {
 						renderFleet(fleet);
 						await refreshFleetOverview();
@@ -4284,8 +4294,6 @@ async function saveExternalRemoteSettings(deployment) {
 	}
 	const existing = fleet.deployments.find(item => item.botTypeId === deployment.botTypeId && item.serverId === server.id && item.installPath === settings.remotePath.trim());
 	if (existing) {
-		selectedBotId = existing.id;
-		window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
 		renderFleet(await api.setActiveFleetDeployment(existing.id));
 		return { message: "Remote installation is already configured." };
 	}
@@ -4299,8 +4307,7 @@ async function saveExternalRemoteSettings(deployment) {
 	});
 	const remoteDeployment = fleet.deployments.find(item => item.botTypeId === deployment.botTypeId && item.serverId === server.id && item.installPath === settings.remotePath.trim());
 	if (remoteDeployment) {
-		selectedBotId = remoteDeployment.id;
-		window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
+		fleet = await api.setActiveFleetDeployment(remoteDeployment.id);
 	}
 	renderFleet(fleet);
 	return { message: "Remote settings saved." };
@@ -4851,7 +4858,14 @@ function handleAction(event) {
 
 	if (action === "activate-fleet-deployment") {
 		runAction("Select deployment", async () => {
+			const deployment = fleetState?.deployments?.find(item => item.id === button.dataset.itemId);
 			const fleet = await api.setActiveFleetDeployment(button.dataset.itemId);
+			if (deployment) {
+				selectedBotId = deployment.botTypeId;
+				window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
+				databaseView = null;
+				fleetBackupState = [];
+			}
 			renderFleet(fleet);
 			return { message: "Active deployment changed." };
 		});

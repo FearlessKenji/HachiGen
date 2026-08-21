@@ -50,6 +50,7 @@ async function validateBotRegistryFoundation() {
 	const fleet = createLegacyFleet({ installPath: "C:\\Bots\\Hachi", runtimeTarget: "local" }, "C:\\Fallback");
 	assert(fleet.servers.length === 1 && fleet.deployments.length === 1, "Legacy settings should migrate to one local Hachi deployment.");
 	assert(fleet.deployments[0].botTypeId === "hachi", "Migrated deployment should use native Hachi.");
+	assert(fleet.activeDeploymentByBotType.hachi === fleet.deployments[0].id, "Legacy migration should create a per-bot active installation target.");
 	const repairedFleet = requireFresh("src", "botRegistry.js").normalizeFleetRegistry({
 		activeDeploymentId: null,
 		deployments: [],
@@ -1194,6 +1195,14 @@ async function validateFleetCredentialAndBackupSecurity() {
 		});
 		const deployment = manager.fleet.deployments.find(item => item.botTypeId === "optional-bot");
 		assert(deployment.repositoryBranch === "test-feature", "Fleet should record each installation's checked-out branch instead of forcing the profile branch.");
+		manager.addFleetServer({ name: "Remote smoke", connection: { type: "ssh", host: "example.invalid", username: "bot", port: 22, sshKeyPath: "smoke.key" } });
+		const remoteServer = manager.fleet.servers.find(item => item.name === "Remote smoke");
+		const remoteDeployment = { ...deployment, id: "deployment-remote-smoke", installPath: "/srv/optional-bot", serverId: remoteServer.id };
+		manager.fleet.deployments.push(remoteDeployment);
+		manager.setActiveFleetDeployment(remoteDeployment.id);
+		assert(manager.getFleetDeploymentContext("optional-bot").deployment.id === remoteDeployment.id, "Logical bot context should resolve its selected remote installation.");
+		manager.setActiveFleetDeployment(deployment.id);
+		assert(manager.getFleetDeploymentContext("optional-bot").deployment.id === deployment.id, "Logical bot context should resolve its selected local installation.");
 		const changedContext = {
 			definition: { source: "external", fingerprint: "changed", capabilities: { logs: true, pm2: true }, displayName: "Optional Bot" },
 			deployment: { definitionFingerprint: "approved", approvedCapabilities: { logs: true, pm2: true } },
@@ -1216,7 +1225,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 		});
 		const savedYaml = fs.readFileSync(path.join(deploymentPath, "bot-settings.yaml"), "utf8");
 		assert(savedYaml.includes("# retained comment") && savedYaml.includes("enabled: false") && savedYaml.includes("smoke-secret"), "YAML saves should preserve comments and blank sensitive replacements.");
-		const overview = await manager.getFleetDeploymentOverview(deployment.id);
+		const overview = await manager.getFleetDeploymentOverview("optional-bot");
 		assert(
 			overview.deployment.name === "Optional Bot Test" &&
 				overview.server.id === "local" &&
@@ -1247,12 +1256,12 @@ async function validateFleetCredentialAndBackupSecurity() {
 			"Testing should store its database in the identity profile without modifying production data.",
 		);
 		manager.stopTestingBot(deployment.id);
-		const audit = await manager.auditFleetDeploymentSecurity(deployment.id);
+		const audit = await manager.auditFleetDeploymentSecurity("optional-bot");
 		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");
-		const backup = await manager.backupFleetDatabase(deployment.id);
+		const backup = await manager.backupFleetDatabase("optional-bot");
 		assert(fs.readFileSync(backup.backupPath).subarray(0, 5).toString() === "HGBK1", "Fleet database backup should use encrypted HGBK1 format.");
 		fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), "damaged");
-		await manager.restoreFleetDatabaseBackup(deployment.id, backup.backupId);
+		await manager.restoreFleetDatabaseBackup("optional-bot", backup.backupId);
 		assert(fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase), "Encrypted fleet backup did not restore original database bytes.");
 	} finally {
 		// Ensure a failed assertion cannot leave the smoke-test child alive.

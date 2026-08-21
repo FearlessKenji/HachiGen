@@ -209,6 +209,7 @@ function createLegacyFleet(settings, defaultInstallPath) {
 	return {
 		version: REGISTRY_VERSION,
 		activeDeploymentId: deployment.id,
+		activeDeploymentByBotType: { [deployment.botTypeId]: deployment.id },
 		servers,
 		deployments: [deployment],
 		policies: { backup: [], security: [], logs: [] },
@@ -227,6 +228,14 @@ function normalizeFleetRegistry(saved, settings, defaultInstallPath) {
 		saved.servers.map(server => server.id === LOCAL_SERVER_ID ? localServer : server) :
 		[localServer, ...saved.servers];
 	const deploymentIds = new Set(saved.deployments.map(item => item.id));
+	const savedActiveByType = saved.activeDeploymentByBotType && typeof saved.activeDeploymentByBotType === "object" ? saved.activeDeploymentByBotType : {};
+	const activeDeploymentByBotType = {};
+	for (const botTypeId of new Set(saved.deployments.map(item => item.botTypeId))) {
+		const requested = saved.deployments.find(item => item.id === savedActiveByType[botTypeId] && item.botTypeId === botTypeId);
+		const legacyActive = saved.deployments.find(item => item.id === saved.activeDeploymentId && item.botTypeId === botTypeId);
+		const fallback = saved.deployments.find(item => item.botTypeId === botTypeId && item.serverId === LOCAL_SERVER_ID) || saved.deployments.find(item => item.botTypeId === botTypeId);
+		activeDeploymentByBotType[botTypeId] = (requested || legacyActive || fallback)?.id || null;
+	}
 	// Credential profiles were removed before release. Strip their metadata so
 	// each deployment folder remains the only credential source of truth.
 	const registry = { ...saved };
@@ -234,6 +243,7 @@ function normalizeFleetRegistry(saved, settings, defaultInstallPath) {
 	return {
 		...registry,
 		activeDeploymentId: deploymentIds.has(saved.activeDeploymentId) ? saved.activeDeploymentId : (saved.deployments[0]?.id || null),
+		activeDeploymentByBotType,
 		deployments: saved.deployments.map(item => {
 			const deployment = { ...item };
 			delete deployment.credentialProfileId;

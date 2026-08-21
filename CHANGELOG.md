@@ -22,6 +22,7 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
+- Replaced deployment-ID UI selection with a stable logical bot selection and a per-bot active installation target. Shared operations now resolve Local Development or Remote Server immediately before execution, matching Hachi's runtime-target pathway.
 - Reused the native Hachi Dashboard, Setup, Updates, Database, Logs, Testing, and Diagnostics compositions for selected additional bots instead of maintaining parallel Fleet panels and action rows; adapters now populate the shared controls and disable only unsupported capabilities.
 - Reduced Fleet deployment rows to Select and Remove and removed the redundant Fleet Activity panel; operational status and controls remain on Dashboard and the selected bot's shared views.
 - Replaced the alternate external-bot Database page with Hachi's shared Database composition. Capability-aware backup, restore, verification, encryption, protection status, current database, backup history, retention controls, and a generic read-only SQLite viewer now render in the same sections; unsupported sanitation is identified explicitly.
