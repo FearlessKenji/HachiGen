@@ -3753,7 +3753,7 @@ function renderTestingRunner(runs = testingRuns) {
 	setDisabled("#stopTestingBotButton", !running);
 	setDisabled("#resetTestingCommandsButton", !deploymentId || !$("#testingIdentitySelect")?.value || !deployment?.testCommandsAvailable);
 	setText("#testingRunOutput", runState ?
-		`Status: ${runState.status}${runState.exitCode === null ? "" : ` · Exit code: ${runState.exitCode}`}\n${runState.output || "No process output yet."}` :
+		`Status: ${runState.status}${runState.exitCode === null ? "" : ` · Exit code: ${runState.exitCode}`}${runState.databasePath ? `\nTest database: ${runState.databasePath}` : ""}\n${runState.output || "No process output yet."}` :
 		"Select a local bot and testing identity.");
 }
 
@@ -4157,7 +4157,20 @@ function handleChange(event) {
 			if (matchingDeployment) {
 				selectedBotId = matchingDeployment.id;
 				window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
-				api.setActiveFleetDeployment(selectedBotId).then(renderFleet).catch(error => toast(error.message, "error"));
+				// Installation-bound data must never survive a local/remote switch.
+				databaseView = null;
+				sanitizeReport = null;
+				fleetBackupState = [];
+				renderDatabaseViewer(null);
+				api.setActiveFleetDeployment(selectedBotId)
+					.then(async fleet => {
+						renderFleet(fleet);
+						await refreshFleetOverview();
+						await loadExternalConfiguration();
+						if (activeView === "database") await loadDatabaseViewer();
+						if (activeView === "logs") await refreshLogs();
+					})
+					.catch(error => toast(error.message, "error"));
 			}
 			return;
 		}

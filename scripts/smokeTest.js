@@ -441,6 +441,12 @@ function validateRendererAndMenuWiring() {
 		"Additional bots should use the generic read-only database viewer while retaining the shared sanitation panel.",
 	);
 	assert(
+		rendererSource.includes("Installation-bound data must never survive a local/remote switch") &&
+			rendererSource.includes("fleetBackupState = []") &&
+			rendererSource.includes('if (activeView === "database") await loadDatabaseViewer()'),
+		"Switching an additional bot's active installation should invalidate and reload location-bound database state.",
+	);
+	assert(
 		managerSource.includes("Viewing is observational") &&
 			!managerSource.includes("Review and reapprove this deployment before reading its database"),
 		"Read-only Fleet database viewing should remain available while a changed profile awaits mutation approval.",
@@ -1144,7 +1150,12 @@ async function validateFleetCredentialAndBackupSecurity() {
 		"const p=JSON.parse(fs.readFileSync(0,'utf8'));",
 		"fs.writeFileSync('credentials.enc',JSON.stringify({clientId:p.clientId,tokenHash:crypto.createHash('sha256').update(p.token).digest('hex')}));",
 	].join(""));
-	fs.writeFileSync(path.join(deploymentPath, "start-test.js"), "console.log(process.env.TOKEN);setInterval(()=>{},1000);\n");
+	fs.writeFileSync(path.join(deploymentPath, "start-test.js"), [
+		"const fs=require('node:fs'),path=require('node:path');",
+		"const db=process.env.OPTIONAL_BOT_DATABASE_PATH;",
+		"fs.mkdirSync(path.dirname(db),{recursive:true});fs.writeFileSync(db,'isolated test database');",
+		"console.log(process.env.TOKEN);setInterval(()=>{},1000);",
+	].join(""));
 	fs.writeFileSync(path.join(deploymentPath, "bot-settings.yaml"), "# retained comment\nfeature:\n  enabled: true\napiToken: smoke-secret\n");
 	childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: deploymentPath, stdio: "ignore" });
 	childProcess.execFileSync("git", ["remote", "add", "origin", "https://example.invalid/optional-bot.git"], { cwd: deploymentPath, stdio: "ignore" });
@@ -1229,6 +1240,12 @@ async function validateFleetCredentialAndBackupSecurity() {
 			});
 		}
 		assert(testingStart.runs[0].status === "running" && testingRun?.output.includes("[REDACTED]") && !testingRun.output.includes("runtime-test-token"), "Testing process did not start with redacted output.");
+		assert(
+			testingRun.databasePath.startsWith(path.join(userDataPath, "Profiles", "Testing", "runtime-test")) &&
+				fs.readFileSync(testingRun.databasePath, "utf8") === "isolated test database" &&
+				fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase),
+			"Testing should store its database in the identity profile without modifying production data.",
+		);
 		manager.stopTestingBot(deployment.id);
 		const audit = await manager.auditFleetDeploymentSecurity(deployment.id);
 		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");

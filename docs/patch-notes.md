@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Switching an additional bot between Local Development and Remote Server now reloads the database from that active installation instead of retaining rows cached from the previous location.
+- Testing runs now keep their database under the selected testing identity's profile. HachiGen will not start a database-backed test process unless the bot supports an isolated database-path environment variable, preventing production data from being overwritten.
 - Selected additional bots now use Hachi's existing layouts and controls across Dashboard, Setup, Updates, Database, Logs, Testing, and Diagnostics. Bot-specific adapters supply the data, while unsupported operations are simply disabled.
 - Fixed the remaining `EAGAIN` error when a remote additional bot's Data Viewer reads its request over SSH.
 - Fleet bot rows now contain only Select and Remove, and the redundant Activity box has been removed. Dashboard remains the place to check health and operate the selected bot.

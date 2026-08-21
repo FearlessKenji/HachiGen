@@ -64,6 +64,8 @@ Notable changes to HachiGen are documented here.
 
 ### Fixed
 
+- Fixed additional-bot local/remote switches retaining the prior installation's cached database rows; all location-bound Database, Configuration, backup, and log state now reloads for the active deployment.
+- Isolated testing databases under each testing identity profile and refused to start database-backed bots that do not expose a supported test database-path environment variable.
 - Fixed the generic remote SQLite viewer synchronously reading SSH stdin, which could still surface `EAGAIN: resource temporarily unavailable`.
 
 - Allowed previously approved read-only PM2 log retrieval while a changed Bot Profile awaits reapproval, while continuing to block changed-profile commands and mutations. Database audits now skip changed-profile verification adapters instead of executing them.

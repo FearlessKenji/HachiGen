@@ -711,6 +711,43 @@ function collectLocalProjectFiles(root) {
 	return files;
 }
 
+function findProjectEnvironmentReference(root, candidates) {
+	const excluded = new Set([".git", ".hachigen", "logs", "manager", "node_modules"]);
+	let inspected = 0;
+	function visit(directory) {
+		for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+			if (inspected >= 1000) {
+				return "";
+			}
+			if (entry.isDirectory()) {
+				if (!excluded.has(entry.name.toLowerCase())) {
+					const nested = visit(path.join(directory, entry.name));
+					if (nested) {
+						return nested;
+					}
+				}
+				continue;
+			}
+			if (!entry.isFile() || !/\.(?:c?js|mjs|ts)$/iu.test(entry.name)) {
+				continue;
+			}
+			const filePath = path.join(directory, entry.name);
+			if (fs.statSync(filePath).size > 1024 * 1024) {
+				continue;
+			}
+			inspected += 1;
+			const source = fs.readFileSync(filePath, "utf8");
+			for (const candidate of candidates) {
+				if (source.includes(candidate)) {
+					return candidate;
+				}
+			}
+		}
+		return "";
+	}
+	return visit(root) || "";
+}
+
 function readRuntimeArchiveManifest(archivePath) {
 	const entries = readTarGzEntries(archivePath);
 	const manifestBuffer = entries.get("manifest.json");
@@ -2092,7 +2129,7 @@ class HachiManager {
 		return { id: safeId, guildIds: normalizeConfigIdList(metadata.guildIds), name: metadata.name || safeId, values };
 	}
 
-	testingIdentityEnvironment(identity) {
+	testingIdentityEnvironment(identity, overrides = {}) {
 		return {
 			...process.env,
 			TOKEN: identity.values.TOKEN,
@@ -2103,6 +2140,30 @@ class HachiManager {
 			publicKey: identity.values.publicKey,
 			testID: identity.values.clientId,
 			testTOKEN: identity.values.TOKEN,
+			...overrides,
+		};
+	}
+
+	testingDatabaseEnvironment(context, identity) {
+		const declaredPath = context.definition.paths?.database;
+		if (!declaredPath) {
+			return { databasePath: null, env: {} };
+		}
+		const derivedKey = `${context.definition.id.replace(/[^a-z0-9]+/giu, "_").replace(/^_+|_+$/gu, "").toUpperCase()}_DATABASE_PATH`;
+		const candidates = [derivedKey, "HACHIGEN_TEST_DATABASE_PATH", "DATABASE_PATH"];
+		const supportedKey = findProjectEnvironmentReference(context.deployment.installPath, candidates);
+		if (!supportedKey) {
+			throw new Error(`${context.definition.displayName} declares a database but does not support an isolated test database path. Add support for ${derivedKey} before running it with testing credentials.`);
+		}
+		const databaseRoot = path.join(this.testingProfilesDir, identity.id, "data", normalizeProfileId(context.definition.id, "bot"));
+		ensureDir(databaseRoot);
+		const databasePath = path.join(databaseRoot, path.basename(declaredPath));
+		return {
+			databasePath,
+			env: {
+				[supportedKey]: databasePath,
+				HACHIGEN_TEST_DATABASE_PATH: databasePath,
+			},
 		};
 	}
 
@@ -2163,6 +2224,7 @@ class HachiManager {
 
 	getTestingRunState() {
 		return [...this.testingRuns.values()].map(runState => ({
+			databasePath: runState.databasePath || null,
 			deploymentId: runState.deploymentId,
 			exitedAt: runState.exitedAt || null,
 			exitCode: runState.exitCode ?? null,
@@ -2199,7 +2261,8 @@ class HachiManager {
 			throw new Error("The bot's testing entry point is missing or outside its repository.");
 		}
 		const identity = this.readTestingIdentity(profileId);
-		const env = this.testingIdentityEnvironment(identity);
+		const testDatabase = this.testingDatabaseEnvironment(context, identity);
+		const env = this.testingIdentityEnvironment(identity, testDatabase.env);
 		// Use the bot host's Node runtime; process.execPath is HachiGen.exe in packaged builds.
 		const child = childProcess.spawn("node", [entryPath, ...command.args.slice(1)], {
 			cwd: context.deployment.installPath,
@@ -2207,7 +2270,7 @@ class HachiManager {
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 		});
-		const runState = { child, deploymentId, exitedAt: null, exitCode: null, output: "", profileId: identity.id, startedAt: new Date().toISOString(), status: "starting" };
+		const runState = { child, databasePath: testDatabase.databasePath, deploymentId, exitedAt: null, exitCode: null, output: "", profileId: identity.id, startedAt: new Date().toISOString(), status: "starting" };
 		this.testingRuns.set(deploymentId, runState);
 		const appendOutput = chunk => {
 			let output = `${runState.output}${chunk}`;
