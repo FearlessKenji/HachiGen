@@ -7763,7 +7763,18 @@ process.stdout.write(JSON.stringify({
 		// Build the complete state object consumed by renderer/app.js. This keeps
 		// the renderer simple: it redraws from one object instead of coordinating
 		// several backend calls itself.
-		const repository = await this.getRepositoryInfo();
+		// Start independent filesystem/process probes together. Repository identity
+		// still gates update-state reuse, but it does not need to block scanning,
+		// database inspection, or PM2 status collection.
+		const repositoryPromise = this.getRepositoryInfo();
+		// Attach rejection handlers immediately while repository/stash work runs;
+		// this avoids a fast probe rejection becoming temporarily unhandled.
+		const detailsPromise = Promise.all([
+			this.getQuickScan(),
+			this.getDatabaseState(),
+			this.getPm2Status(),
+		]);
+		const repository = await repositoryPromise;
 
 		if (!this.updateStateMatchesRepository(repository)) {
 			this.updateState = createUncheckedUpdateState("Updates have not been checked for this install path yet.");
@@ -7777,11 +7788,11 @@ process.stdout.write(JSON.stringify({
 			this.updateState.stash = this.settings.activeStash || null;
 		}
 
-		const scan = await this.getQuickScan();
+		const [scan, database, pm2] = await detailsPromise;
 
 		return {
 			appName: "HachiGen",
-			database: await this.getDatabaseState(),
+			database,
 			hachiGenUpdate: this.hachiGenUpdateState,
 			hachiGenVersion: this.getHachiGenVersion(),
 			installPath: this.getInstallPath(),
@@ -7790,9 +7801,26 @@ process.stdout.write(JSON.stringify({
 			runtimeTarget: this.getRuntimeTarget(),
 			scan,
 			updates: this.updateState,
-			pm2: await this.getPm2Status(),
+			pm2,
 			recentEvents: this.logger.readRecentEvents(80),
 			fleet: this.getFleetState(),
+		};
+	}
+
+	getStartupState() {
+		// Startup needs only local manager-owned files. Expensive Git, PM2, SSH,
+		// database, configuration, log, and testing reads are loaded for the
+		// selected bot or active tab after the first usable render.
+		return {
+			appName: "HachiGen",
+			fleet: this.getFleetState(),
+			hachiGenUpdate: this.hachiGenUpdateState,
+			hachiGenVersion: this.getHachiGenVersion(),
+			installPath: this.getInstallPath(),
+			recentEvents: this.logger.readRecentEvents(20),
+			remote: this.getRemoteState(),
+			runtimeTarget: this.getRuntimeTarget(),
+			updates: this.updateState,
 		};
 	}
 

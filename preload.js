@@ -26,6 +26,7 @@ function invoke(channel, ...args) {
 contextBridge.exposeInMainWorld("hachiGen", {
 	// Install/state actions.
 	getState: () => invoke("manager:get-state"),
+	getStartupState: () => invoke("manager:get-startup-state"),
 	getFleet: () => invoke("manager:get-fleet"),
 	addFleetServer: values => invoke("manager:add-fleet-server", values),
 	updateFleetServer: (serverId, values) => invoke("manager:update-fleet-server", serverId, values),

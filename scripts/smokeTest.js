@@ -317,6 +317,24 @@ function validateRendererAndMenuWiring() {
 		"Hachi and additional bots should share renderer components and standard action names.",
 	);
 	assert(
+		preloadSource.includes("getStartupState") &&
+			mainSource.includes("manager:get-startup-state") &&
+			managerSource.includes("getStartupState()") &&
+			/async function init\(\)[\s\S]*api\.getStartupState\(\)[\s\S]*selectedBotId === HACHI_BOT_ID[\s\S]*refreshFleetOverview\(\)/u.test(rendererSource) &&
+			!/async function init\(\)[\s\S]*await refreshConfig\(\)[\s\S]*await refreshLogs\(\)[\s\S]*await refreshTestingProfiles\(\)/u.test(rendererSource),
+		"Startup should use the lightweight selected-bot snapshot and defer configuration, logs, and testing data.",
+	);
+	assert(
+		managerSource.includes("const repositoryPromise = this.getRepositoryInfo()") &&
+			managerSource.includes("const detailsPromise = Promise.all([") &&
+			managerSource.includes("const [scan, database, pm2] = await detailsPromise"),
+		"Native state collection should run independent probes concurrently.",
+	);
+	assert(
+		/selectedBotId === HACHI_BOT_ID\)[\s\S]*refreshState\(\)\.catch/u.test(rendererSource),
+		"Switching back to Hachi should replace the lightweight startup snapshot with complete native state.",
+	);
+	assert(
 		managerSource.includes("const targetBranch = branch.stdout.trim() || context.deployment.repositoryBranch"),
 		"Live checked-out branches should override saved installation branch snapshots.",
 	);

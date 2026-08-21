@@ -926,6 +926,7 @@ function registerIpc() {
 	// State and install-path channels. These read or update the Hachi install
 	// folder that every later operation uses as its root.
 	ipcMain.handle("manager:get-state", () => manager.getState());
+	ipcMain.handle("manager:get-startup-state", () => manager.getStartupState());
 	ipcMain.handle("manager:get-fleet", () => manager.getFleetState());
 	ipcMain.handle("manager:add-fleet-server", (_event, values) => manager.addFleetServer(values));
 	ipcMain.handle("manager:update-fleet-server", (_event, serverId, values) => manager.updateFleetServer(serverId, values));

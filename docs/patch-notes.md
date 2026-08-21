@@ -4,6 +4,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- HachiGen now opens from a lightweight local snapshot and loads only the selected bot's Dashboard first. Configuration, Logs, Testing, Database details, and Diagnostics load when opened, while independent health checks run concurrently.
 - Additional bots now switch local and remote installations through the same logical selected-bot pathway used by Hachi. The selected bot stays constant while its active installation changes, and every shared tab follows that target automatically.
 - Switching an additional bot between Local Development and Remote Server now reloads the database from that active installation instead of retaining rows cached from the previous location.
 - Testing runs now keep their database under the selected testing identity's profile. HachiGen will not start a database-backed test process unless the bot supports an isolated database-path environment variable, preventing production data from being overwritten.

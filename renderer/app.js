@@ -966,8 +966,17 @@ function showView(viewName) {
 	activeView = viewName;
 	renderViews();
 
+	if (activeView === "setup") {
+		const load = selectedBotId === HACHI_BOT_ID ? refreshConfig() : loadExternalConfiguration();
+		load.catch(error => toast(error.message || "Configuration refresh failed.", "error", { label: "Configuration" }));
+	}
+
 	if (activeView === "logs") {
-		refreshLogs();
+		refreshLogs().catch(error => recordRendererEvent("error", error.message || String(error), { label: "Refresh logs" }));
+	}
+
+	if (activeView === "testing") {
+		refreshTestingProfiles().catch(error => toast(error.message || "Testing refresh failed.", "error", { label: "Testing" }));
 	}
 
 	if (activeView === "database" && !databaseView) {
@@ -983,9 +992,11 @@ function showView(viewName) {
 		});
 	}
 
-	if (activeView === "fleet" || selectedBotId !== HACHI_BOT_ID) {
+	if (activeView === "fleet") {
+		refreshFleet().catch(error => toast(error.message || "Fleet refresh failed.", "error", { label: "Fleet" }));
+	} else if (selectedBotId !== HACHI_BOT_ID && ["dashboard", "setup", "updates", "database", "diagnostics"].includes(activeView)) {
 		refreshFleetOverview().catch(error => {
-			toast(error.message || "Fleet overview refresh failed.", "error", { label: "Fleet" });
+			toast(error.message || "Bot refresh failed.", "error", { label: selectedBotName() });
 		});
 	}
 }
@@ -3967,6 +3978,9 @@ function updateLogPolling() {
 async function checkUpdatesOnStartup() {
 	// Check updates after the first render. Doing this in the background lets
 	// the window open before Git/network work has finished.
+	if (selectedBotId !== HACHI_BOT_ID) {
+		return;
+	}
 	try {
 		await api.checkUpdates();
 		await refreshState();
@@ -4145,7 +4159,10 @@ function handleChange(event) {
 		databaseView = null;
 		renderSelectedBotContext();
 		if (selectedBotId === HACHI_BOT_ID) {
-			renderState(state);
+			// The initial state may be only the lightweight startup snapshot. Fetch
+			// native details when Hachi becomes selected instead of rendering stale
+			// data left by the previously selected additional bot.
+			refreshState().catch(error => toast(error.message || "Hachi status refresh failed.", "error"));
 		} else {
 			if ($("#testingDeploymentSelect")) $("#testingDeploymentSelect").value = selectedFleetDeployment()?.id || "";
 			renderTestingRunner();
@@ -5443,13 +5460,18 @@ async function init() {
 
 	api.onMenuAction(handleMenuAction);
 
-	// First render: show static view state, then fetch dynamic backend data.
+	// First render uses only manager-owned local state. Expensive bot, Git, SSH,
+	// database, configuration, log, and testing reads follow the selected context.
 	renderViews();
-	await refreshState();
-	await refreshConfig();
-	await refreshLogs();
-	await refreshTestingProfiles();
-	checkUpdatesOnStartup();
+	const startupState = await api.getStartupState();
+	state = startupState;
+	renderFleet(startupState.fleet);
+	if (selectedBotId === HACHI_BOT_ID) {
+		await refreshState();
+		setTimeout(() => checkUpdatesOnStartup(), 1200);
+	} else {
+		await refreshFleetOverview();
+	}
 }
 
 // Packaged smoke mode calls this after the page loads. It exercises shared
