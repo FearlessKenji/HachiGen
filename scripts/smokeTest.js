@@ -192,7 +192,7 @@ function validateProjectFiles() {
 		"config/eslint.config.js", "docs/bot-definitions.md", "docs/patch-notes.md", "icon.ico", "main.js", "package-lock.json",
 		"package.json", "preload.js", "renderer/app.js", "renderer/assets/KenjiBotProfile.svg",
 		"renderer/index.html", "renderer/styles.css", "scripts/copyRootInstaller.js", "scripts/packagedUiSmoke.js", "scripts/smokeTest.js",
-		"src/botRegistry.js", "src/database-worker.js", "src/hachigenLogger.js", "src/manager.js", "src/shell.js",
+		"src/botRegistry.js", "src/configuration.js", "src/database-worker.js", "src/hachigenLogger.js", "src/manager.js", "src/shell.js",
 	];
 	for (const file of requiredFiles) {
 		assert(fs.existsSync(resolveProject(file)), `Missing required project file: ${file}.`);
@@ -504,7 +504,13 @@ function validateRendererAndMenuWiring() {
 		stylesSource.includes(".ui-icon"),
 		"Setup guide/dashboard/diagnostics styles are missing.",
 	);
-	assert(mainSource.includes("render-process-gone") && mainSource.includes("HACHIGEN_UI_SMOKE"), "Main process should log renderer recovery events and support packaged UI smoke mode.");
+	assert(
+		mainSource.includes("render-process-gone") &&
+			mainSource.includes("HACHIGEN_UI_SMOKE_RESULT") &&
+			rendererSource.includes("window.__runHachiGenUiSmoke") &&
+			readSource("scripts", "packagedUiSmoke.js").includes("renderer workflow checks"),
+		"Packaged UI smoke should execute renderer workflow checks and log renderer recovery events.",
+	);
 	assert(!indexSource.includes("Install Latest") && !rendererSource.includes("Install Latest") && !managerSource.includes("Install Latest"), "HachiGen update UI should not show the old Install Latest action.");
 	assert(managerSource.includes("Updates are available: Version") && managerSource.includes("HachiGen is up to date."), "HachiGen update status copy should stay concise.");
 	const relaunchesInHiddenUpdater = mainSource.includes("-WindowStyle") &&

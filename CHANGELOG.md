@@ -22,6 +22,10 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
+- Expanded packaged UI smoke testing from a window-load check to renderer workflow assertions covering shared navigation, bot selection, local/remote controls, Configuration, and Testing controls.
+- Changed packaged smoke executable selection to prefer the freshly built unpacked application over a potentially stale portable artifact.
+- Changed packaged smoke executable selection to prefer the freshly built unpacked application over a potentially stale portable artifact.
+- Extracted shared `.env` and structured-configuration parsing, sensitivity classification, and safe nested-value updates from the backend coordinator into a focused configuration module.
 - Expanded failed Fleet update recovery to restore the prior commit, reinstall its dependencies, restore the encrypted database backup, and restart a previously online runtime; every recovery step is logged and included in the returned error.
 - Reduced Fleet bot inventory rows to Select, Health, and Remove. Runtime, logs, updates, command deployment, credentials, and database operations remain in Dashboard and the selected bot's shared views.
 - Removed the separate additional-bot setup composition. The selected bot now uses Hachi's native Install, validation, cron reference, Runtime Location, Remote Connection controls, connection testing, and Connection Preview directly; only Configuration swaps to repository-derived fields.

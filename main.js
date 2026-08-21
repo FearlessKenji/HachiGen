@@ -791,10 +791,25 @@ function createWindow() {
 
 	mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
 
-	mainWindow.webContents.once("did-finish-load", () => {
+	mainWindow.webContents.once("did-finish-load", async () => {
 		if (UI_SMOKE_MODE) {
-			manager?.log("Packaged UI smoke mode loaded the renderer.");
-			setTimeout(() => app.exit(0), 150);
+			try {
+				// Validate the built renderer workflows, not only window creation.
+				const result = await mainWindow.webContents.executeJavaScript("window.__runHachiGenUiSmoke()", true);
+				if (!result?.ok) {
+					throw new Error(result?.failures?.join("; ") || "Renderer smoke checks failed.");
+				}
+				manager?.log(`Packaged UI smoke passed ${result.checks} renderer checks.`);
+				if (process.env.HACHIGEN_UI_SMOKE_RESULT) {
+					fs.writeFileSync(process.env.HACHIGEN_UI_SMOKE_RESULT, JSON.stringify(result), "utf8");
+				}
+				app.exit(0);
+			} catch (error) {
+				if (process.env.HACHIGEN_UI_SMOKE_RESULT) {
+					fs.writeFileSync(process.env.HACHIGEN_UI_SMOKE_RESULT, JSON.stringify({ ok: false, failures: [error.message] }), "utf8");
+				}
+				app.exit(1);
+			}
 			return;
 		}
 

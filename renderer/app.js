@@ -5274,4 +5274,25 @@ async function init() {
 	checkUpdatesOnStartup();
 }
 
+// Packaged smoke mode calls this after the page loads. It exercises shared
+// navigation and verifies the controls needed by the selected-bot workflows.
+window.__runHachiGenUiSmoke = () => {
+	const checks = [
+		["global bot selector", Boolean($("#globalBotSelect"))],
+		["shared configuration form", Boolean($("#configForm") && $("#externalConfigurationFields"))],
+		["local runtime target", Boolean($('input[name="runtimeTarget"][value="local"]'))],
+		["remote runtime target", Boolean($('input[name="runtimeTarget"][value="remote"]'))],
+		["remote save and test", Boolean($("#saveRemoteSettingsButton") && $("#testRemoteButton"))],
+		["testing selectors", Boolean($("#testingIdentitySelect") && $("#testingDeploymentSelect"))],
+		["testing process controls", Boolean($('[data-action="start-testing-bot"]') && $('[data-action="stop-testing-bot"]'))],
+	];
+	for (const view of ["dashboard", "setup", "fleet", "testing"]) {
+		showView(view);
+		checks.push([`${view} navigation`, Boolean($(`[data-view-panel="${view}"]`)?.classList.contains("active"))]);
+	}
+	showView("dashboard");
+	const failures = checks.filter(([, passed]) => !passed).map(([name]) => name);
+	return { checks: checks.length, failures, ok: failures.length === 0 };
+};
+
 init();
