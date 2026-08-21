@@ -7786,13 +7786,47 @@ process.stdout.write(JSON.stringify({
 		// Start independent filesystem/process probes together. Repository identity
 		// still gates update-state reuse, but it does not need to block scanning,
 		// database inspection, or PM2 status collection.
-		const repositoryPromise = this.getRepositoryInfo();
+		const repositoryPromise = this.getRepositoryInfo().catch(error => ({
+			currentBranch: null,
+			error: error.message || "Repository status could not be read.",
+			isGit: false,
+			originUrl: null,
+			source: this.getRuntimeTarget(),
+			updateBranch: UPDATE_BRANCH,
+			updateRemote: UPDATE_REMOTE,
+			updateTarget: UPDATE_TARGET,
+		}));
 		// Attach rejection handlers immediately while repository/stash work runs;
 		// this avoids a fast probe rejection becoming temporarily unhandled.
 		const detailsPromise = Promise.all([
-			this.getQuickScan(),
-			this.getDatabaseState(),
-			this.getPm2Status(),
+			this.getQuickScan().catch(error => ({
+				configurationMissing: [],
+				configurationReady: false,
+				dependenciesReady: false,
+				error: error.message || "Installation status could not be read.",
+				hasGit: false,
+				hasNodeModules: false,
+				installPath: this.getRuntimeTarget() === "remote" ? this.settings.remote?.remotePath || "" : this.getInstallPath(),
+				missingDependencies: [],
+				missingFiles: [],
+				projectFound: false,
+				source: this.getRuntimeTarget(),
+			})),
+			this.getDatabaseState().catch(error => ({
+				backups: [],
+				error: error.message || "Database status could not be read.",
+				exists: false,
+				path: "Unavailable",
+				size: 0,
+				sizeLabel: "0 B",
+				source: this.getRuntimeTarget(),
+			})),
+			this.getPm2Status().catch(error => ({
+				installed: false,
+				message: error.message || "Runtime status could not be read.",
+				registered: false,
+				status: "unavailable",
+			})),
 		]);
 		const repository = await repositoryPromise;
 
@@ -7801,6 +7835,9 @@ process.stdout.write(JSON.stringify({
 		}
 
 		try {
+			if (repository.error || !repository.isGit) {
+				throw new Error(repository.error || "Repository is unavailable.");
+			}
 			await this.refreshActiveStash();
 		} catch {
 			// If Git stash inspection fails, keep the older saved stash value
@@ -9093,9 +9130,19 @@ process.stdout.write(JSON.stringify({
 	async getRepositoryInfo({ onLog = null, log = Boolean(onLog) } = {}) {
 		const paths = this.getPaths();
 		const isRemote = this.getRuntimeTarget() === "remote";
+		let isGit = false;
+		let connectionError = null;
+		try {
+			isGit = isRemote ? await this.remotePathExists(".git", "d") : fileExists(paths.git);
+		} catch (error) {
+			// Remote availability is status data. A failed SSH probe must not reject
+			// the entire shared state response or block local testing workflows.
+			connectionError = error.message || "Remote repository could not be reached.";
+		}
 		const info = {
-			isGit: isRemote ? await this.remotePathExists(".git", "d") : fileExists(paths.git),
+			isGit,
 			currentBranch: null,
+			error: connectionError,
 			originUrl: null,
 			updateRemote: UPDATE_REMOTE,
 			updateBranch: UPDATE_BRANCH,

@@ -208,6 +208,7 @@ const ACTION_ICONS = {
 	"restore-database": "restore",
 	"restore-stash": "restore",
 	"reapprove-fleet-deployment": "shieldCheck",
+	"reapprove-testing-profile": "shieldCheck",
 	"remove-bot-definition": "trash",
 	"remove-fleet-deployment": "trash",
 	"remove-fleet-server": "trash",
@@ -663,6 +664,9 @@ function shortRemoteUrl(remoteUrl) {
 }
 
 function repositoryRemoteLabel(repository) {
+	if (repository?.error) {
+		return "Repo: Unavailable";
+	}
 	if (!repository?.isGit) {
 		return "Repo: Not a Git checkout";
 	}
@@ -671,6 +675,9 @@ function repositoryRemoteLabel(repository) {
 }
 
 function repositoryBranchLabel(repository) {
+	if (repository?.error) {
+		return "Branch: Unavailable";
+	}
 	if (!repository?.isGit) {
 		return "Branch: Not available";
 	}
@@ -1270,6 +1277,10 @@ function installRendererDiagnosticsHooks() {
 function installHealth(scan) {
 	// Translate quickScan() output into the three values the Dashboard needs:
 	// a label, a dot color, and a short detail line.
+	if (scan?.error) {
+		return { label: "Unavailable", dot: "warn", detail: "Connection could not be reached" };
+	}
+
 	if (!scan?.projectFound) {
 		return { label: "Missing", dot: "bad", detail: "Project files incomplete" };
 	}
@@ -1335,6 +1346,10 @@ function databaseHealth(database) {
 	// Database audit status comes from database/dbAudit.js. Keep this small
 	// mapping here so the Dashboard can gracefully handle missing audit data.
 	const audit = database?.audit;
+
+	if (database?.error) {
+		return { label: "Unavailable", dot: "warn", detail: "Connection could not be reached" };
+	}
 
 	if (!database?.exists) {
 		return { label: "Not Created", dot: "muted", detail: "No database found" };
@@ -3775,8 +3790,11 @@ function renderTestingRunner(runs = testingRuns) {
 	replaceSelectOptions("#testingIdentitySelect", testingProfiles, profile => `${profile.name}${profile.isDefault ? " · Default" : ""}`);
 	const deploymentId = $("#testingDeploymentSelect")?.value || "";
 	const deployment = deployments.find(item => item.id === deploymentId);
+	const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
+	const approvalChanged = definition?.source === "external" && deployment?.definitionFingerprint !== definition?.fingerprint;
 	const runState = testingRuns.find(run => run.deploymentId === deploymentId);
 	const running = ["running", "starting", "stopping"].includes(runState?.status);
+	if ($("#reapproveTestingProfileButton")) $("#reapproveTestingProfileButton").hidden = !approvalChanged;
 	setDisabled("#startTestingBotButton", !deploymentId || !$("#testingIdentitySelect")?.value || running);
 	setDisabled("#stopTestingBotButton", !running);
 	setDisabled("#resetTestingCommandsButton", !deploymentId || !$("#testingIdentitySelect")?.value || !deployment?.testCommandsAvailable);
@@ -4570,7 +4588,35 @@ function handleAction(event) {
 	}
 
 	if (action === "refresh-testing-run") {
-		runAction("Refresh testing process", refreshTestingProfiles);
+		runAction("Refresh testing process", async () => {
+			await refreshFleet();
+			return refreshTestingProfiles();
+		});
+		return;
+	}
+
+	if (action === "reapprove-testing-profile") {
+		const deploymentId = $("#testingDeploymentSelect")?.value;
+		const deployment = fleetState?.deployments?.find(item => item.id === deploymentId);
+		const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
+		showConfirmModal({
+			confirmText: "Validate & Approve",
+			details: [
+				`Local repository: ${deployment?.installPath || "Not found"}`,
+				`Requested capabilities: ${Object.entries(definition?.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "Status only"}`,
+			],
+			meta: "Local testing profile review",
+			summary: "HachiGen will validate the local source repository before approving the changed bot profile for testing.",
+			title: `Reapprove ${deployment?.name || "bot"} for testing?`,
+			variant: "warning",
+		}).then(confirmed => {
+			if (!confirmed || !deployment) return;
+			runAction("Reapprove local testing profile", async () => {
+				renderFleet(await api.reapproveFleetDeployment(deployment.id));
+				renderTestingRunner();
+				return { message: "Local testing profile validated and reapproved." };
+			});
+		});
 		return;
 	}
 

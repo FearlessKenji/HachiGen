@@ -388,6 +388,7 @@ function validateRendererAndMenuWiring() {
 			indexSource.includes('id="testingDeploymentSelect"') &&
 			indexSource.includes('data-action="start-testing-bot"') &&
 			indexSource.includes('data-action="reset-testing-commands"') &&
+			indexSource.includes('data-action="reapprove-testing-profile"') &&
 			preloadSource.includes("getTestingProfiles") &&
 			preloadSource.includes("resetTestingCommands") &&
 			mainSource.includes("manager:reset-testing-commands") &&
@@ -1284,6 +1285,26 @@ async function validateFleetCredentialAndBackupSecurity() {
 		fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), "damaged");
 		await manager.restoreFleetDatabaseBackup("optional-bot", backup.backupId);
 		assert(fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase), "Encrypted fleet backup did not restore original database bytes.");
+		manager.getRepositoryInfo = async () => {
+			throw new Error("remote unavailable");
+		};
+		manager.getQuickScan = async () => {
+			throw new Error("remote unavailable");
+		};
+		manager.getDatabaseState = async () => {
+			throw new Error("remote unavailable");
+		};
+		manager.getPm2Status = async () => {
+			throw new Error("remote unavailable");
+		};
+		const degradedState = await manager.getState();
+		assert(
+			degradedState.repository.error === "remote unavailable" &&
+				degradedState.scan.error === "remote unavailable" &&
+				degradedState.database.error === "remote unavailable" &&
+				degradedState.pm2.status === "unavailable",
+			"A failed remote target should return component-level unavailable status instead of rejecting shared state.",
+		);
 	} finally {
 		// Ensure a failed assertion cannot leave the smoke-test child alive.
 		manager?.stopAllTestingBots();
