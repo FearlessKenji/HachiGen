@@ -1075,6 +1075,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 		"fs.writeFileSync('credentials.enc',JSON.stringify({clientId:p.clientId,tokenHash:crypto.createHash('sha256').update(p.token).digest('hex')}));",
 	].join(""));
 	fs.writeFileSync(path.join(deploymentPath, "start-test.js"), "console.log(process.env.TOKEN);setInterval(()=>{},1000);\n");
+	fs.writeFileSync(path.join(deploymentPath, "bot-settings.yaml"), "# retained comment\nfeature:\n  enabled: true\napiToken: smoke-secret\n");
 	childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: deploymentPath, stdio: "ignore" });
 	childProcess.execFileSync("git", ["remote", "add", "origin", "https://example.invalid/optional-bot.git"], { cwd: deploymentPath, stdio: "ignore" });
 	childProcess.execFileSync("git", ["checkout", "-b", "test-feature"], { cwd: deploymentPath, stdio: "ignore" });
@@ -1095,6 +1096,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 			runtime: { ecosystemFile: "ecosystem.config.js", pm2Name: "OptionalBot" },
 			repository: { url: "https://example.invalid/optional-bot.git", branch: "main" },
 			paths: { database: "data/bot.sqlite" },
+			configuration: { files: ["bot-settings.yaml"] },
 			credentials: { mode: "adapter" },
 			capabilities: { backups: true, databaseEncryption: true, secretEncryption: true },
 			commands: {
@@ -1111,6 +1113,16 @@ async function validateFleetCredentialAndBackupSecurity() {
 		});
 		const deployment = manager.fleet.deployments.find(item => item.botTypeId === "optional-bot");
 		assert(deployment.repositoryBranch === "test-feature", "Fleet should record each installation's checked-out branch instead of forcing the profile branch.");
+		const configuration = manager.getFleetDeploymentConfiguration(deployment.id);
+		const yamlFile = configuration.files.find(file => file.path === "bot-settings.yaml");
+		assert(yamlFile?.format === "yaml" && yamlFile.fields.find(field => field.key === "apiToken")?.sensitive, "Profile-declared YAML configuration should load with sensitive fields hidden.");
+		manager.saveFleetDeploymentConfiguration(deployment.id, {
+			path: yamlFile.path,
+			hash: yamlFile.hash,
+			fields: [{ key: "feature.enabled", value: "false" }, { key: "apiToken", value: "" }],
+		});
+		const savedYaml = fs.readFileSync(path.join(deploymentPath, "bot-settings.yaml"), "utf8");
+		assert(savedYaml.includes("# retained comment") && savedYaml.includes("enabled: false") && savedYaml.includes("smoke-secret"), "YAML saves should preserve comments and blank sensitive replacements.");
 		const overview = await manager.getFleetDeploymentOverview(deployment.id);
 		assert(
 			overview.deployment.name === "Optional Bot Test" &&

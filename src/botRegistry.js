@@ -100,6 +100,7 @@ function validateExternalBotDefinition(input, sourcePath = "external definition"
 		paths: {},
 		capabilities: {},
 		commands: {},
+		configuration: { files: [] },
 		credentials: { mode: credentialsMode },
 	};
 	if (!definition.repository.url || definition.repository.url === "-" || !definition.repository.branch || definition.repository.branch === "-") {
@@ -128,6 +129,17 @@ function validateExternalBotDefinition(input, sourcePath = "external definition"
 	for (const [key, value] of Object.entries(input.paths || {})) {
 		if (value !== undefined && value !== null && String(value).trim()) {
 			definition.paths[key] = assertSafeRelativePath(value, `paths.${key}`);
+		}
+	}
+	const configurationFiles = Array.isArray(input.configuration?.files) ? input.configuration.files : [];
+	if (configurationFiles.length > 20) {
+		throw new Error(`${sourcePath} declares too many configuration files.`);
+	}
+	definition.configuration.files = [...new Set(configurationFiles.map((value, index) =>
+		assertSafeRelativePath(value, `configuration.files[${index}]`)))];
+	for (const file of definition.configuration.files) {
+		if (!/(?:^|\/)\.env(?:\.[^/]+)?$|\.(?:json|ya?ml)$/iu.test(file)) {
+			throw new Error(`${sourcePath} configuration file ${file} must be an .env, JSON, YAML, or YML file.`);
 		}
 	}
 	if (credentialsMode === "adapter" && !definition.commands.credentialsWrite) {

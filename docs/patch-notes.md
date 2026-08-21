@@ -4,6 +4,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Additional-bot Configuration now discovers YAML and YML files as well as `.env` and JSON. Bot Profiles can safely declare other configuration filenames, and YAML comments and formatting are retained when values are changed.
 - Fleet bot rows now stay focused on inventory with Select, Health, and Remove. Start, stop, restart, logs, updates, commands, credentials, and database tools remain available through Dashboard and the selected bot's normal tabs.
 - Saved Fleet connections can now be edited safely, including changing an SSH private key without removing attached bot installations.
 - Fixed remote Hachi Configuration sometimes failing with an SSH timeout. HachiGen now reads the required remote configuration files through one connection instead of opening four connections at once.

@@ -6,6 +6,7 @@ const crypto = require("node:crypto");
 const childProcess = require("node:child_process");
 const https = require("node:https");
 const zlib = require("node:zlib");
+const YAML = require("yaml");
 const { Buffer } = require("node:buffer");
 const { URL } = require("node:url");
 const {
@@ -2497,6 +2498,7 @@ class HachiManager {
 		const databaseCandidates = ["database/database.sqlite", "data/database.sqlite", "data/bot.sqlite", "database.sqlite"];
 		const logCandidates = ["logs", "log"];
 		const testEntryCandidates = ["start-test.js", "test.js", "scripts/start-test.js"];
+		const configurationCandidates = [".env", "config/config.json", "config.json", "config/settings.json", "settings.json", "config/config.yaml", "config/config.yml", "config/settings.yaml", "config/settings.yml"];
 		let origin;
 		let branch;
 		let profileBranch;
@@ -2562,6 +2564,7 @@ class HachiManager {
 			paths: {},
 			capabilities: { gitUpdates: true, pm2: ecosystemFound },
 			commands: { install: { executable: "npm", args: [packageLockFound ? "ci" : "install"] } },
+			configuration: { files: configurationCandidates.filter(candidate => fileExists(path.join(installPath, candidate))) },
 		};
 		if (validationScript) {
 			definition.commands.validate = { executable: "npm", args: ["run", validationScript] };
@@ -3509,7 +3512,8 @@ class HachiManager {
 		if (!localDeployment) {
 			throw new Error("A local source repository is required to manage this bot's configuration.");
 		}
-		const candidates = [".env", "config/config.json", "config.json", "config/settings.json", "settings.json"];
+		const defaults = [".env", "config/config.json", "config.json", "config/settings.json", "settings.json", "config/config.yaml", "config/config.yml", "config/settings.yaml", "config/settings.yml"];
+		const candidates = [...new Set([...defaults, ...(selected.definition.configuration?.files || [])])];
 		const files = candidates.flatMap(relativePath => {
 			const filePath = path.join(localDeployment.installPath, relativePath);
 			if (!isPathInside(localDeployment.installPath, filePath) || !fileExists(filePath)) {
@@ -3523,7 +3527,8 @@ class HachiManager {
 				});
 				return [{ fields, format: "env", hash: crypto.createHash("sha256").update(text).digest("hex"), path: relativePath }];
 			}
-			const parsed = parseJsonText(text, null);
+			const yaml = /\.ya?ml$/iu.test(relativePath);
+			const parsed = yaml ? YAML.parse(text) : parseJsonText(text, null);
 			if (!parsed || Array.isArray(parsed)) {
 				return [];
 			}
@@ -3533,7 +3538,7 @@ class HachiManager {
 			});
 			return [{
 				fields,
-				format: "json",
+				format: yaml ? "yaml" : "json",
 				hash: crypto.createHash("sha256").update(text).digest("hex"),
 				path: relativePath,
 			}];
@@ -3571,7 +3576,11 @@ class HachiManager {
 			this.log(`Environment configuration saved for ${localDeployment.name}.`, { area: "fleet", deploymentId });
 			return this.getFleetDeploymentConfiguration(deploymentId);
 		}
-		const parsed = parseJsonText(currentText, null);
+		const yamlDocument = file.format === "yaml" ? YAML.parseDocument(currentText) : null;
+		if (yamlDocument?.errors?.length) {
+			throw new Error(`YAML configuration is invalid: ${yamlDocument.errors[0].message}`);
+		}
+		const parsed = yamlDocument ? yamlDocument.toJS() : parseJsonText(currentText, null);
 		for (const field of Array.isArray(values.fields) ? values.fields : []) {
 			if (isSensitiveConfigKey(field.key) && !String(field.value || "")) {
 				continue;
@@ -3587,10 +3596,15 @@ class HachiManager {
 			if (original.type === "boolean") {
 				next = next === true || next === "true";
 			}
-			setConfigValue(parsed, field.key, next);
+			if (yamlDocument) {
+				yamlDocument.setIn(field.key.split("."), next);
+			} else {
+				setConfigValue(parsed, field.key, next);
+			}
 		}
 		const temporaryPath = `${filePath}.hachigen-${process.pid}.tmp`;
-		fs.writeFileSync(temporaryPath, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		const output = yamlDocument ? yamlDocument.toString() : `${JSON.stringify(parsed, null, 2)}\n`;
+		fs.writeFileSync(temporaryPath, output, { encoding: "utf8", mode: 0o600 });
 		fs.renameSync(temporaryPath, filePath);
 		this.log(`Configuration saved for ${localDeployment.name}.`, { area: "fleet", deploymentId });
 		return this.getFleetDeploymentConfiguration(deploymentId);
@@ -3606,7 +3620,8 @@ class HachiManager {
 		const localDeployment = this.fleet.deployments.find(item => item.id === configuration.localDeploymentId);
 		const filePath = path.join(localDeployment.installPath, file.path);
 		const text = fs.readFileSync(filePath, "utf8");
-		const value = file.format === "env" ? parseDotEnvContent(text)[key] : flattenConfigValues(parseJsonText(text, {})).find(item => item.key === key)?.value;
+		const structured = file.format === "yaml" ? YAML.parse(text) : parseJsonText(text, {});
+		const value = file.format === "env" ? parseDotEnvContent(text)[key] : flattenConfigValues(structured).find(item => item.key === key)?.value;
 		if (value === undefined || value === null || String(value) === "") {
 			throw new Error(`${key} has no saved value.`);
 		}

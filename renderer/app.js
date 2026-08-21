@@ -4012,7 +4012,7 @@ function handleChange(event) {
 function renderExternalConfiguration(configuration) {
 	externalConfiguration = configuration;
 	const files = configuration?.files || [];
-	setText("#externalConfigurationMeta", files.length ? "" : "No supported .env or JSON configuration detected");
+	setText("#externalConfigurationMeta", files.length ? "" : "No supported .env, JSON, or YAML configuration detected");
 	setDisabled("#saveConfigurationButton", !files.length);
 	const container = $("#externalConfigurationFields");
 	if (!container) return;

@@ -6,6 +6,7 @@ Notable changes to HachiGen are documented here.
 
 ### Added
 
+- Added comment-preserving YAML configuration management and reviewed per-profile configuration file manifests, with safe relative-path validation and the same sensitive-field protections used for `.env` and JSON.
 - Added the rollback-safe fleet registry foundation for multiple servers and bot deployments, with automatic migration of the current Hachi target.
 - Added a native Hachi bot definition and validated external JSON bot profiles for optional bots; Hachi remains the only bundled bot type.
 - Added Fleet and Credentials workspaces for server/deployment registration, external bot discovery, scoped local/SSH PM2 controls, health checks, redacted logs, and deployment-local encrypted Discord credentials.
