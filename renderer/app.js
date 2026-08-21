@@ -305,6 +305,7 @@ let sanitizeReport = null;
 let databaseView = null;
 let databaseViewerLoading = false;
 let databaseSort = { column: "", direction: "" };
+let databaseSource = "production";
 let forceMigrationUnlocked = false;
 let confirmationResolve = null;
 let lastConfig = null;
@@ -989,10 +990,7 @@ function showView(viewName) {
 	}
 
 	if (activeView === "database" && !databaseView) {
-		const external = selectedBotId !== HACHI_BOT_ID;
-		if (external || state?.database?.exists) {
-			loadDatabaseViewer();
-		}
+		prepareDatabaseViewer().catch(error => toast(error.message || "Database sources could not be loaded.", "error", { label: "Database viewer" }));
 	}
 
 	if (activeView === "diagnostics" && selectedBotId === HACHI_BOT_ID) {
@@ -2414,9 +2412,10 @@ function renderDatabaseViewer(view) {
 		setText("#databaseViewerMeta", "No database tables found.");
 	} else {
 		const shownCount = Math.min(rows.length, view.totalRows || rows.length);
+		const sourceLabel = view.source?.type === "testing" ? `Test: ${view.source.profileName}` : "Production";
 		setText(
 			"#databaseViewerMeta",
-			`${selectedTable}: showing ${shownCount} of ${pluralize(view.totalRows || 0, "row")}.`,
+			`${sourceLabel} · ${selectedTable}: showing ${shownCount} of ${pluralize(view.totalRows || 0, "row")}.`,
 		);
 	}
 
@@ -3459,6 +3458,29 @@ function handleHachiGenUpdateWizardEvent(event) {
 	renderHachiGenUpdateWizard();
 }
 
+function renderDatabaseSourceOptions() {
+	const select = $("#databaseSourceSelect");
+	if (!select) return;
+	const options = [{ id: "production", name: "Production" }, ...testingProfiles.map(profile => ({
+		id: `testing:${profile.id}`,
+		name: `Test: ${profile.name}`,
+	}))];
+	replaceSelectOptions("#databaseSourceSelect", options, item => item.name);
+	if (!options.some(item => item.id === databaseSource)) databaseSource = "production";
+	select.value = databaseSource;
+}
+
+async function prepareDatabaseViewer() {
+	testingProfiles = await api.getTestingProfiles();
+	renderDatabaseSourceOptions();
+	const productionAvailable = selectedBotId !== HACHI_BOT_ID || state?.database?.exists;
+	if (databaseSource !== "production" || productionAvailable) {
+		return loadDatabaseViewer();
+	}
+	renderDatabaseViewer(null);
+	return null;
+}
+
 async function loadDatabaseViewer(tableName = "", sort = databaseSort) {
 	// Load one table preview for the read-only Database viewer. This avoids the
 	// shared runAction() wrapper so table changes feel quiet and immediate.
@@ -3473,15 +3495,22 @@ async function loadDatabaseViewer(tableName = "", sort = databaseSort) {
 
 	try {
 		const external = selectedBotId !== HACHI_BOT_ID;
-		const result = external ?
-			await api.readFleetDatabaseTable(selectedBotId, selectedTable, sort) :
-			await api.readDatabaseTable(selectedTable, sort);
+		const testingProfileId = databaseSource.startsWith("testing:") ? databaseSource.slice("testing:".length) : "";
+		let result;
+		if (testingProfileId) {
+			result = await api.readTestingDatabaseTable(selectedBotId, testingProfileId, selectedTable, sort);
+		} else {
+			result = external ?
+				await api.readFleetDatabaseTable(selectedBotId, selectedTable, sort) :
+				await api.readDatabaseTable(selectedTable, sort);
+			result.source = { type: "production" };
+		}
 		setDatabaseSort({
 			column: result.sortColumn || "",
 			direction: result.sortDirection || "",
 		});
 		setDatabaseView(result);
-		if (!external) {
+		if (!external && !testingProfileId) {
 			renderDatabase(result.database);
 		}
 		renderDatabaseViewer(result);
@@ -3501,7 +3530,7 @@ function refreshCurrentDatabaseViewer() {
 	// The viewer caches the last table payload for fast redraws. After database
 	// maintenance actions, reload that payload so stale IDs/rows are not shown as
 	// if they still exist.
-	if (selectedBotId === HACHI_BOT_ID && !state?.database?.exists) {
+	if (databaseSource === "production" && selectedBotId === HACHI_BOT_ID && !state?.database?.exists) {
 		databaseView = null;
 		renderDatabaseViewer(null);
 		return Promise.resolve(null);
@@ -3749,7 +3778,7 @@ function renderTestingProfileEditor(profile = null) {
 	form.reset();
 	form.elements.id.value = profile?.id || "";
 	form.elements.name.value = profile?.name || "";
-	form.elements.guildIds.value = (profile?.guildIds || []).join("\n");
+	form.elements.guildIds.value = (profile?.guildIds || []).join(", ");
 	form.elements.isDefault.checked = profile?.isDefault === true;
 	setText("#testingProfileFormTitle", profile ? profile.name : "New Identity");
 	setDisabled("#deleteTestingProfileButton", !profile);
@@ -4168,6 +4197,13 @@ function handleChange(event) {
 		loadDatabaseViewer(tableSelect.value);
 	}
 
+	if (event.target.id === "databaseSourceSelect") {
+		databaseSource = event.target.value || "production";
+		databaseView = null;
+		setDatabaseSort({ column: "", direction: "" });
+		loadDatabaseViewer();
+	}
+
 	if (event.target.name === "remotePortMode") {
 		updateRemotePortMode();
 	}
@@ -4177,6 +4213,8 @@ function handleChange(event) {
 		selectedBotId = event.target.value || HACHI_BOT_ID;
 		window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
 		databaseView = null;
+		databaseSource = "production";
+		renderDatabaseSourceOptions();
 		renderSelectedBotContext();
 		if (selectedBotId === HACHI_BOT_ID) {
 			// The initial state may be only the lightweight startup snapshot. Fetch

@@ -580,8 +580,8 @@ h2 {
 	outline: 3px solid rgba(63, 111, 159, 0.18);
 }
 
-/* Fleet's compact selector is a toolbar control, not a stacked form field. */
-.fleet-header-actions .select-field.inline-select-field {
+/* Compact selectors keep their labels inline in toolbars and panel headers. */
+.select-field.inline-select-field {
 	display: flex;
 	flex-direction: row;
 	align-items: center;
@@ -589,7 +589,7 @@ h2 {
 	margin-top: 0;
 }
 
-.fleet-header-actions .inline-select-field > span {
+.inline-select-field > span {
 	white-space: nowrap;
 }
 
@@ -1081,7 +1081,11 @@ h2 {
 .database-viewer-controls {
 	display: flex;
 	gap: 10px;
-	align-items: end;
+	align-items: center;
+}
+
+.database-viewer-controls .inline-select-field select {
+	width: 210px;
 }
 
 .database-table-wrap {

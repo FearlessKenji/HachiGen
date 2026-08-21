@@ -3112,6 +3112,48 @@ class HachiManager {
 		return parsed;
 	}
 
+	async readTestingDatabaseTable(botTypeId, profileId, tableName = "", sort = {}) {
+		const context = this.getLocalTestingDeploymentContext(botTypeId);
+		const identity = this.getTestingProfiles().find(item => item.id === normalizeProfileId(profileId));
+		if (!identity) {
+			throw new Error("Testing identity was not found.");
+		}
+		const declaredPath = context.definition.paths?.database;
+		if (!declaredPath) {
+			throw new Error(`${context.definition.displayName} does not declare a database.`);
+		}
+		// Test data is isolated under the identity profile. The generic SQLite
+		// worker opens it read-only and is confined to this exact data directory.
+		const databaseRoot = path.join(
+			this.testingProfilesDir,
+			identity.id,
+			"data",
+			normalizeProfileId(context.definition.id, "bot"),
+		);
+		const databaseFile = path.basename(declaredPath);
+		const databasePath = path.join(databaseRoot, databaseFile);
+		if (!isPathInside(this.testingProfilesDir, databasePath) || !fileExists(databasePath)) {
+			throw new Error(`No ${context.definition.displayName} database exists for ${identity.name} yet.`);
+		}
+		const request = { dbPath: databaseFile, root: ".", sort, table: tableName };
+		const result = await run("node", [path.join(this.managerRoot, "src", SQLITE_VIEWER_WORKER_FILE)], {
+			allowFailure: true,
+			cwd: databaseRoot,
+			input: JSON.stringify(request),
+			timeoutMs: 120000,
+		});
+		const parsed = parseJsonText((result.stdout || "").trim(), null);
+		if (!parsed?.ok) {
+			throw new Error(parsed?.error || result.stderr || "Testing database viewer did not return valid data.");
+		}
+		this.log(`Testing database viewer loaded ${parsed.selectedTable || "no table"}.`, {
+			area: "testing",
+			botTypeId: context.definition.id,
+			profileId: identity.id,
+		});
+		return { ...parsed, source: { profileId: identity.id, profileName: identity.name, type: "testing" } };
+	}
+
 	async checkFleetDeploymentHealth(deploymentId) {
 		const context = this.getFleetDeploymentContext(deploymentId);
 		let pathResult;

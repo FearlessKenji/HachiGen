@@ -6,6 +6,7 @@ Notable changes to HachiGen are documented here.
 
 ### Added
 
+- Added a read-only Production/Testing source selector to the shared Database Data Viewer. Testing sources resolve the selected bot's isolated database under its testing identity profile without changing production maintenance targets.
 - Added an explicit changed-profile reapproval workflow that shows requested capabilities, revalidates the selected installation, and only then refreshes its immutable permission snapshot.
 - Added comment-preserving YAML configuration management and reviewed per-profile configuration file manifests, with safe relative-path validation and the same sensitive-field protections used for `.env` and JSON.
 - Added the rollback-safe fleet registry foundation for multiple servers and bot deployments, with automatic migration of the current Hachi target.
@@ -66,6 +67,7 @@ Notable changes to HachiGen are documented here.
 
 ### Fixed
 
+- Testing identity guild IDs now render as a comma-separated list in the single-line editor instead of collapsing newline-separated IDs into one apparent number, and Data Viewer labels now sit inline with their selectors.
 - Added a local Testing-tab profile review pathway so remote production outages cannot block approval of a bot's local testing adapter, and changed Hachi state refreshes to report failed SSH probes as unavailable component status instead of rejecting the complete state response.
 - Testing actions now resolve the selected bot's current local installation by logical bot identity, refresh Fleet before rendering testing controls, and no longer submit stale or removed deployment IDs after Fleet changes.
 - Fixed additional-bot local/remote switches retaining the prior installation's cached database rows; all location-bound Database, Configuration, backup, and log state now reloads for the active deployment.

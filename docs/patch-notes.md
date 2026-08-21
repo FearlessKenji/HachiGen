@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- The Database Data Viewer can now switch between Production and any saved testing identity for the selected bot. Test databases are view-only, and the Source and Table labels are displayed inline with their selectors.
+- Saved testing guild IDs now remain visibly separated by commas when reopened.
 - Changed additional-bot profiles can now be reviewed directly in Testing against the required local repository, even while production targets an unavailable remote server. Hachi remote timeouts now leave the interface usable and show unavailable status instead of breaking the complete refresh.
 - Starting, stopping, or resetting commands for a test bot now follows its current local repository even after installations are replaced or the production target is remote. Changed bot profiles still require an explicit one-time Review & Reapprove for safety.
 - HachiGen now opens from a lightweight local snapshot and loads only the selected bot's Dashboard first. Configuration, Logs, Testing, Database details, and Diagnostics load when opened, while independent health checks run concurrently.

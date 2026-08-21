@@ -325,6 +325,15 @@ function validateRendererAndMenuWiring() {
 		"Startup should use the lightweight selected-bot snapshot and defer configuration, logs, and testing data.",
 	);
 	assert(
+		indexSource.includes('id="databaseSourceSelect"') &&
+		indexSource.includes('class="select-field inline-select-field"') &&
+		preloadSource.includes("readTestingDatabaseTable") &&
+		mainSource.includes("manager:read-testing-database-table") &&
+		managerSource.includes("async readTestingDatabaseTable") &&
+		rendererSource.includes('join(", ")'),
+		"The shared viewer should support inline Production/Testing sources and preserve visible testing guild-ID separators.",
+	);
+	assert(
 		managerSource.includes("const repositoryPromise = this.getRepositoryInfo()") &&
 			managerSource.includes("const detailsPromise = Promise.all([") &&
 			managerSource.includes("const [scan, database, pm2] = await detailsPromise"),
@@ -1277,6 +1286,16 @@ async function validateFleetCredentialAndBackupSecurity() {
 			"Testing should store its database in the identity profile without modifying production data.",
 		);
 		manager.stopTestingBot("optional-bot");
+		fs.rmSync(testingRun.databasePath, { force: true });
+		const { DatabaseSync } = require("node:sqlite");
+		const isolatedDatabase = new DatabaseSync(testingRun.databasePath);
+		isolatedDatabase.exec("CREATE TABLE test_rows (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO test_rows (value) VALUES ('isolated');");
+		isolatedDatabase.close();
+		const testingView = await manager.readTestingDatabaseTable("optional-bot", "runtime-test", "test_rows");
+		assert(
+			testingView.source.type === "testing" && testingView.rows[0].value === "isolated",
+			"The testing database viewer should read the selected bot's isolated profile database.",
+		);
 		manager.setActiveFleetDeployment(deployment.id);
 		const audit = await manager.auditFleetDeploymentSecurity("optional-bot");
 		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");
