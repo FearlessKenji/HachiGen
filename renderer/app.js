@@ -185,7 +185,6 @@ const ACTION_ICONS = {
 	"export-database-key-backup": "key",
 	"export-support-bundle": "package",
 	"fleet-edit-credentials": "key",
-	"fleet-runtime-health": "shieldCheck",
 	"force-migrate-database": "database",
 	"generate-database-key": "key",
 	"hachigen-update-close": "square",
@@ -1057,14 +1056,20 @@ function renderSelectedBotContext() {
 		$("#reapproveBotProfileButton").hidden = !external || deployment.definitionFingerprint === definition?.fingerprint;
 	}
 	if ($("#dashboardGuideButton")) $("#dashboardGuideButton").hidden = external;
-	for (const selector of ["#externalUpdatesPanel", "#externalDatabasePanel"]) {
+	for (const selector of ["#externalUpdatesPanel"]) {
 		const element = $(selector);
 		if (element) element.hidden = !external;
+	}
+	for (const selector of ["#hachiDatabaseActions", "#hachiProtectionActions", "#hachiDatabaseViewerPanel", "#hachiDatabaseReviewPanel"]) {
+		if ($(selector)) $(selector).hidden = external;
+	}
+	for (const selector of ["#fleetDatabaseActions", "#fleetProtectionActions", "#fleetDatabaseMaintenancePanel"]) {
+		if ($(selector)) $(selector).hidden = !external;
 	}
 	if (external) {
 		setInputValue("#installPathInput", deployment.installPath);
 		setText("#externalUpdatesName", `${deployment.name} updates`);
-		setText("#externalDatabaseName", `${deployment.name} database`);
+		renderExternalDatabaseBackups([]);
 		renderExternalRemote(deployment);
 		setDisabled("#openFolderButton", server?.connection?.type !== "local");
 		setDisabled("#browseInstallButton", server?.connection?.type !== "local");
@@ -1112,6 +1117,7 @@ function renderExternalDashboard(overview) {
 		dot: ["protected", "not-applicable"].includes(databaseStatus) ? "good" : databaseStatus === "encrypted-unverified" ? "warn" : "bad",
 		label: readableStatus(databaseStatus),
 	});
+	renderExternalDatabase(overview);
 	setText("#runtimeMeta", runtime?.message || `${overview.deployment?.pm2Name || "Bot"} process`);
 	setText("#dashboardTargetMode", overview.server?.type === "ssh" ? "Remote" : "Local");
 	setText("#dashboardTargetLocation", overview.deployment?.installPath || "Not set");
@@ -1140,6 +1146,50 @@ function renderExternalDashboard(overview) {
 		["Runtime profile", Boolean(overview.deployment?.capabilities?.pm2), overview.deployment?.capabilities?.pm2 ? "PM2 available" : "No PM2 adapter"],
 		["Testing", Boolean(selectedFleetDeployment()?.testCommandsAvailable), selectedFleetDeployment()?.testCommandsAvailable ? "Test command deployment available" : "Runtime testing only"],
 	]);
+}
+
+function renderExternalDatabase(overview) {
+	const database = overview?.security?.database || {};
+	const status = database.status || (overview?.security?.error ? "error" : "unknown");
+	const exists = !["missing", "not-applicable", "unknown", "error"].includes(status);
+	const protectedDatabase = status === "protected";
+	const unverified = status === "encrypted-unverified";
+	setText("#databaseMeta", status === "not-applicable" ? "No database declared by this Bot Profile" : `${selectedBotName()} database`);
+	setText("#databaseMessage", overview?.security?.error || database.message || "Run Verify to refresh database protection status.");
+	setText("#databaseStatus", exists ? "Found" : status === "not-applicable" ? "Not configured" : "Missing");
+	setText("#databasePath", database.path || "Not declared");
+	setText("#databaseSize", formatFileSize(database.size || 0));
+	setText("#databaseModified", "Not reported");
+	setText("#databaseAuditStatus", readableStatus(status));
+	setText("#databaseProtectionMeta", "Protection is verified through the bot's approved profile");
+	setDot("#databaseProtectionDot", protectedDatabase ? "good" : unverified ? "warn" : status === "not-applicable" ? "muted" : "bad");
+	setText("#databaseProtectionStatus", readableStatus(status));
+	setText("#databaseProtectionDetail", database.message || "Protection status unavailable");
+	setText("#databaseProtectionKeyFile", "Managed by bot");
+	setText("#databaseProtectionRecommendedPath", "Profile adapter");
+	setText("#databaseProtectionDatabaseFile", database.path || "Not declared");
+	setText("#databaseProtectionDriver", protectedDatabase ? "Verified by bot" : "Not verified");
+	setText("#databaseProtectionCipherTest", database.verified ? "Passed" : "Not run");
+	setText("#databaseProtectionRuntime", overview?.health?.runtime?.status || "Unknown");
+	setText("#databaseProtectionChecked", formatDateTime(overview?.security?.checkedAt));
+	setText("#databaseProtectionMessage", overview?.security?.error || "");
+}
+
+function renderExternalDatabaseBackups(backups = []) {
+	setText("#databaseBackupSummary", backups.length ? `${pluralize(backups.length, "encrypted backup")} available.` : "No encrypted backups found.");
+	renderSimpleList("#databaseBackupList", backups, "No backups yet.", backup => {
+		const item = document.createElement("li");
+		item.className = "update-list-row";
+		const file = document.createElement("code");
+		file.textContent = backup.backupId;
+		const detail = document.createElement("span");
+		detail.textContent = `${formatDateTime(backup.createdAt)} | Encrypted`;
+		item.append(file, detail);
+		return item;
+	});
+	if (backups[0] && $("#fleetBackupIdInput") && !$("#fleetBackupIdInput").value) {
+		$("#fleetBackupIdInput").value = backups[0].backupId;
+	}
 }
 
 function handleLogSelectionPointerDown(event) {
@@ -3460,7 +3510,6 @@ function renderFleet(nextFleet) {
 			`${type?.displayName || deployment.botTypeId} · ${server?.name || deployment.serverId} · ${deployment.environment} · ${deployment.installPath}`,
 			[
 				...(!active ? [{ action: "activate-fleet-deployment", id: deployment.id, label: "Select", kind: "info" }] : []),
-				{ action: "fleet-runtime-health", id: deployment.id, label: "Health", kind: "info" },
 				{ action: "remove-fleet-deployment", id: deployment.id, label: "Remove" },
 			],
 		);
@@ -3543,6 +3592,10 @@ async function refreshFleetOverview() {
 	if (requestId === fleetOverviewRequestId && deploymentId === selectedBotId) {
 		renderFleetOverview(overview);
 		renderExternalDashboard(overview);
+		if (activeView === "database" && overview.deployment?.capabilities?.backups) {
+			const backups = await api.listFleetBackups(deploymentId);
+			if (requestId === fleetOverviewRequestId && deploymentId === selectedBotId) renderExternalDatabaseBackups(backups);
+		}
 	}
 	return overview;
 }
@@ -4655,7 +4708,10 @@ function handleAction(event) {
 					requireEncryptedDatabase: true,
 				});
 				renderFleet(result);
-			} else if (action === "list-fleet-backups") result = await api.listFleetBackups(deploymentId);
+			} else if (action === "list-fleet-backups") {
+				result = await api.listFleetBackups(deploymentId);
+				renderExternalDatabaseBackups(result);
+			}
 			else if (action === "prune-fleet-backups") result = await api.pruneFleetBackups(deploymentId);
 			else result = await api.pruneFleetLogs(deploymentId);
 			setText("#fleetSecurityOutput", JSON.stringify(result, null, 2));
@@ -4670,55 +4726,6 @@ function handleAction(event) {
 			renderFleet(fleet);
 			return { message: "Active deployment changed." };
 		});
-		return;
-	}
-
-	if (action.startsWith("fleet-runtime-")) {
-		const operation = action.slice("fleet-runtime-".length);
-		const deploymentId = button.dataset.itemId;
-		runAction(`Fleet ${operation}`, async () => {
-			let result;
-			if (["start", "stop", "restart"].includes(operation)) result = await api.controlFleetDeployment(deploymentId, operation);
-			else if (operation === "health") result = await api.checkFleetDeploymentHealth(deploymentId);
-			else result = await api.getFleetDeploymentLogs(deploymentId, 240);
-			setText("#fleetDeploymentOutput", operation === "logs" ? (result.logs || "No logs returned.") : JSON.stringify(result, null, 2));
-			await refreshFleetOverview();
-			return { message: `${operation[0].toUpperCase()}${operation.slice(1)} completed.` };
-		});
-		return;
-	}
-
-	if (action === "fleet-repository-check" || action === "fleet-deploy-commands") {
-		const deploymentId = button.dataset.itemId;
-		if (action === "fleet-repository-check") {
-			runAction("Check deployment updates", async () => {
-				const result = await api.getFleetRepositoryStatus(deploymentId, { fetch: true });
-				setText("#fleetDeploymentOutput", JSON.stringify(result, null, 2));
-				await refreshFleetOverview();
-				return result;
-			}).then(result => {
-				if (!result?.updateAvailable) return;
-				showConfirmModal({
-					title: "Update deployment?",
-					meta: "Transactional fleet update",
-					summary: "HachiGen will create an encrypted database backup when applicable, stop the bot, update, validate, restart, and roll back on failure.",
-					confirmText: "Update",
-				}).then(confirmed => {
-					if (!confirmed) return;
-					runAction("Update deployment", async () => {
-						const updated = await api.updateFleetDeployment(deploymentId);
-						setText("#fleetDeploymentOutput", JSON.stringify(updated, null, 2));
-						return updated;
-					});
-				});
-			});
-		} else {
-			runAction("Deploy Discord commands", async () => {
-				const result = await api.deployFleetDiscordCommands(deploymentId);
-				setText("#fleetDeploymentOutput", JSON.stringify(result, null, 2));
-				return result;
-			});
-		}
 		return;
 	}
 

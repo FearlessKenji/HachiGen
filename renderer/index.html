@@ -492,29 +492,19 @@
 
 				<!-- Database: local SQLite viewing, backup, restore, and sanitation maintenance. -->
 				<section class="view" data-view-panel="database">
-					<div class="panel external-bot-summary" id="externalDatabasePanel" hidden>
-						<div class="split-panel"><div><h2 id="externalDatabaseName">Bot database</h2><div class="panel-meta">Capabilities are supplied by the bot's approved profile</div></div><div class="button-row wrap"><button class="button info" type="button" data-action="audit-fleet-security">Audit</button><button class="button secondary" type="button" data-action="backup-fleet-database" id="fleetBackupButton">Encrypted Backup</button><button class="button primary" type="button" data-action="encrypt-fleet-database" id="fleetEncryptButton">Encrypt Database</button></div></div>
-						<pre class="output compact-output" id="fleetSecurityOutput">Run an audit to inspect this bot's database.</pre>
-						<div class="fleet-form external-database-controls">
-							<label class="field">Backup ID<input id="fleetBackupIdInput" spellcheck="false" placeholder="backup-..."></label>
-							<label class="field">Encrypted backups to keep<input id="fleetBackupRetentionInput" type="number" min="1" max="365" value="14"></label>
-							<label class="field">Automatic backup interval (hours, 0 disables)<input id="fleetAutoBackupHoursInput" type="number" min="0" max="720" value="0"></label>
-							<label class="field">Log retention days<input id="fleetLogRetentionInput" type="number" min="1" max="3650" value="30"></label>
-							<div class="fleet-form-wide form-actions button-row wrap"><button class="button secondary" type="button" data-action="restore-fleet-database" id="fleetRestoreButton">Restore Backup</button><button class="button primary" type="button" data-action="save-fleet-policies">Save Policies</button><button class="button secondary" type="button" data-action="list-fleet-backups">List Backups</button><button class="button secondary" type="button" data-action="prune-fleet-backups" id="fleetPruneBackupsButton">Apply Backup Retention</button><button class="button secondary" type="button" data-action="prune-fleet-logs" id="fleetPruneLogsButton">Apply Log Retention</button></div>
-						</div>
-					</div>
 					<div class="panel split-panel">
 						<div>
 							<h2>Database</h2>
 							<div class="panel-meta" id="databaseMeta">Database status loading...</div>
 							<div class="update-message" id="databaseMessage"></div>
 						</div>
-						<div class="button-row">
+						<div class="button-row" id="hachiDatabaseActions">
 							<button class="button info" type="button" data-action="backup-database">Backup / Transfer</button>
 							<button class="button warning" type="button" data-action="migrate-database" id="migrateDatabaseButton" disabled>Migrate</button>
 							<button class="button danger" type="button" data-action="force-migrate-database" id="forceMigrateDatabaseButton" disabled>Force Migrate</button>
 							<button class="button primary" type="button" data-action="sanitize-database">Sanitize</button>
 						</div>
+						<div class="button-row" id="fleetDatabaseActions" hidden><button class="button secondary" type="button" data-action="backup-fleet-database" id="fleetBackupButton">Backup</button><button class="button secondary" type="button" data-action="restore-fleet-database" id="fleetRestoreButton">Restore</button></div>
 					</div>
 
 					<div class="panel database-protection-panel">
@@ -523,12 +513,13 @@
 								<h2>Protection</h2>
 								<div class="panel-meta" id="databaseProtectionMeta">Protection status loading...</div>
 							</div>
-							<div class="button-row">
+							<div class="button-row" id="hachiProtectionActions">
 								<button class="button primary" type="button" data-action="generate-database-key" id="databaseKeyActionButton">Generate Key</button>
 								<button class="button secondary" type="button" data-action="export-database-key-backup" id="exportDatabaseKeyBackupButton">Export Key Backup</button>
 								<button class="button secondary" type="button" data-action="rotate-database-backups" id="rotateDatabaseBackupsButton">Rotate Backups</button>
 								<button class="button info" type="button" data-action="verify-database-protection">Verify</button>
 							</div>
+							<div class="button-row" id="fleetProtectionActions" hidden><button class="button info" type="button" data-action="audit-fleet-security">Verify</button><button class="button primary" type="button" data-action="encrypt-fleet-database" id="fleetEncryptButton">Encrypt Database</button></div>
 						</div>
 						<div class="database-protection-status">
 							<span class="dot" id="databaseProtectionDot"></span>
@@ -601,7 +592,7 @@
 							<ul class="update-list" id="databaseBackupList"></ul>
 						</div>
 
-						<div class="panel database-viewer-panel">
+						<div class="panel database-viewer-panel" id="hachiDatabaseViewerPanel">
 							<div class="database-viewer-header">
 								<div>
 									<h2>Data viewer</h2>
@@ -626,10 +617,21 @@
 							</div>
 						</div>
 
-						<div class="panel database-review-panel">
+						<div class="panel database-review-panel" id="hachiDatabaseReviewPanel">
 							<h2>Sanitation review</h2>
 							<div class="update-summary" id="databaseSanitizeSummary">No review has run yet.</div>
 							<ul class="update-list" id="databaseSanitizeList"></ul>
+						</div>
+						<div class="panel" id="fleetDatabaseMaintenancePanel" hidden>
+							<h2>Maintenance</h2><div class="panel-meta">Encrypted backup and log retention for this installation</div>
+							<div class="fleet-form external-database-controls">
+								<label class="field fleet-form-wide">Backup to restore<input id="fleetBackupIdInput" spellcheck="false" placeholder="Select a backup below"></label>
+								<label class="field">Backups to keep<input id="fleetBackupRetentionInput" type="number" min="1" max="365" value="14"></label>
+								<label class="field">Automatic backup interval (hours)<input id="fleetAutoBackupHoursInput" type="number" min="0" max="720" value="0"></label>
+								<label class="field">Log retention days<input id="fleetLogRetentionInput" type="number" min="1" max="3650" value="30"></label>
+								<div class="fleet-form-wide form-actions button-row wrap"><button class="button primary" type="button" data-action="save-fleet-policies">Save Policies</button><button class="button secondary" type="button" data-action="list-fleet-backups">Refresh Backups</button><button class="button secondary" type="button" data-action="prune-fleet-backups" id="fleetPruneBackupsButton">Apply Backup Retention</button><button class="button secondary" type="button" data-action="prune-fleet-logs" id="fleetPruneLogsButton">Apply Log Retention</button></div>
+							</div>
+							<pre class="output compact-output" id="fleetSecurityOutput">Database activity will appear here.</pre>
 						</div>
 					</div>
 				</section>
@@ -685,10 +687,6 @@
 									<div class="fleet-form-wide form-actions"><button class="button primary" type="button" data-action="install-bot-definition">Review &amp; Add Support</button></div>
 								</form>
 							</details>
-						</div>
-						<div class="panel">
-							<h2>Activity</h2>
-							<pre class="output compact-output" id="fleetDeploymentOutput">Select a bot action to view its status, health, updates, or logs.</pre>
 						</div>
 					</div>
 				</section>

@@ -238,8 +238,7 @@ h2 {
 
 /* Updates and Database retain capability-specific bodies. Setup itself is one
    shared native layout whose data changes with the global bot selection. */
-.external-bot-selected [data-view-panel="updates"] > :not(.external-bot-summary),
-.external-bot-selected [data-view-panel="database"] > :not(.external-bot-summary) {
+.external-bot-selected [data-view-panel="updates"] > :not(.external-bot-summary) {
 	display: none;
 }
 

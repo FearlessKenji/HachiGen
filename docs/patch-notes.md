@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Fleet bot rows now contain only Select and Remove, and the redundant Activity box has been removed. Dashboard remains the place to check health and operate the selected bot.
+- Additional bots now use the same Database page structure as Hachi, including Database, Protection, Current database, Backups, and Maintenance sections. Hachi-only migration, sanitation, and table-viewing tools stay hidden unless equivalent bot adapters exist.
 - Logs remain readable through the previously approved capability when a Bot Profile changes, while commands and modifications still wait for Review Profile. Dashboard database checks also avoid running an unapproved changed verification command.
 - Fleet's Open Folder and generated inventory buttons now use the same icons as the rest of HachiGen. Icons were also added to the remaining Fleet, Testing, database, and profile actions.
 - Packaged-build verification now checks the shared bot selector, navigation, Configuration, local/remote controls, and Testing controls instead of only checking whether the window opens.

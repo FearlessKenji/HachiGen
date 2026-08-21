@@ -22,6 +22,8 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
+- Reduced Fleet deployment rows to Select and Remove and removed the redundant Fleet Activity panel; operational status and controls remain on Dashboard and the selected bot's shared views.
+- Replaced the alternate external-bot Database page with Hachi's shared Database composition. Capability-aware backup, restore, verification, encryption, protection status, current database, backup history, and retention controls now render in the same sections; Hachi-only schema tools remain hidden when unsupported.
 - Expanded packaged UI smoke testing from a window-load check to renderer workflow assertions covering shared navigation, bot selection, local/remote controls, Configuration, and Testing controls.
 - Changed packaged smoke executable selection to prefer the freshly built unpacked application over a potentially stale portable artifact.
 - Changed packaged smoke executable selection to prefer the freshly built unpacked application over a potentially stale portable artifact.

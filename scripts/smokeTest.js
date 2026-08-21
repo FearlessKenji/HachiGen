@@ -405,13 +405,13 @@ function validateRendererAndMenuWiring() {
 		!rendererSource.includes('{ action: "fleet-runtime-start"') &&
 			!rendererSource.includes('{ action: "fleet-runtime-stop"') &&
 			!rendererSource.includes('{ action: "fleet-runtime-restart"') &&
-			rendererSource.includes('{ action: "fleet-runtime-health"') &&
-			rendererSource.includes('{ action: "remove-fleet-deployment"'),
-		"Fleet bot rows should retain inventory selection, health, and removal instead of duplicating shared operational controls.",
+			!rendererSource.includes('{ action: "fleet-runtime-health"') &&
+			rendererSource.includes('{ action: "remove-fleet-deployment"') &&
+			!indexSource.includes('id="fleetDeploymentOutput"'),
+		"Fleet bot rows should retain only inventory selection and removal instead of duplicating shared operational controls.",
 	);
 	assert(
 		rendererSource.includes('"choose-fleet-bot-folder": "folder"') &&
-			rendererSource.includes('"fleet-runtime-health": "shieldCheck"') &&
 			/fleetEntry[\s\S]*decorateControlIcon\(button, iconNameForControl\(button\)\)/u.test(rendererSource),
 		"Fleet static and generated action buttons should use the shared icon system.",
 	);
@@ -420,6 +420,14 @@ function validateRendererAndMenuWiring() {
 			!databaseSection.includes("Backup / Transfer...") &&
 			!databaseSection.includes("data-action=\"restore-database\""),
 		"Database tab should expose Backup / Transfer as the single backup entry point.",
+	);
+	assert(
+		!databaseSection.includes('id="externalDatabasePanel"') &&
+			databaseSection.includes('id="hachiDatabaseActions"') &&
+			databaseSection.includes('id="fleetDatabaseActions"') &&
+			databaseSection.includes('id="fleetDatabaseMaintenancePanel"') &&
+			rendererSource.includes("function renderExternalDatabase(overview)"),
+		"Hachi and additional bots should share the Database page composition with capability-aware actions.",
 	);
 	assert(
 		rendererSource.includes("function showDatabaseBackupTransferModal(") &&
