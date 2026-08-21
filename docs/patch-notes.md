@@ -7,6 +7,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 - Fleet bot rows now contain only Select and Remove, and the redundant Activity box has been removed. Dashboard remains the place to check health and operate the selected bot.
 - Additional bots now use the same Database page structure as Hachi, including Database, Protection, Current database, Backups, and a read-only SQLite Data Viewer. Backup maintenance lives with Backups, and Sanitation remains visible with a clear explanation when the bot has no sanitation adapter.
 - Opening an additional bot's Data Viewer no longer starts Hachi's database worker, preventing the unrelated `EAGAIN` read error seen with remote databases.
+- Data Viewer remains usable while a changed Bot Profile awaits review. Actions that run commands or modify the bot still require reapproval.
 - The extra Maintenance section is gone: backup retention now appears with Backups, while log retention appears on Logs.
 - Logs remain readable through the previously approved capability when a Bot Profile changes, while commands and modifications still wait for Review Profile. Dashboard database checks also avoid running an unapproved changed verification command.
 - Fleet's Open Folder and generated inventory buttons now use the same icons as the rest of HachiGen. Icons were also added to the remaining Fleet, Testing, database, and profile actions.

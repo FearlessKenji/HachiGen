@@ -2961,13 +2961,13 @@ class HachiManager {
 
 	async readFleetDatabaseTable(deploymentId, tableName = "", sort = {}) {
 		const context = this.getFleetDeploymentContext(deploymentId);
-		if (context.deployment.definitionFingerprint !== context.definition.fingerprint) {
-			throw new Error(`${context.definition.displayName} definition changed after approval. Review and reapprove this deployment before reading its database.`);
-		}
 		const databasePath = context.definition.paths?.database;
 		if (!databasePath) {
 			throw new Error("This Bot Profile does not declare a database.");
 		}
+		// Viewing is observational: the worker confines the current profile path to
+		// the deployment root and opens SQLite read-only. Profile changes continue
+		// to block every command or database mutation until they are reapproved.
 		const request = { dbPath: databasePath, root: ".", sort, table: tableName };
 		const workerSource = fs.readFileSync(path.join(this.managerRoot, "src", SQLITE_VIEWER_WORKER_FILE), "utf8");
 		let result;

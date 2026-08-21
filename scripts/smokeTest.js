@@ -435,6 +435,11 @@ function validateRendererAndMenuWiring() {
 		"Additional bots should use the generic read-only database viewer while retaining the shared sanitation panel.",
 	);
 	assert(
+		managerSource.includes("Viewing is observational") &&
+			!managerSource.includes("Review and reapprove this deployment before reading its database"),
+		"Read-only Fleet database viewing should remain available while a changed profile awaits mutation approval.",
+	);
+	assert(
 		rendererSource.includes("function showDatabaseBackupTransferModal(") &&
 			rendererSource.includes("Pull From Remote") &&
 			rendererSource.includes("Push To Remote") &&
