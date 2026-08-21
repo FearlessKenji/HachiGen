@@ -27,9 +27,8 @@
 				<!-- data-view tells renderer/app.js which panel to show. -->
 				<nav class="nav" aria-label="Main">
 					<button class="nav-item active" type="button" data-view="dashboard">Dashboard</button>
-					<button class="nav-item" type="button" data-view="setup">Hachi</button>
+					<button class="nav-item" id="botViewNav" type="button" data-view="setup">Hachi</button>
 					<button class="nav-item" type="button" data-view="fleet">Fleet</button>
-					<button class="nav-item" type="button" data-view="security">Security</button>
 					<button class="nav-item" type="button" data-view="updates">Updates</button>
 					<button class="nav-item" type="button" data-view="database">Database</button>
 					<button class="nav-item" type="button" data-view="logs">Logs</button>
@@ -57,6 +56,7 @@
 						<h1 id="viewTitle">Dashboard</h1>
 					</div>
 					<div class="topbar-actions">
+						<label class="select-field bot-selector"><span>Bot</span><select id="globalBotSelect"><option value="hachi">Hachi</option></select></label>
 						<button class="button secondary" type="button" data-action="open-folder" id="openFolderButton">Open Folder</button>
 						<button class="button secondary" type="button" data-action="refresh">Refresh</button>
 					</div>
@@ -66,7 +66,7 @@
 				<section class="view active" data-view-panel="dashboard">
 					<div class="status-grid">
 						<article class="status-card">
-							<div class="card-label">Hachi</div>
+							<div class="card-label" id="dashboardBotCardLabel">Hachi</div>
 							<div class="status-value">
 								<span class="dot" id="botDot"></span>
 								<span id="botStatus">Checking</span>
@@ -139,7 +139,7 @@
 								</div>
 							</dl>
 							<div class="button-row wrap dashboard-panel-actions">
-								<button class="button secondary compact" type="button" data-action="show-remote">Remote Settings</button>
+								<button class="button secondary compact" id="dashboardTargetButton" type="button" data-action="show-remote">Remote Settings</button>
 							</div>
 						</div>
 
@@ -147,7 +147,7 @@
 							<h2>Updates</h2>
 							<dl class="detail-list compact-detail-list">
 								<div>
-									<dt>Hachi</dt>
+									<dt id="dashboardBotUpdateLabel">Hachi</dt>
 									<dd id="dashboardHachiUpdate">Not checked</dd>
 								</div>
 								<div>
@@ -170,16 +170,16 @@
 						</div>
 
 						<div class="panel action-panel dashboard-actions">
-							<button class="button secondary" type="button" data-action="validate">Validate Install</button>
+							<button class="button secondary" id="dashboardValidateButton" type="button" data-action="validate">Validate Install</button>
 							<button class="button primary" type="button" data-action="deploy">Deploy Commands</button>
-							<button class="button secondary" type="button" data-action="show-setup-guide">Hachi Guide</button>
+							<button class="button secondary" id="dashboardGuideButton" type="button" data-action="show-setup-guide">Hachi Guide</button>
 						</div>
 					</div>
 				</section>
 
 				<!-- Hachi: install path, validation checklist, cron help, and config form. -->
 				<section class="view" data-view-panel="setup">
-					<div class="two-column">
+					<div class="two-column" id="selectedBotMainLayout">
 						<div class="panel-stack">
 							<div class="panel">
 								<h2>Install</h2>
@@ -187,12 +187,12 @@
 									<span>Install path</span>
 									<div class="input-row">
 										<input id="installPathInput" type="text" spellcheck="false">
-										<button class="button secondary compact" type="button" data-action="browse" id="browseInstallButton">Browse</button>
+									<button class="button secondary compact" type="button" data-action="browse" id="browseInstallButton">Browse</button>
 									</div>
 								</label>
 								<!-- app.js fills this checklist from quickScan(): files, config, npm packages, and Git status. -->
 								<div class="button-row wrap install-actions">
-									<button class="button primary" type="button" data-action="install-validate">Install / Validate</button>
+								<button class="button primary" id="installValidateButton" type="button" data-action="install-validate">Install / Validate</button>
 									<button class="button secondary" type="button" data-action="save-path" id="saveInstallPathButton">Save Path</button>
 								</div>
 								<div class="check-list" id="installChecks"></div>
@@ -220,11 +220,11 @@
 						<!-- Field names match configFields in app.js and ENV_FIELDS/CONFIG_FIELDS in manager.js. -->
 						<form class="panel config-form" id="configForm">
 							<div class="form-header">
-								<h2>Configuration</h2>
-								<button class="button primary compact" type="submit">Save Config</button>
+								<div><h2>Configuration</h2><div class="panel-meta" id="externalConfigurationMeta" hidden></div></div>
+								<button class="button primary compact" id="saveConfigurationButton" type="submit">Save Config</button>
 							</div>
 
-							<div class="form-grid">
+							<div class="form-grid" id="hachiConfigurationFields">
 								<label class="field wide">
 									<span>Discord bot token</span>
 									<div class="secret-field-row">
@@ -296,21 +296,22 @@
 									<input name="authCron" type="text">
 								</label>
 							</div>
+							<div class="form-grid" id="externalConfigurationFields" hidden></div>
 						</form>
 					</div>
 					<!-- Runtime location: local/remote target and saved SSH details for Hachi. -->
 					<div class="panel" id="remoteConnectionPanel">
 						<h2>Runtime Location</h2>
-						<div class="panel-meta">Choose whether Hachi runs locally or through a saved remote connection</div>
+						<div class="panel-meta" id="runtimeLocationMeta">Choose whether Hachi runs locally or through a saved remote connection</div>
 					</div>
-					<div class="remote-grid">
+					<div class="remote-grid" id="sharedRemoteGrid">
 						<div class="panel remote-settings-panel">
 							<div class="form-header">
 								<div>
 									<h2>Remote Connection</h2>
 									<div class="panel-meta" id="remoteMeta">Not configured</div>
 								</div>
-								<button class="button primary compact" type="button" data-action="save-remote-settings">Save Remote</button>
+								<button class="button primary compact" id="saveRemoteSettingsButton" type="button" data-action="save-remote-settings">Save Remote</button>
 							</div>
 
 							<div class="target-row">
@@ -361,7 +362,7 @@
 									<input id="remotePortInput" type="number" min="1" max="65535" step="1" value="22" disabled>
 								</label>
 								<label class="field">
-									<span>Remote Hachi path</span>
+									<span id="remotePathLabel">Remote Hachi path</span>
 									<input id="remotePathInput" type="text" spellcheck="false" placeholder="bots/Hachi">
 								</label>
 								<label class="field">
@@ -371,7 +372,7 @@
 							</div>
 
 							<div class="button-row wrap remote-actions">
-								<button class="button info" type="button" data-action="test-remote">Test Connection</button>
+								<button class="button info" id="testRemoteButton" type="button" data-action="test-remote">Test Connection</button>
 							</div>
 						</div>
 
@@ -406,6 +407,10 @@
 
 				<!-- Updates: version summaries plus saved-change recovery when needed. -->
 				<section class="view" data-view-panel="updates">
+					<div class="panel external-bot-summary" id="externalUpdatesPanel" hidden>
+						<div class="split-panel"><div><h2 id="externalUpdatesName">Bot updates</h2><div class="panel-meta">Repository status and transactional updates</div></div><div class="button-row"><button class="button info" type="button" data-action="check-all-updates">Check Updates</button><button class="button primary" type="button" data-action="update">Update</button><button class="button secondary" type="button" data-action="deploy">Deploy Commands</button></div></div>
+						<pre class="output compact-output" id="externalUpdatesOutput">No update check has run yet.</pre>
+					</div>
 					<div class="panel split-panel">
 						<div>
 							<h2>Updates</h2>
@@ -487,6 +492,17 @@
 
 				<!-- Database: local SQLite viewing, backup, restore, and sanitation maintenance. -->
 				<section class="view" data-view-panel="database">
+					<div class="panel external-bot-summary" id="externalDatabasePanel" hidden>
+						<div class="split-panel"><div><h2 id="externalDatabaseName">Bot database</h2><div class="panel-meta">Capabilities are supplied by the bot's approved profile</div></div><div class="button-row wrap"><button class="button info" type="button" data-action="audit-fleet-security">Audit</button><button class="button secondary" type="button" data-action="backup-fleet-database" id="fleetBackupButton">Encrypted Backup</button><button class="button primary" type="button" data-action="encrypt-fleet-database" id="fleetEncryptButton">Encrypt Database</button></div></div>
+						<pre class="output compact-output" id="fleetSecurityOutput">Run an audit to inspect this bot's database.</pre>
+						<div class="fleet-form external-database-controls">
+							<label class="field">Backup ID<input id="fleetBackupIdInput" spellcheck="false" placeholder="backup-..."></label>
+							<label class="field">Encrypted backups to keep<input id="fleetBackupRetentionInput" type="number" min="1" max="365" value="14"></label>
+							<label class="field">Automatic backup interval (hours, 0 disables)<input id="fleetAutoBackupHoursInput" type="number" min="0" max="720" value="0"></label>
+							<label class="field">Log retention days<input id="fleetLogRetentionInput" type="number" min="1" max="3650" value="30"></label>
+							<div class="fleet-form-wide form-actions button-row wrap"><button class="button secondary" type="button" data-action="restore-fleet-database" id="fleetRestoreButton">Restore Backup</button><button class="button primary" type="button" data-action="save-fleet-policies">Save Policies</button><button class="button secondary" type="button" data-action="list-fleet-backups">List Backups</button><button class="button secondary" type="button" data-action="prune-fleet-backups" id="fleetPruneBackupsButton">Apply Backup Retention</button><button class="button secondary" type="button" data-action="prune-fleet-logs" id="fleetPruneLogsButton">Apply Log Retention</button></div>
+						</div>
+					</div>
 					<div class="panel split-panel">
 						<div>
 							<h2>Database</h2>
@@ -624,14 +640,7 @@
 							<h2>Fleet</h2>
 							<div class="panel-meta">Manage additional bots on this computer or remote servers</div>
 						</div>
-						<div class="button-row fleet-header-actions"><label class="select-field compact-select inline-select-field"><span>Selected bot</span><select id="fleetSelectedDeploymentSelect"></select></label><button class="button info" type="button" data-action="refresh-fleet">Refresh</button></div>
-					</div>
-					<div class="status-grid fleet-status-grid">
-						<article class="status-card"><div class="card-label" id="fleetBotCardLabel">Bot</div><div class="status-value"><span class="dot" id="fleetRuntimeDot"></span><span id="fleetRuntimeStatus">No bot selected</span></div><div class="card-detail" id="fleetRuntimeDetail">Select an additional bot</div></article>
-						<article class="status-card"><div class="card-label">Install</div><div class="status-value"><span class="dot" id="fleetConnectionDot"></span><span id="fleetConnectionStatus">Not selected</span></div><div class="card-detail" id="fleetConnectionDetail">Deployment location</div></article>
-						<article class="status-card"><div class="card-label">Updates</div><div class="status-value"><span class="dot" id="fleetRepositoryDot"></span><span id="fleetRepositoryStatus">Not checked</span></div><div class="card-detail" id="fleetRepositoryDetail">Git status</div></article>
-						<article class="status-card"><div class="card-label">Deployment</div><div class="status-value"><span class="dot" id="fleetDeploymentDot"></span><span id="fleetDeploymentStatus">Not checked</span></div><div class="card-detail" id="fleetDeploymentDetail">Discord commands</div></article>
-						<article class="status-card"><div class="card-label">Database</div><div class="status-value"><span class="dot" id="fleetOverviewSecurityDot"></span><span id="fleetOverviewSecurityStatus">Not checked</span></div><div class="card-detail" id="fleetOverviewSecurityDetail">Database protection</div></article>
+						<div class="button-row fleet-header-actions"><button class="button info" type="button" data-action="refresh-fleet">Refresh</button></div>
 					</div>
 					<div class="panel-stack">
 						<div class="panel">
@@ -655,11 +664,10 @@
 							</div>
 							<div class="fleet-list" id="fleetDeploymentList"><div class="empty-state">No additional bots have been added.</div></div>
 							<form class="fleet-form" id="fleetDeploymentForm">
-								<label class="field">Display name<input name="name" required maxlength="80" placeholder="Production bot"></label>
-								<label class="select-field">Connection<select name="serverId" id="fleetServerSelect"></select></label>
+								<label class="field fleet-form-wide">Display name<input name="name" required maxlength="80" placeholder="Production bot"></label>
 								<label class="field fleet-form-wide"><span>Bot folder</span><div class="input-row"><input name="installPath" required spellcheck="false" placeholder="C:\Bots\MyBot or /srv/bots/my-bot"><button class="button secondary compact" id="chooseFleetBotFolderButton" type="button" data-action="choose-fleet-bot-folder">Open Folder</button></div></label>
 								<label class="field"><span>PM2 process name <span class="optional-label">(Optional)</span></span><input name="pm2Name" placeholder="Detected automatically"></label>
-								<div class="fleet-form-wide form-help">HachiGen will inspect the repository, package scripts, ecosystem file, database, and logs before showing a profile for approval. Added bots are treated as production.</div>
+								<div class="fleet-form-wide form-help">Initial setup requires a local repository so HachiGen can inspect it safely and use it for testing. A remote production installation can be connected afterward. Added bots are treated as production.</div>
 								<div class="fleet-form-wide form-actions"><button class="button primary" id="addFleetBotButton" type="button" data-action="add-fleet-deployment">Review Bot</button></div>
 							</form>
 						</div>
@@ -680,42 +688,6 @@
 						<div class="panel">
 							<h2>Activity</h2>
 							<pre class="output compact-output" id="fleetDeploymentOutput">Select a bot action to view its status, health, updates, or logs.</pre>
-						</div>
-					</div>
-				</section>
-
-				<section class="view" data-view-panel="security">
-					<div class="panel split-panel">
-						<div><h2>Fleet Security</h2><div class="panel-meta">Database encryption, encrypted recovery backups, and deployment compliance</div></div>
-						<label class="select-field">Deployment<select id="securityDeploymentSelect"></select></label>
-					</div>
-					<div class="panel">
-						<div class="button-row wrap">
-							<button class="button info" type="button" data-action="audit-fleet-security">Run Security Audit</button>
-							<button class="button secondary" type="button" data-action="backup-fleet-database" id="fleetBackupButton">Encrypted Backup</button>
-							<button class="button primary" type="button" data-action="encrypt-fleet-database" id="fleetEncryptButton">Encrypt Database</button>
-						</div>
-						<pre class="output compact-output" id="fleetSecurityOutput">Select a deployment and run a security audit.</pre>
-					</div>
-					<div class="panel">
-						<h2>Restore encrypted backup</h2>
-						<div class="fleet-form">
-							<label class="field">Backup ID<input id="fleetBackupIdInput" spellcheck="false" placeholder="backup-..."></label>
-							<div class="fleet-form-wide form-actions"><button class="button secondary" type="button" data-action="restore-fleet-database" id="fleetRestoreButton">Restore</button></div>
-						</div>
-					</div>
-					<div class="panel">
-						<h2>Retention policies</h2>
-						<div class="fleet-form">
-							<label class="field">Encrypted backups to keep<input id="fleetBackupRetentionInput" type="number" min="1" max="365" value="14"></label>
-							<label class="field">Automatic backup interval (hours, 0 disables)<input id="fleetAutoBackupHoursInput" type="number" min="0" max="720" value="0"></label>
-							<label class="field">Log retention days<input id="fleetLogRetentionInput" type="number" min="1" max="3650" value="30"></label>
-							<div class="fleet-form-wide form-actions button-row wrap">
-								<button class="button primary" type="button" data-action="save-fleet-policies">Save Policies</button>
-								<button class="button secondary" type="button" data-action="list-fleet-backups">List Backups</button>
-								<button class="button secondary" type="button" data-action="prune-fleet-backups" id="fleetPruneBackupsButton">Apply Backup Retention</button>
-								<button class="button secondary" type="button" data-action="prune-fleet-logs" id="fleetPruneLogsButton">Apply Log Retention</button>
-							</div>
 						</div>
 					</div>
 				</section>
@@ -772,10 +744,10 @@
 					<div class="panel">
 						<div class="section-header"><div><h2>Run a Bot with a Testing Identity</h2><div class="panel-meta">Credentials are injected into a temporary local process; bot files are not changed</div></div><button class="button secondary compact" type="button" data-action="refresh-testing-run">Refresh</button></div>
 						<div class="fleet-form">
-							<label class="select-field">Bot<select id="testingDeploymentSelect"></select></label>
+							<label class="select-field" hidden>Bot<select id="testingDeploymentSelect"></select></label>
 							<label class="select-field">Testing identity<select id="testingIdentitySelect"></select></label>
 							<div class="fleet-form-wide form-help">The production process can remain online. Testing runs separately with the selected Discord identity. Only local bots with a recognized test entry point can be launched.</div>
-							<div class="fleet-form-wide form-actions button-row wrap"><button class="button primary" id="startTestingBotButton" type="button" data-action="start-testing-bot">Start Test</button><button class="button secondary" id="stopTestingBotButton" type="button" data-action="stop-testing-bot">Stop Test</button></div>
+							<div class="fleet-form-wide form-actions button-row wrap"><button class="button warning" id="resetTestingCommandsButton" type="button" data-action="reset-testing-commands">Reset Test Commands</button><button class="button primary" id="startTestingBotButton" type="button" data-action="start-testing-bot">Start Test</button><button class="button secondary" id="stopTestingBotButton" type="button" data-action="stop-testing-bot">Stop Test</button></div>
 						</div>
 						<pre class="output compact-output" id="testingRunOutput">Select a local bot and testing identity.</pre>
 					</div>
@@ -805,7 +777,7 @@
 									<dd id="diagnosticsHachiGenVersion">Unknown</dd>
 								</div>
 								<div>
-									<dt>Hachi</dt>
+									<dt id="diagnosticsBotLabel">Hachi</dt>
 									<dd id="diagnosticsHachiVersion">Unknown</dd>
 								</div>
 								<div>
@@ -823,7 +795,7 @@
 							<h2>Update Verification</h2>
 							<dl class="detail-list">
 								<div>
-									<dt>Hachi</dt>
+									<dt id="diagnosticsBotUpdateLabel">Hachi</dt>
 									<dd id="diagnosticsHachiUpdate">Not checked</dd>
 								</div>
 								<div>

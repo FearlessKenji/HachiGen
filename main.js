@@ -908,6 +908,15 @@ function registerIpc() {
 	ipcMain.handle("manager:get-fleet-deployment-logs", (_event, deploymentId, lines) => manager.getFleetDeploymentLogs(deploymentId, lines));
 	ipcMain.handle("manager:check-fleet-deployment-health", (_event, deploymentId) => manager.checkFleetDeploymentHealth(deploymentId));
 	ipcMain.handle("manager:get-fleet-deployment-overview", (_event, deploymentId) => manager.getFleetDeploymentOverview(deploymentId));
+	ipcMain.handle("manager:get-fleet-deployment-configuration", (_event, deploymentId) => manager.getFleetDeploymentConfiguration(deploymentId));
+	ipcMain.handle("manager:save-fleet-deployment-configuration", (_event, deploymentId, values) => manager.saveFleetDeploymentConfiguration(deploymentId, values));
+	ipcMain.handle("manager:copy-fleet-configuration-secret", (_event, deploymentId, relativePath, key) => {
+		const secret = manager.readFleetConfigurationSecretForCopy(deploymentId, relativePath, key);
+		clipboard.writeText(secret.value);
+		scheduleClipboardClear(secret.value, secret.ttlMs);
+		manager.log(`Sensitive configuration field ${secret.field} copied for ${Math.round(secret.ttlMs / 1000)} seconds.`, { area: "fleet", deploymentId });
+		return { field: secret.field, message: `${secret.field} copied. Clipboard clears in ${Math.round(secret.ttlMs / 1000)} seconds if unchanged.`, ok: true, ttlMs: secret.ttlMs };
+	});
 	ipcMain.handle("manager:save-fleet-deployment-credentials", (_event, deploymentId, values) => manager.saveFleetDeploymentCredentials(deploymentId, values));
 	ipcMain.handle("manager:run-fleet-definition-command", (_event, deploymentId, commandName) => manager.runFleetDefinitionCommand(deploymentId, commandName));
 	ipcMain.handle("manager:audit-fleet-deployment-security", (_event, deploymentId) => manager.auditFleetDeploymentSecurity(deploymentId));
@@ -935,6 +944,7 @@ function registerIpc() {
 	ipcMain.handle("manager:delete-testing-profile", (_event, profileId) => manager.deleteTestingProfile(profileId));
 	ipcMain.handle("manager:start-testing-bot", (_event, deploymentId, profileId) => manager.startTestingBot(deploymentId, profileId));
 	ipcMain.handle("manager:stop-testing-bot", (_event, deploymentId) => manager.stopTestingBot(deploymentId));
+	ipcMain.handle("manager:reset-testing-commands", (_event, deploymentId, profileId) => manager.resetTestingCommands(deploymentId, profileId));
 	ipcMain.handle("manager:copy-testing-secret", (_event, profileId, field) => {
 		const secret = manager.readTestingSecretForCopy(profileId, field);
 		clipboard.writeText(secret.value);
@@ -1012,6 +1022,7 @@ function registerIpc() {
 	ipcMain.handle("manager:save-remote-settings", (_event, values) => manager.saveRemoteSettings(values));
 	ipcMain.handle("manager:set-runtime-target", (_event, target) => manager.setRuntimeTarget(target));
 	ipcMain.handle("manager:test-remote-connection", () => manager.testRemoteConnection());
+	ipcMain.handle("manager:test-fleet-remote-connection", (_event, values) => manager.testFleetRemoteConnection(values));
 
 	// Update/runtime channels. These cover Git update checks, stashes, command
 	// deployment, PM2 process control, and log/status reads.
@@ -1118,6 +1129,18 @@ function registerIpc() {
 		// shell.openPath returns an empty string when it succeeds.
 		const result = await shell.openPath(installPath);
 		return { ok: result === "", message: result || "Opened install folder." };
+	});
+	ipcMain.handle("manager:open-fleet-deployment-folder", async (_event, deploymentId) => {
+		// Never accept a renderer-supplied path. Resolve the deployment from the
+		// validated registry and allow Explorer only for local installations.
+		const fleet = manager.getFleetState();
+		const deployment = fleet.deployments.find(item => item.id === deploymentId);
+		const server = fleet.servers.find(item => item.id === deployment?.serverId);
+		if (!deployment || server?.connection?.type !== "local") {
+			throw new Error("Only a selected local bot folder can be opened.");
+		}
+		const result = await shell.openPath(path.resolve(deployment.installPath));
+		return { ok: result === "", message: result || "Opened bot folder." };
 	});
 }
 

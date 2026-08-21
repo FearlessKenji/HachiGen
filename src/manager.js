@@ -41,6 +41,42 @@ const DEFAULT_SSH_PORT = 22;
 const DIAGNOSTIC_RUNTIME_LOG_LIMIT = 5;
 const DIAGNOSTIC_RUNTIME_LOG_MAX_BYTES = 256 * 1024;
 const DIAGNOSTIC_PM2_LOG_LINES = 240;
+const DISCORD_API_BASE = "https://discord.com/api/v10";
+
+function discordApiRequest(method, route, token, body = null) {
+	// Test-command cleanup talks directly to Discord so it can bulk-overwrite
+	// only the selected test application's commands without invoking bot code.
+	return new Promise((resolve, reject) => {
+		const payload = body === null ? null : Buffer.from(JSON.stringify(body));
+		const request = https.request(`${DISCORD_API_BASE}${route}`, {
+			headers: {
+				Accept: "application/json",
+				Authorization: `Bot ${token}`,
+				...(payload ? { "Content-Length": payload.length, "Content-Type": "application/json" } : {}),
+				"User-Agent": "HachiGen Test Command Manager",
+			},
+			method,
+		}, response => {
+			const chunks = [];
+			response.on("data", chunk => chunks.push(Buffer.from(chunk)));
+			response.on("end", () => {
+				const text = Buffer.concat(chunks).toString("utf8");
+				if ((response.statusCode || 0) < 200 || (response.statusCode || 0) >= 300) {
+					reject(new Error(`Discord API returned HTTP ${response.statusCode}: ${text.slice(0, 240)}`));
+					return;
+				}
+				resolve(text ? parseJsonText(text, null) : null);
+			});
+			response.on("error", reject);
+		});
+		request.setTimeout(60000, () => request.destroy(new Error("Discord API request timed out.")));
+		request.on("error", reject);
+		if (payload) {
+			request.write(payload);
+		}
+		request.end();
+	});
+}
 
 function createUncheckedUpdateState(message = "Updates have not been checked yet.") {
 	return {
@@ -224,8 +260,10 @@ function fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, lo
 	return `const fs=require('node:fs'),cp=require('node:child_process');` +
 		`const first=(items,type)=>items.find(item=>{try{return fs.statSync(item)[type]();}catch{return false;}})||null;` +
 		`const git=args=>cp.execFileSync('git',args,{encoding:'utf8'}).trim();` +
+		`const optionalGit=args=>{try{return git(args);}catch{return '';}};` +
 		`const packageJson=fs.existsSync('package.json')?JSON.parse(fs.readFileSync('package.json','utf8')):{};` +
-		`const output={origin:git(['remote','get-url','origin']),branch:git(['branch','--show-current']),packageJson,` +
+		`const output={origin:git(['remote','get-url','origin']),branch:git(['branch','--show-current']),` +
+		`defaultBranch:optionalGit(['symbolic-ref','--quiet','--short','refs/remotes/origin/HEAD']).split('/').pop(),packageJson,` +
 		`packageLockFound:fs.existsSync('package-lock.json'),` +
 		`ecosystemFile:first(${JSON.stringify(ecosystemCandidates)},'isFile'),` +
 		`databasePath:first(${JSON.stringify(databaseCandidates)},'isFile'),` +
@@ -305,6 +343,40 @@ function parseJsonText(text, fallback = {}) {
 	} catch {
 		return fallback;
 	}
+}
+
+function isSensitiveConfigKey(key) {
+	return /(?:token|secret|password|private.?key|api.?key)/iu.test(String(key));
+}
+
+function flattenConfigValues(value, prefix = "", output = []) {
+	for (const [key, child] of Object.entries(value || {})) {
+		const field = prefix ? `${prefix}.${key}` : key;
+		if (child && typeof child === "object" && !Array.isArray(child)) {
+			flattenConfigValues(child, field, output);
+		} else if (["string", "number", "boolean"].includes(typeof child)) {
+			output.push({ key: field, type: typeof child, value: child });
+		}
+	}
+	return output;
+}
+
+function setConfigValue(target, dottedKey, value) {
+	const parts = String(dottedKey).split(".");
+	if (!parts.length || parts.some(part => !part || ["__proto__", "constructor", "prototype"].includes(part))) {
+		throw new Error("Configuration field is invalid.");
+	}
+	let cursor = target;
+	for (const part of parts.slice(0, -1)) {
+		if (!cursor[part] || typeof cursor[part] !== "object" || Array.isArray(cursor[part])) {
+			throw new Error(`Configuration field ${dottedKey} no longer exists.`);
+		}
+		cursor = cursor[part];
+	}
+	if (!Object.hasOwn(cursor, parts.at(-1))) {
+		throw new Error(`Configuration field ${dottedKey} no longer exists.`);
+	}
+	cursor[parts.at(-1)] = value;
 }
 
 // Parse Hachi's simple KEY=value .env files. HachiGen only needs enough parsing
@@ -2129,6 +2201,75 @@ class HachiManager {
 		return { id: safeId, guildIds: normalizeConfigIdList(metadata.guildIds), name: metadata.name || safeId, values };
 	}
 
+	testingIdentityEnvironment(identity) {
+		return {
+			...process.env,
+			TOKEN: identity.values.TOKEN,
+			clientId: identity.values.clientId,
+			clientSecret: identity.values.clientSecret,
+			guildIds: identity.guildIds.join(","),
+			HACHIGEN_TEST_MODE: "true",
+			publicKey: identity.values.publicKey,
+			testID: identity.values.clientId,
+			testTOKEN: identity.values.TOKEN,
+		};
+	}
+
+	async resetTestingCommands(deploymentId, profileId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		if (context.server.connection.type !== "local") {
+			throw new Error("Test commands can be managed only from a local bot repository.");
+		}
+		const packageJson = readJson(path.join(context.deployment.installPath, "package.json"), {});
+		const hasDetectedTestDeploy = packageJson.scripts?.["deploy:test"];
+		if (context.definition.id !== "hachi" && !context.definition.commands?.testDeployCommands && !hasDetectedTestDeploy) {
+			throw new Error(`${context.definition.displayName} does not define a test command deployment script.`);
+		}
+		const identity = this.readTestingIdentity(profileId);
+		const applicationId = encodeURIComponent(identity.values.clientId);
+		const botGuilds = await discordApiRequest("GET", "/users/@me/guilds?limit=200", identity.values.TOKEN);
+		const guildIds = new Set([
+			...identity.guildIds,
+			...(Array.isArray(botGuilds) ? botGuilds.map(guild => String(guild.id || "")).filter(Boolean) : []),
+		]);
+
+		// Bulk-overwrite with an empty array deletes commands only for this test
+		// application. Production application IDs and tokens never enter this path.
+		await discordApiRequest("PUT", `/applications/${applicationId}/commands`, identity.values.TOKEN, []);
+		for (const guildId of guildIds) {
+			await discordApiRequest("PUT", `/applications/${applicationId}/guilds/${encodeURIComponent(guildId)}/commands`, identity.values.TOKEN, []);
+		}
+
+		const env = this.testingIdentityEnvironment(identity);
+		if (context.definition.id === "hachi") {
+			await this.runFleetDefinitionCommand(deploymentId, "deployGlobalCommands", { env, timeoutMs: 300000 });
+			if (identity.guildIds.length) {
+				const source = [
+					"const {getCommandData,redeployCommands}=require('./utils/commandLoader.js');",
+					"const ids=process.env.guildIds.split(',').filter(Boolean),commands=getCommandData('guild');",
+					"(async()=>{for(const guildId of ids)await redeployCommands('guild',",
+					"{clientId:process.env.clientId,commands,guildId,token:process.env.TOKEN});})()",
+					".catch(e=>{console.error(e);process.exitCode=1;});",
+				].join("");
+				await this.runFleetDeploymentCommand(context, { command: "node", args: ["-e", source] }, "", { env, timeoutMs: 300000 });
+			}
+		} else if (context.definition.commands?.testDeployCommands) {
+			await this.runFleetDefinitionCommand(deploymentId, "testDeployCommands", { env, timeoutMs: 300000 });
+		} else if (hasDetectedTestDeploy) {
+			// Preserve older generated profiles: deploy:test is a deliberately named,
+			// local-only test adapter and still requires the UI confirmation.
+			await this.runFleetDeploymentCommand(context, { command: "npm", args: ["run", "deploy:test"] }, "", { env, timeoutMs: 300000 });
+		} else {
+			throw new Error(`${context.definition.displayName} does not define a test-compatible command deployment.`);
+		}
+		this.log(`Test commands reset for ${context.deployment.name} using ${identity.name}.`, {
+			area: "testing",
+			deploymentId,
+			profileId: identity.id,
+		});
+		return { deploymentId, guildCount: guildIds.size, ok: true, message: "Test application commands were deleted and redeployed." };
+	}
+
 	getTestingRunState() {
 		return [...this.testingRuns.values()].map(runState => ({
 			deploymentId: runState.deploymentId,
@@ -2167,17 +2308,7 @@ class HachiManager {
 			throw new Error("The bot's testing entry point is missing or outside its repository.");
 		}
 		const identity = this.readTestingIdentity(profileId);
-		const env = {
-			...process.env,
-			TOKEN: identity.values.TOKEN,
-			clientId: identity.values.clientId,
-			clientSecret: identity.values.clientSecret,
-			guildIds: identity.guildIds.join(","),
-			HACHIGEN_TEST_MODE: "true",
-			publicKey: identity.values.publicKey,
-			testID: identity.values.clientId,
-			testTOKEN: identity.values.TOKEN,
-		};
+		const env = this.testingIdentityEnvironment(identity);
 		// Use the bot host's Node runtime; process.execPath is HachiGen.exe in packaged builds.
 		const child = childProcess.spawn("node", [entryPath, ...command.args.slice(1)], {
 			cwd: context.deployment.installPath,
@@ -2308,11 +2439,14 @@ class HachiManager {
 		const deployment = normalizeDeployment(values, this.fleet, definitions);
 		const server = this.fleet.servers.find(item => item.id === deployment.serverId);
 		const definition = definitions.find(item => item.id === deployment.botTypeId);
-		await this.verifyFleetDeploymentCandidate({ definition, deployment, server });
-		this.fleet.deployments.push(deployment);
-		this.fleet.activeDeploymentId = deployment.id;
+		const verified = await this.verifyFleetDeploymentCandidate({ definition, deployment, server });
+		// Branches belong to installations, not capabilities. A reviewed local
+		// checkout may use a feature branch while production tracks main.
+		const verifiedDeployment = { ...deployment, repositoryBranch: verified.branch };
+		this.fleet.deployments.push(verifiedDeployment);
+		this.fleet.activeDeploymentId = verifiedDeployment.id;
 		this.saveFleetRegistry();
-		this.log(`Fleet deployment added: ${deployment.name}.`, { area: "fleet", deploymentId: deployment.id, serverId: deployment.serverId });
+		this.log(`Fleet deployment added: ${verifiedDeployment.name}.`, { area: "fleet", deploymentId: verifiedDeployment.id, serverId: verifiedDeployment.serverId });
 		return this.getFleetState();
 	}
 
@@ -2320,6 +2454,11 @@ class HachiManager {
 		const server = this.fleet.servers.find(item => item.id === values?.serverId);
 		if (!server) {
 			throw new Error("Select a valid connection.");
+		}
+		// Profile generation and testing begin from a repository HachiGen can
+		// inspect directly. Remote deployments are attached only after approval.
+		if (server.connection.type !== "local") {
+			throw new Error("Initial bot setup requires a local repository. Add the remote production installation afterward.");
 		}
 		const installPath = String(values?.installPath || "").trim();
 		if (!installPath) {
@@ -2331,6 +2470,7 @@ class HachiManager {
 		const testEntryCandidates = ["start-test.js", "test.js", "scripts/start-test.js"];
 		let origin;
 		let branch;
+		let profileBranch;
 		let packageJson;
 		let ecosystemFile;
 		let ecosystemFound;
@@ -2350,6 +2490,7 @@ class HachiManager {
 				throw new Error("Remote repository inspection returned an invalid response.");
 			}
 			({ origin, branch, packageJson, packageLockFound, databasePath, logsPath } = inspection);
+			profileBranch = inspection.defaultBranch || branch;
 			testEntry = inspection.testEntry;
 			ecosystemFile = inspection.ecosystemFile || "ecosystem.config.js";
 			ecosystemFound = Boolean(inspection.ecosystemFile);
@@ -2359,11 +2500,13 @@ class HachiManager {
 			}
 			const originResult = await run("git", ["remote", "get-url", "origin"], { allowFailure: true, cwd: installPath, timeoutMs: 30000 });
 			const branchResult = await run("git", ["branch", "--show-current"], { allowFailure: true, cwd: installPath, timeoutMs: 30000 });
+			const defaultBranchResult = await run("git", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { allowFailure: true, cwd: installPath, timeoutMs: 30000 });
 			if (originResult.code !== 0 || !originResult.stdout.trim()) {
 				throw new Error("Bot folder must be a Git checkout with an origin remote.");
 			}
 			origin = originResult.stdout.trim();
 			branch = branchResult.stdout.trim();
+			profileBranch = defaultBranchResult.stdout.trim().replace(/^origin\//u, "") || branch;
 			packageJson = readJson(path.join(installPath, "package.json"), {});
 			packageLockFound = fileExists(path.join(installPath, "package-lock.json"));
 			ecosystemFile = ecosystemCandidates.find(candidate => fileExists(path.join(installPath, candidate))) || "ecosystem.config.js";
@@ -2378,12 +2521,13 @@ class HachiManager {
 		const scripts = packageJson.scripts || {};
 		const validationScript = ["check", "lint", "test"].find(name => scripts[name]);
 		const deployScript = ["deploy", "deploy:commands", "commands:deploy"].find(name => scripts[name]);
+		const testDeployScript = ["deploy:test", "test:deploy"].find(name => scripts[name]);
 		const displayName = String(values?.name || packageJson.displayName || packageJson.name || path.basename(installPath)).trim();
 		const id = normalizeProfileId(packageJson.name || displayName, "bot");
 		const definition = {
 			id,
 			displayName,
-			repository: { branch: String(branch || "").trim() || "main", url: String(origin).trim() },
+			repository: { branch: String(profileBranch || branch || "").trim() || "main", url: String(origin).trim() },
 			runtime: { ecosystemFile, pm2Name: String(values?.pm2Name || displayName).trim() },
 			credentials: { mode: "external" },
 			paths: {},
@@ -2395,6 +2539,10 @@ class HachiManager {
 		}
 		if (deployScript) {
 			definition.commands.deployCommands = { executable: "npm", args: ["run", deployScript] };
+			definition.capabilities.discordCommands = true;
+		}
+		if (testDeployScript) {
+			definition.commands.testDeployCommands = { executable: "npm", args: ["run", testDeployScript] };
 			definition.capabilities.discordCommands = true;
 		}
 		if (testEntry) {
@@ -2410,7 +2558,7 @@ class HachiManager {
 		}
 		return {
 			definition,
-			detected: { databasePath: databasePath || null, ecosystemFound: definition.capabilities.pm2, ecosystemFile, logsPath: logsPath || null, packageName: packageJson.name || null },
+			detected: { branch, databasePath: databasePath || null, ecosystemFound: definition.capabilities.pm2, ecosystemFile, logsPath: logsPath || null, packageName: packageJson.name || null },
 			installPath,
 			serverId: server.id,
 			warnings: definition.capabilities.pm2 ? [] : ["No PM2 ecosystem file was found. The bot will be added without PM2 controls."],
@@ -2524,8 +2672,8 @@ class HachiManager {
 		if (normalizeGitRepositoryIdentity(origin) !== normalizeGitRepositoryIdentity(context.definition.repository.url)) {
 			throw new Error(`Repository origin mismatch. Expected ${context.definition.repository.url}, found ${redactUrlCredentials(origin)}.`);
 		}
-		if (branch !== context.definition.repository.branch) {
-			throw new Error(`Repository branch mismatch. Expected ${context.definition.repository.branch}, found ${branch || "detached HEAD"}.`);
+		if (!branch) {
+			throw new Error("Deployment repository is in detached HEAD state. Check out a named branch before adding it.");
 		}
 		if (context.definition.capabilities?.pm2 && !ecosystemFound) {
 			throw new Error(`Required ecosystem file was not found: ${context.definition.runtime.ecosystemFile}.`);
@@ -2559,6 +2707,7 @@ class HachiManager {
 			deployGlobalCommands: "discordCommands",
 			deployGuildCommands: "discordCommands",
 			deleteCommands: "discordCommands",
+			testDeployCommands: "discordCommands",
 			install: "gitUpdates",
 			validate: "gitUpdates",
 		};
@@ -2574,7 +2723,7 @@ class HachiManager {
 			context,
 			{ command: command.executable, args: command.args },
 			remoteCommand,
-			{ timeoutMs: options.timeoutMs || 600000 },
+			{ env: options.env, timeoutMs: options.timeoutMs || 600000 },
 		);
 	}
 
@@ -2608,7 +2757,10 @@ class HachiManager {
 		if (head.code !== 0) {
 			return { deploymentId, isGit: false, message: "Deployment is not a Git checkout." };
 		}
-		const targetBranch = context.definition.repository?.branch || branch.stdout.trim() || "main";
+		// A user may deliberately switch an installation after onboarding. Always
+		// update the branch that is actually checked out, using saved metadata only
+		// when Git cannot report a current branch.
+		const targetBranch = branch.stdout.trim() || context.deployment.repositoryBranch || context.definition.repository?.branch || "main";
 		const originUrl = origin.stdout.trim();
 		const originMatches = origin.code === 0 && normalizeGitRepositoryIdentity(originUrl) === normalizeGitRepositoryIdentity(context.definition.repository?.url);
 		if (!originMatches && options.fetch) {
@@ -3306,11 +3458,130 @@ class HachiManager {
 			activeDeploymentId: this.fleet.activeDeploymentId,
 			botDefinitionErrors: botTypes.errors,
 			botTypes: botTypes.definitions,
-			deployments: this.fleet.deployments,
+			deployments: this.fleet.deployments.map(deployment => {
+				const server = this.fleet.servers.find(item => item.id === deployment.serverId);
+				const definition = botTypes.definitions.find(item => item.id === deployment.botTypeId);
+				const packageJson = server?.connection?.type === "local" ? readJson(path.join(deployment.installPath, "package.json"), {}) : {};
+				return {
+					...deployment,
+					testCommandsAvailable: definition?.id === "hachi" || Boolean(definition?.commands?.testDeployCommands || packageJson.scripts?.["deploy:test"]),
+				};
+			}),
 			policies: this.fleet.policies,
 			servers,
 			version: this.fleet.version,
 		};
+	}
+
+	getFleetDeploymentConfiguration(deploymentId) {
+		const selected = this.getFleetDeploymentContext(deploymentId);
+		const localDeployment = this.fleet.deployments.find(item => item.botTypeId === selected.deployment.botTypeId &&
+			this.fleet.servers.find(server => server.id === item.serverId)?.connection?.type === "local");
+		if (!localDeployment) {
+			throw new Error("A local source repository is required to manage this bot's configuration.");
+		}
+		const candidates = [".env", "config/config.json", "config.json", "config/settings.json", "settings.json"];
+		const files = candidates.flatMap(relativePath => {
+			const filePath = path.join(localDeployment.installPath, relativePath);
+			if (!isPathInside(localDeployment.installPath, filePath) || !fileExists(filePath)) {
+				return [];
+			}
+			const text = fs.readFileSync(filePath, "utf8");
+			if (relativePath === ".env") {
+				const fields = Object.entries(parseDotEnvContent(text)).map(([key, value]) => {
+					const sensitive = isSensitiveConfigKey(key);
+					return { hasValue: sensitive ? Boolean(value) : undefined, key, sensitive, type: "string", value: sensitive ? "" : value };
+				});
+				return [{ fields, format: "env", hash: crypto.createHash("sha256").update(text).digest("hex"), path: relativePath }];
+			}
+			const parsed = parseJsonText(text, null);
+			if (!parsed || Array.isArray(parsed)) {
+				return [];
+			}
+			const fields = flattenConfigValues(parsed).map(field => {
+				const sensitive = isSensitiveConfigKey(field.key);
+				return { ...field, hasValue: sensitive ? Boolean(field.value) : undefined, sensitive, value: sensitive ? "" : field.value };
+			});
+			return [{
+				fields,
+				format: "json",
+				hash: crypto.createHash("sha256").update(text).digest("hex"),
+				path: relativePath,
+			}];
+		});
+		return { deploymentId, files, localDeploymentId: localDeployment.id };
+	}
+
+	saveFleetDeploymentConfiguration(deploymentId, values = {}) {
+		const configuration = this.getFleetDeploymentConfiguration(deploymentId);
+		const file = configuration.files.find(item => item.path === values.path);
+		if (!file) {
+			throw new Error("Configuration file is not managed for this bot.");
+		}
+		const localDeployment = this.fleet.deployments.find(item => item.id === configuration.localDeploymentId);
+		const filePath = path.join(localDeployment.installPath, file.path);
+		const currentText = fs.readFileSync(filePath, "utf8");
+		if (crypto.createHash("sha256").update(currentText).digest("hex") !== values.hash) {
+			throw new Error("Configuration changed outside HachiGen. Refresh before saving.");
+		}
+		if (file.format === "env") {
+			const updates = {};
+			for (const field of Array.isArray(values.fields) ? values.fields : []) {
+				if (!Object.hasOwn(parseDotEnvContent(currentText), field.key)) {
+					throw new Error(`Environment field ${field.key} no longer exists.`);
+				}
+				// Sensitive inputs are replacements only; blank means preserve the
+				// existing value, which never crossed the IPC boundary.
+				if (!isSensitiveConfigKey(field.key) || String(field.value || "")) {
+					updates[field.key] = String(field.value ?? "");
+				}
+			}
+			const temporaryPath = `${filePath}.hachigen-${process.pid}.tmp`;
+			fs.writeFileSync(temporaryPath, updateDotEnvContent(currentText, updates), { encoding: "utf8", mode: 0o600 });
+			fs.renameSync(temporaryPath, filePath);
+			this.log(`Environment configuration saved for ${localDeployment.name}.`, { area: "fleet", deploymentId });
+			return this.getFleetDeploymentConfiguration(deploymentId);
+		}
+		const parsed = parseJsonText(currentText, null);
+		for (const field of Array.isArray(values.fields) ? values.fields : []) {
+			if (isSensitiveConfigKey(field.key) && !String(field.value || "")) {
+				continue;
+			}
+			const original = flattenConfigValues(parsed).find(item => item.key === field.key);
+			if (!original) {
+				throw new Error(`Configuration field ${field.key} no longer exists.`);
+			}
+			let next = field.value;
+			if (original.type === "number") {
+				next = Number(next);
+			}
+			if (original.type === "boolean") {
+				next = next === true || next === "true";
+			}
+			setConfigValue(parsed, field.key, next);
+		}
+		const temporaryPath = `${filePath}.hachigen-${process.pid}.tmp`;
+		fs.writeFileSync(temporaryPath, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		fs.renameSync(temporaryPath, filePath);
+		this.log(`Configuration saved for ${localDeployment.name}.`, { area: "fleet", deploymentId });
+		return this.getFleetDeploymentConfiguration(deploymentId);
+	}
+
+	readFleetConfigurationSecretForCopy(deploymentId, relativePath, key) {
+		const configuration = this.getFleetDeploymentConfiguration(deploymentId);
+		const file = configuration.files.find(item => item.path === relativePath);
+		const field = file?.fields.find(item => item.key === key);
+		if (!file || !field?.sensitive) {
+			throw new Error("Choose a recognized sensitive configuration field.");
+		}
+		const localDeployment = this.fleet.deployments.find(item => item.id === configuration.localDeploymentId);
+		const filePath = path.join(localDeployment.installPath, file.path);
+		const text = fs.readFileSync(filePath, "utf8");
+		const value = file.format === "env" ? parseDotEnvContent(text)[key] : flattenConfigValues(parseJsonText(text, {})).find(item => item.key === key)?.value;
+		if (value === undefined || value === null || String(value) === "") {
+			throw new Error(`${key} has no saved value.`);
+		}
+		return { field: key, ttlMs: 60000, value: String(value) };
 	}
 
 	loadSettings() {
@@ -3775,6 +4046,24 @@ class HachiManager {
 		return result.stdout || "";
 	}
 
+	async readRemoteConfigurationFiles() {
+		// Configuration refresh used to open four SSH sessions concurrently. Some
+		// servers throttle concurrent handshakes, so read the fixed allowlist in one
+		// remote process and return structured content instead.
+		const script = [
+			"const fs=require('node:fs');",
+			`const files=${JSON.stringify(["blank.env", ".env", "config/blank.json", "config/config.json"])};`,
+			"const output={};",
+			"for(const file of files)output[file]=fs.existsSync(file)?fs.readFileSync(file,'utf8'):'';",
+			"process.stdout.write(JSON.stringify(output));",
+		].join("");
+		return this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Remote configuration files could not be read.",
+			log: false,
+			timeoutMs: 30000,
+		});
+	}
+
 	async writeRemoteText(relativePath, content) {
 		const directory = path.posix.dirname(relativePath);
 		const mkdir = directory && directory !== "." ? `mkdir -p ${quotePosix(directory)} && ` : "";
@@ -3943,18 +4232,36 @@ class HachiManager {
 
 	async testRemoteConnection() {
 		const settings = this.getRemoteSettings();
-		const errors = validateRemoteSettings(settings);
+		this.log("Testing remote connection...");
+		const tested = await this.executeRemoteConnectionTest(settings);
+		const lastTest = {
+			checkedAt: tested.checkedAt,
+			message: tested.message,
+			ok: tested.ok,
+			target: remoteConnectionLabel(settings),
+		};
 
+		this.settings.lastRemoteTest = lastTest;
+		this.saveSettings();
+
+		return tested;
+	}
+
+	async testFleetRemoteConnection(values) {
+		const settings = normalizeRemoteSettings(values);
+		this.log("Testing Fleet remote connection...", { area: "fleet" });
+		return this.executeRemoteConnectionTest(settings);
+	}
+
+	async executeRemoteConnectionTest(settings) {
+		const errors = validateRemoteSettings(settings);
 		if (errors.length) {
 			throw new Error(errors[0]);
 		}
-
 		assertSshPrivateKeyFile(settings.sshKeyPath);
-
 		if (!await commandExists("ssh")) {
 			throw new Error("OpenSSH client was not found on this computer.");
 		}
-
 		const remoteCommand = [
 			`cd ${quoteRemotePath(settings.remotePath)}`,
 			"printf 'path='",
@@ -3964,28 +4271,16 @@ class HachiManager {
 			"printf 'pm2='",
 			`pm2 describe ${quotePosix(settings.pm2Name)} --no-color`,
 		].join(" && ");
-		this.log("Testing remote connection...");
 		const result = await run("ssh", this.buildRemoteSshArgs(settings, remoteCommand), {
 			allowFailure: true,
 			timeoutMs: 20000,
 		});
 		const ok = result.code === 0;
-		const message = ok ? "Remote connection validated." : "Remote connection test failed. Review the output for details.";
-		const lastTest = {
-			checkedAt: new Date().toISOString(),
-			message,
-			ok,
-			target: remoteConnectionLabel(settings),
-		};
-
-		this.settings.lastRemoteTest = lastTest;
-		this.saveSettings();
-
 		return {
-			checkedAt: lastTest.checkedAt,
+			checkedAt: new Date().toISOString(),
 			code: result.code,
 			ok,
-			message,
+			message: ok ? "Remote connection validated." : "Remote connection test failed. Review the output for details.",
 			stderr: result.stderr,
 			stdout: result.stdout,
 		};
@@ -7208,12 +7503,11 @@ process.stdout.write(JSON.stringify({
 	}
 
 	async readRemoteConfiguration() {
-		const [blankEnv, env, blankConfigText, configText] = await Promise.all([
-			this.readRemoteText("blank.env"),
-			this.readRemoteText(".env"),
-			this.readRemoteText("config/blank.json"),
-			this.readRemoteText("config/config.json"),
-		]);
+		const files = await this.readRemoteConfigurationFiles();
+		const blankEnv = files["blank.env"] || "";
+		const env = files[".env"] || "";
+		const blankConfigText = files["config/blank.json"] || "";
+		const configText = files["config/config.json"] || "";
 		const envValues = {
 			...parseDotEnvContent(blankEnv),
 			...parseDotEnvContent(env),
@@ -7285,12 +7579,11 @@ process.stdout.write(JSON.stringify({
 	}
 
 	async writeRemoteConfiguration(values) {
-		const [blankEnvText, rawEnvText, blankConfigText, configText] = await Promise.all([
-			this.readRemoteText("blank.env"),
-			this.readRemoteText(".env"),
-			this.readRemoteText("config/blank.json"),
-			this.readRemoteText("config/config.json"),
-		]);
+		const files = await this.readRemoteConfigurationFiles();
+		const blankEnvText = files["blank.env"] || "";
+		const rawEnvText = files[".env"] || "";
+		const blankConfigText = files["config/blank.json"] || "";
+		const configText = files["config/config.json"] || "";
 		const rawEnv = {
 			...parseDotEnvContent(blankEnvText),
 			...parseDotEnvContent(rawEnvText),

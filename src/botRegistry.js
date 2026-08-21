@@ -302,6 +302,7 @@ function normalizeDeployment(input, fleet, definitions) {
 		serverId,
 		installPath,
 		pm2Name,
+		repositoryBranch: String(input.repositoryBranch || "").trim() || null,
 		environment: ["development", "test", "staging", "production"].includes(input.environment) ? input.environment : "production",
 		credentialFingerprint: input.credentialFingerprint || null,
 		credentialsConfigured: Boolean(input.credentialsConfigured),

@@ -23,11 +23,17 @@
 	--neutral-button-hover: #31444f;
 	--neutral-button-border: #55707d;
 	--shadow: rgba(31, 41, 48, 0.12);
+	--section-gap: 12px;
+	--control-gap: 10px;
 }
 
 /* Use predictable sizing: width/height include padding and borders. */
 * {
 	box-sizing: border-box;
+}
+
+[hidden] {
+	display: none !important;
 }
 
 /* Base page typography and background. */
@@ -210,8 +216,46 @@ h2 {
 .topbar-actions,
 .button-row {
 	display: flex;
-	gap: 10px;
+	gap: var(--control-gap);
 	align-items: center;
+}
+
+.bot-selector {
+	display: grid;
+	grid-template-columns: auto minmax(170px, 240px);
+	gap: 8px;
+	align-items: center;
+	margin-top: 0;
+}
+
+.bot-selector select {
+	min-width: 170px;
+}
+
+.topbar-actions > .button {
+	height: 38px;
+}
+
+/* Updates and Database retain capability-specific bodies. Setup itself is one
+   shared native layout whose data changes with the global bot selection. */
+.external-bot-selected [data-view-panel="updates"] > :not(.external-bot-summary),
+.external-bot-selected [data-view-panel="database"] > :not(.external-bot-summary) {
+	display: none;
+}
+
+.external-bot-summary[hidden] {
+	display: none;
+}
+
+/* External bot pages contain nested layout grids. Give their major sections
+   one gap here so panel margins cannot compound at grid boundaries. */
+.external-bot-summary {
+	display: grid;
+	gap: var(--section-gap);
+}
+
+#externalConfigurationMeta:empty {
+	display: none;
 }
 
 /* Buttons. Color classes describe the action style, not a specific location. */
@@ -317,7 +361,7 @@ h2 {
 }
 
 .install-actions {
-	margin-top: 18px;
+	margin-top: 14px;
 }
 
 /* View switching. app.js toggles .active on the selected panel. */
@@ -326,15 +370,16 @@ h2 {
 }
 
 .view.active {
-	display: block;
+	display: grid;
+	gap: var(--section-gap);
 }
 
 /* Dashboard cards and reusable panel frame. */
 .status-grid {
 	display: grid;
 	grid-template-columns: repeat(5, minmax(150px, 1fr));
-	gap: 12px;
-	margin-bottom: 12px;
+	gap: var(--section-gap);
+	margin-bottom: 0;
 }
 
 .fleet-status-grid {
@@ -416,7 +461,7 @@ h2 {
 
 .panel {
 	padding: 16px;
-	margin-bottom: 12px;
+	margin-bottom: 0;
 }
 
 /* Horizontal panels with text on the left and buttons on the right. */
@@ -467,13 +512,13 @@ h2 {
 .two-column {
 	display: grid;
 	grid-template-columns: minmax(360px, 0.74fr) minmax(520px, 1.26fr);
-	gap: 12px;
+	gap: var(--section-gap);
 	align-items: stretch;
 }
 
 .panel-stack {
 	display: grid;
-	gap: 12px;
+	gap: var(--section-gap);
 	grid-template-rows: auto 1fr;
 }
 
@@ -487,6 +532,12 @@ h2 {
 	color: var(--text);
 	font-size: 12px;
 	font-weight: 750;
+}
+
+/* The global bot picker is a toolbar control, so it must not inherit the
+   vertical offset used to separate stacked form fields. */
+.topbar-actions .select-field.bot-selector {
+	margin-top: 0;
 }
 
 .field input,
@@ -588,14 +639,20 @@ h2 {
 .input-row {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
-	gap: 10px;
+	gap: var(--control-gap);
 }
 
 .secret-field-row {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
-	gap: 8px;
+	gap: var(--control-gap);
 	align-items: center;
+}
+
+/* Buttons attached to an input form one control and therefore share its height. */
+.input-row .button,
+.secret-field-row .button {
+	height: 38px;
 }
 
 .secret-field-row .button {
@@ -615,7 +672,8 @@ h2 {
 	gap: 0 16px;
 }
 
-.field.wide {
+.field.wide,
+.select-field.wide {
 	grid-column: 1 / -1;
 }
 
@@ -631,7 +689,7 @@ h2 {
 }
 
 .remote-actions {
-	margin-top: 18px;
+	margin-top: 14px;
 }
 
 .remote-settings-panel,

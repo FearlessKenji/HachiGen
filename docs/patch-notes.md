@@ -4,9 +4,23 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
-- The main Dashboard is now explicitly Hachi-focused. Its Bot card is named Hachi, while Fleet has its own status cards that follow the selected additional bot.
-- Fleet's cards now mirror Dashboard language and order: the selected bot, Install, Updates, Deployment, and Database. The selected-bot label sits beside its dropdown, and duplicate bot names identify whether each deployment is Local or Remote.
-- Corrected the Fleet header alignment so Selected bot, its dropdown, and Refresh appear on one centered line.
+- Fixed remote Hachi Configuration sometimes failing with an SSH timeout. HachiGen now reads the required remote configuration files through one connection instead of opening four connections at once.
+- Hachi and additional bots now use the same underlying SSH connection test. HachiGen also warns when an existing Fleet server uses a different private key instead of silently keeping the old key while appearing to save the new one.
+- The selected bot now uses Hachi's actual bot-page layout rather than a separately assembled additional-bot page. Install, validation, cron help, every Remote Connection field and action, remote testing, and Connection Preview are shared directly; only Configuration changes to match the selected repository.
+- Saving an additional bot's remote settings reuses a matching Fleet server or creates its single server-level connection, then attaches the bot installation without creating another credential store.
+- Fixed remote installation attachment failing when the local setup repository used a feature branch and the production server used `main`. HachiGen tracks branches separately for each installation and now immediately reflects later branch changes instead of continuing to display the onboarding branch.
+- Hachi and additional bots now use the same underlying status, validation, runtime, update, command-deployment, and credential-copy controls. Selecting another bot changes the data and supported capabilities without switching to separately implemented behavior.
+- Spacing between page sections, nested cards, and button groups is now consistent. Open Folder and Copy buttons match their associated fields, Configuration is one clean form without file separators, Runtime Location uses a compact installation selector, and credential Copy buttons consistently include the copy icon.
+- HachiGen now has one Bot selector in the global header. Choose Hachi or an additional bot once, and Dashboard, the bot page, Updates, Database, Logs, Testing, and Diagnostics follow that selection.
+- Fleet is again focused on adding and organizing connections, bots, and profiles. Its duplicate status cards and selected-bot control have been removed.
+- Additional bots can now use the shared Dashboard runtime controls, repository update and command-deployment tools, database audit and encrypted backup actions, runtime logs, and testing identities. The bot page and navigation label change to the selected bot's name.
+- Additional-bot pages now use Hachi's native bot-page layout, with Configuration generated from the selected repository.
+- Additional-bot Configuration now comes from supported JSON files in the local source repository, including Paldeck's `config/config.json`. Sensitive-looking fields stay hidden, and HachiGen refuses to overwrite a file changed outside the app. The bot tab now also attaches remote installations and switches the active local/remote runtime without duplicating the bot in the global selector.
+- Configuration also includes the bot's `.env`. Tokens, secrets, passwords, and keys are never displayed or returned to the interface; their blank fields preserve the saved value, while entering a value replaces it directly in the bot's own file.
+- Hidden configuration values now have Copy buttons matching Hachi and Testing. Values are read only when copied, never stored in the page, and clear from the clipboard after 60 seconds if the clipboard is unchanged.
+- Bot names no longer include Local or Remote suffixes. Location remains deployment/runtime information rather than part of a bot's identity.
+- Corrected the global Bot selector alignment. Adding a bot now always starts with a local repository for safe inspection and testing; remote production installations are connected afterward.
+- Corrected the remaining vertical offset between the global Bot selector, Open Folder, and Refresh controls.
 - Began the multi-server, multi-bot foundation while keeping existing Hachi management intact. Hachi remains the only built-in bot, and optional bots use separately approved profiles.
 - Added Fleet and Credentials pages for managing servers, bot deployments, deployment-local encrypted Discord identities, runtime controls, health checks, and logs. HachiGen does not retain a second token copy, while shared test identities remain protected from accidental concurrent use.
 - Added fleet security audits, encrypted database backups and restores, automatic retention, safe bot updates with rollback, and external bot profiles for optional projects.
@@ -28,6 +42,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 - Fixed remote bot review showing `-` for its repository and branch, followed by a `botTypes` error. Remote inspection now validates structured Git and runtime details before showing approval.
 - Stored Fleet connections now appear immediately at launch without a manual refresh.
 - Testing now includes a flask icon and can start or stop a selected local bot with a selected testing identity. Credentials are injected only into the temporary process, production credential files are unchanged, and the production PM2 process can remain online alongside the test.
+- Testing can now reset the shared test application's commands for the selected bot. HachiGen deletes that test application's global and guild commands, then redeploys through Hachi or the bot's `deploy:test` adapter without using production credentials.
 - Export Diagnostics now includes redacted Hachi runtime logs and PM2 output in addition to HachiGen logs, so bot errors are easier to investigate from one bundle.
 - Updated bundled development and build tooling dependencies to resolve reported security vulnerabilities.
 

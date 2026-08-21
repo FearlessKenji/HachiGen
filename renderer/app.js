@@ -22,6 +22,8 @@ const viewTitles = {
 	diagnostics: "Diagnostics",
 };
 const ONBOARDING_DISMISSED_KEY = "hachigen:onboarding-dismissed:v1";
+const SELECTED_BOT_KEY = "hachigen:selected-bot:v1";
+const HACHI_BOT_ID = "hachi";
 // Inline Lucide SVG shapes. Keeping these here avoids extra asset files or runtime packages.
 const ICON_PATHS = {
 	archive: [
@@ -167,6 +169,7 @@ const ACTION_ICONS = {
 	"clear-pm2-logs": "trash",
 	"copy-diagnostic-info": "copy",
 	"copy-secret": "copy",
+	"copy-testing-secret": "copy",
 	"delete-stash": "trash",
 	deploy: "send",
 	"export-database-key-backup": "key",
@@ -287,6 +290,8 @@ let setupGuideAutoShown = false;
 let diagnosticsState = null;
 let fleetState = null;
 let fleetOverviewRequestId = 0;
+let selectedBotId = window.localStorage.getItem(SELECTED_BOT_KEY) || HACHI_BOT_ID;
+let externalConfiguration = null;
 let testingProfiles = [];
 let selectedTestingProfileId = null;
 let testingRuns = [];
@@ -390,6 +395,16 @@ function decorateStaticIcons(root = document) {
 	root.querySelectorAll("button[data-action], button[data-view]").forEach(button => {
 		decorateControlIcon(button, iconNameForControl(button));
 	});
+}
+
+function configureSecretCopyButton(button, copyable, unavailableTitle = "No saved value") {
+	if (!button) {
+		return;
+	}
+
+	button.disabled = !copyable;
+	button.title = copyable ? "Copy saved value to clipboard for 60 seconds" : unavailableTitle;
+	decorateControlIcon(button, "copy");
 }
 
 // Safely update text when an element exists. Missing elements are ignored so
@@ -521,6 +536,35 @@ function setDisabled(selector, disabled) {
 	if (element) {
 		element.disabled = disabled;
 	}
+}
+
+// Hachi and Fleet-backed bots render into the same status-card contract.
+// Backend adapters supply the values; this helper owns the shared UI treatment.
+function renderStatusCard(prefix, status) {
+	setText(`#${prefix}Status`, status.label);
+	setText(`#${prefix}Detail`, status.detail);
+	setDot(`#${prefix}Dot`, status.dot);
+}
+
+function renderCheckList(selector, checks) {
+	const container = $(selector);
+
+	if (!container) {
+		return;
+	}
+
+	container.replaceChildren(...checks.map(([label, ok, detail]) => {
+		const item = document.createElement("div");
+		item.className = "check-item";
+		const dot = document.createElement("span");
+		dot.className = `dot ${ok ? "good" : "warn"}`;
+		const text = document.createElement("span");
+		const strong = document.createElement("strong");
+		strong.textContent = label;
+		text.append(strong, `: ${detail}`);
+		item.append(dot, text);
+		return item;
+	}));
 }
 
 // Convert PM2's byte count into a compact memory label for the runtime card.
@@ -887,7 +931,7 @@ function renderViews() {
 	$all("[data-view-panel]").forEach(panel => {
 		panel.classList.toggle("active", panel.dataset.viewPanel === activeView);
 	});
-	setText("#viewTitle", viewTitles[activeView] || "HachiGen");
+	setText("#viewTitle", activeView === "setup" ? selectedBotName() : (viewTitles[activeView] || "HachiGen"));
 	updateLogPolling();
 }
 
@@ -905,17 +949,165 @@ function showView(viewName) {
 		loadDatabaseViewer();
 	}
 
-	if (activeView === "diagnostics") {
+	if (activeView === "diagnostics" && selectedBotId === HACHI_BOT_ID) {
 		loadDiagnostics().catch(error => {
 			toast(error.message || "Diagnostics refresh failed.", "error", { label: "Diagnostics" });
 		});
 	}
 
-	if (activeView === "fleet") {
+	if (activeView === "fleet" || selectedBotId !== HACHI_BOT_ID) {
 		refreshFleetOverview().catch(error => {
 			toast(error.message || "Fleet overview refresh failed.", "error", { label: "Fleet" });
 		});
 	}
+}
+
+function selectedFleetDeployment() {
+	return fleetState?.deployments?.find(deployment => deployment.id === selectedBotId) || null;
+}
+
+function selectedBotName() {
+	return selectedBotId === HACHI_BOT_ID ? "Hachi" : (selectedFleetDeployment()?.name || "Bot");
+}
+
+function renderExternalRemote(deployment) {
+	const relatedDeployments = (fleetState?.deployments || []).filter(item => item.botTypeId === deployment.botTypeId);
+	const remoteDeployment = relatedDeployments.find(item => fleetState.servers.find(server => server.id === item.serverId)?.connection?.type === "ssh");
+	const currentServer = fleetState?.servers?.find(item => item.id === deployment.serverId);
+	const remoteServer = currentServer?.connection?.type === "ssh" ? currentServer :
+		fleetState?.servers?.find(item => item.id === remoteDeployment?.serverId) ||
+		fleetState?.servers?.find(item => item.connection?.type === "ssh");
+	const connection = remoteServer?.connection || {};
+	const activeRemote = currentServer?.connection?.type === "ssh";
+	const portMode = Number(connection.port || 22) === 22 ? "default" : "custom";
+	setElementText($("#saveRemoteSettingsButton"), "Save Remote");
+	setText("#remotePathLabel", `Remote ${deployment.name} path`);
+	setText("#remoteMeta", remoteServer ? `Ready: ${connection.username}@${connection.host}` : "Not configured");
+	setInputValue("#remoteHostInput", connection.host || "");
+	setInputValue("#remoteUsernameInput", connection.username || "");
+	setInputValue("#remoteSshKeyInput", connection.sshKeyPath || "");
+	setInputValue("#remotePortInput", connection.port || 22);
+	setInputValue("#remotePathInput", (activeRemote ? deployment.installPath : remoteDeployment?.installPath) || "");
+	setInputValue("#remotePm2Input", (activeRemote ? deployment.pm2Name : remoteDeployment?.pm2Name) || deployment.pm2Name || "");
+	const targetRadio = $(`input[name="runtimeTarget"][value="${activeRemote ? "remote" : "local"}"]`);
+	if (targetRadio) targetRadio.checked = true;
+	const portRadio = $(`input[name="remotePortMode"][value="${portMode}"]`);
+	if (portRadio) portRadio.checked = true;
+	updateRemotePortMode();
+	setText("#remotePreviewTarget", remoteServer ? `${connection.username}@${connection.host}` : "Not configured");
+	setText("#remotePreviewPort", `${connection.port || 22}${portMode === "default" ? " (default)" : ""}`);
+	setText("#remotePreviewPath", (activeRemote ? deployment.installPath : remoteDeployment?.installPath) || "Not configured");
+	setText("#remotePreviewPm2", (activeRemote ? deployment.pm2Name : remoteDeployment?.pm2Name) || deployment.pm2Name || "Not configured");
+	setText("#remotePreviewLastTest", "Not tested");
+	setText("#remoteTestOutput", remoteServer ? "No remote test has run yet." : "Enter the remote connection details, then test or save them.");
+}
+
+function renderSelectedBotContext() {
+	const external = selectedBotId !== HACHI_BOT_ID && Boolean(selectedFleetDeployment());
+	const deployment = selectedFleetDeployment();
+	const server = fleetState?.servers?.find(item => item.id === deployment?.serverId);
+	document.body.classList.toggle("external-bot-selected", external);
+	setElementText($("#botViewNav"), external ? deployment.name : "Hachi");
+	setText("#dashboardBotCardLabel", external ? deployment.name : "Hachi");
+	setText("#dashboardBotUpdateLabel", external ? deployment.name : "Hachi");
+	setText("#diagnosticsBotLabel", external ? deployment.name : "Hachi");
+	setText("#diagnosticsBotUpdateLabel", external ? deployment.name : "Hachi");
+	setText("#dashboardTargetButton", external ? "Bot Settings" : "Remote Settings");
+	setText("#dashboardValidateButton", external ? "Check Health" : "Validate Install");
+	setText("#runtimeLocationMeta", external ? "Choose the active installation or attach a saved remote connection" : "Choose whether Hachi runs locally or through a saved remote connection");
+	setElementText($("#installValidateButton"), external ? "Validate Install" : "Install / Validate");
+	setElementText($("#browseInstallButton"), external ? "Open Folder" : "Browse");
+	if ($("#browseInstallButton")) $("#browseInstallButton").dataset.action = external ? "open-folder" : "browse";
+	if ($("#installPathInput")) $("#installPathInput").readOnly = external;
+	if ($("#saveInstallPathButton")) $("#saveInstallPathButton").hidden = external;
+	if ($("#hachiConfigurationFields")) $("#hachiConfigurationFields").hidden = external;
+	if ($("#externalConfigurationFields")) $("#externalConfigurationFields").hidden = !external;
+	if ($("#externalConfigurationMeta")) $("#externalConfigurationMeta").hidden = !external;
+	if (!external) setDisabled("#saveConfigurationButton", false);
+	if ($("#dashboardGuideButton")) $("#dashboardGuideButton").hidden = external;
+	for (const selector of ["#externalUpdatesPanel", "#externalDatabasePanel"]) {
+		const element = $(selector);
+		if (element) element.hidden = !external;
+	}
+	if (external) {
+		setInputValue("#installPathInput", deployment.installPath);
+		setText("#externalUpdatesName", `${deployment.name} updates`);
+		setText("#externalDatabaseName", `${deployment.name} database`);
+		renderExternalRemote(deployment);
+		setDisabled("#openFolderButton", server?.connection?.type !== "local");
+		setDisabled("#browseInstallButton", server?.connection?.type !== "local");
+		if ($("#testingDeploymentSelect")) $("#testingDeploymentSelect").value = deployment.id;
+	} else if (state) {
+		setElementText($("#saveRemoteSettingsButton"), "Save Remote");
+		setText("#remotePathLabel", "Remote Hachi path");
+		setDisabled("#openFolderButton", state.runtimeTarget === "remote");
+		setDisabled("#browseInstallButton", state.runtimeTarget === "remote");
+	}
+	renderViews();
+	renderFleetSecurityCapabilities();
+	if (external) void loadExternalConfiguration().catch(error => setText("#externalConfigurationMessage", error.message));
+}
+
+function renderExternalDashboard(overview) {
+	if (!overview || selectedBotId === HACHI_BOT_ID) return;
+	const runtime = overview.health?.runtime;
+	const repository = overview.repository || {};
+	const security = overview.security || {};
+	const databaseStatus = security.database?.status || (security.error ? "error" : "unknown");
+	renderStatusCard("bot", {
+		detail: runtime?.message || overview.health?.error || "Runtime status unavailable",
+		dot: runtime?.status === "online" ? "good" : runtime?.status === "error" ? "bad" : "warn",
+		label: readableStatus(runtime?.status || "Unknown"),
+	});
+	renderStatusCard("install", {
+		detail: overview.deployment?.installPath || "No install path",
+		dot: overview.health?.installFound ? "good" : "bad",
+		label: overview.health?.installFound ? "Found" : "Missing",
+	});
+	renderStatusCard("update", {
+		detail: repository.error || repository.message || repository.branch || "Repository status",
+		dot: repository.error ? "bad" : repository.dirty || repository.updateAvailable ? "warn" : "good",
+		label: repository.error ? "Unavailable" : repository.dirty ? "Local changes" : repository.updateAvailable ? "Available" : "Current",
+	});
+	const deployable = Boolean(overview.deployment?.capabilities?.discordCommands);
+	renderStatusCard("deploy", {
+		detail: deployable ? "Discord command deployment available" : "No command profile",
+		dot: deployable ? "good" : "muted",
+		label: deployable ? "Ready" : "Not configured",
+	});
+	renderStatusCard("dashboardDatabase", {
+		detail: security.error || security.database?.message || "Database status unavailable",
+		dot: ["protected", "not-applicable"].includes(databaseStatus) ? "good" : databaseStatus === "encrypted-unverified" ? "warn" : "bad",
+		label: readableStatus(databaseStatus),
+	});
+	setText("#runtimeMeta", runtime?.message || `${overview.deployment?.pm2Name || "Bot"} process`);
+	setText("#dashboardTargetMode", overview.server?.type === "ssh" ? "Remote" : "Local");
+	setText("#dashboardTargetLocation", overview.deployment?.installPath || "Not set");
+	setText("#dashboardHachiUpdate", repository.message || "Not checked");
+	setText("#sidebarInstallPath", shortPath(overview.deployment?.installPath || ""));
+	setText("#sidebarRepoRemote", repository.remote || overview.deployment?.repository?.url || "Repo not checked");
+	setText("#sidebarRepoBranch", repository.branch || "Branch not checked");
+	setText("#sidebarStatusText", overview.health?.installFound ? "Installed" : "Missing");
+	setDot("#sidebarStatusDot", overview.health?.installFound ? "good" : "bad");
+	setText("#diagnosticsMeta", `${selectedBotName()} deployment overview`);
+	setText("#diagnosticsHachiVersion", overview.deployment?.definitionVersion || overview.deployment?.botTypeId || "Profile managed");
+	setText("#diagnosticsRuntimeTarget", overview.server?.type === "ssh" ? "Remote" : "Local");
+	setText("#diagnosticsPm2Status", readableStatus(runtime?.status || "Unknown"));
+	setText("#diagnosticsHachiUpdate", repository.error ? "Unavailable" : repository.updateAvailable ? "Update available" : "Current");
+	setText("#diagnosticsSummaryOutput", JSON.stringify({
+		database: security.database || null,
+		deployment: overview.deployment,
+		health: overview.health,
+		repository: overview.repository,
+		server: overview.server,
+	}, null, 2));
+	renderCheckList("#installChecks", [
+		["Project files", Boolean(overview.health?.installFound), overview.health?.installFound ? "Found" : "Missing"],
+		["Git checkout", repository.isGit !== false && !repository.error, repository.error || repository.message || "Available"],
+		["Repository origin", repository.originMatches !== false, repository.originMatches === false ? "Does not match profile" : "Matches profile"],
+		["Runtime profile", Boolean(overview.deployment?.capabilities?.pm2), overview.deployment?.capabilities?.pm2 ? "PM2 available" : "No PM2 adapter"],
+		["Testing", Boolean(selectedFleetDeployment()?.testCommandsAvailable), selectedFleetDeployment()?.testCommandsAvailable ? "Test command deployment available" : "Runtime testing only"],
+	]);
 }
 
 function handleLogSelectionPointerDown(event) {
@@ -1319,9 +1511,7 @@ function renderInstallChecks(scan) {
 	// Convert quickScan() output into the checklist under Setup -> Install.
 	// Each row answers one setup question: are project files, config, packages,
 	// and Git present enough for HachiGen to manage this folder?
-	const container = $("#installChecks");
-
-	if (!container || !scan) {
+	if (!scan) {
 		return;
 	}
 
@@ -1333,24 +1523,7 @@ function renderInstallChecks(scan) {
 		["Git checkout", scan.hasGit, scan.hasGit ? "Available" : "Manual update mode"],
 	];
 
-	container.innerHTML = "";
-
-	for (const [label, ok, detail] of checks) {
-		const item = document.createElement("div");
-		item.className = "check-item";
-
-		const dot = document.createElement("span");
-		dot.className = `dot ${ok ? "good" : "warn"}`;
-		item.append(dot);
-
-		const text = document.createElement("span");
-		const strong = document.createElement("strong");
-		strong.textContent = label;
-		text.append(strong, `: ${detail}`);
-		item.append(text);
-
-		container.append(item);
-	}
+	renderCheckList("#installChecks", checks);
 }
 
 function renderConfig(config) {
@@ -1382,13 +1555,7 @@ function renderConfig(config) {
 
 		if (envConfigFields.includes(field)) {
 			const copyButton = form.querySelector(`[data-action="copy-secret"][data-secret-field="${field}"]`);
-
-			if (copyButton) {
-				copyButton.disabled = !protection?.copyable;
-				copyButton.title = protection?.copyable ?
-					"Copy saved value to clipboard for 60 seconds" :
-					"Save an encrypted value before copying";
-			}
+			configureSecretCopyButton(copyButton, protection?.copyable, "Save an encrypted value before copying");
 		}
 	}
 }
@@ -3277,19 +3444,19 @@ function renderFleet(nextFleet) {
 		`Credentials: ${type.credentials?.mode === "adapter" ? "approved secure writer" : "managed by bot"} · ${Object.entries(type.capabilities || {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "status only"}`,
 		[{ action: "remove-bot-definition", id: type.id, label: "Remove" }],
 	)) : [fleetEmpty("No bot profiles have been added yet.")]));
-	replaceSelectOptions("#fleetSelectedDeploymentSelect", managedDeployments, deployment => {
-		const server = fleetState.servers.find(item => item.id === deployment.serverId);
-		return `${deployment.name} - ${server?.connection?.type === "ssh" ? "Remote" : "Local"}`;
+	const logicalDeployments = [...new Set(managedDeployments.map(item => item.botTypeId))].map(botTypeId => {
+		const deployments = managedDeployments.filter(item => item.botTypeId === botTypeId);
+		return deployments.find(item => item.id === selectedBotId) || deployments.find(item => fleetState.servers.find(server => server.id === item.serverId)?.connection?.type === "local") || deployments[0];
 	});
-	const selectedDeployment = managedDeployments.find(deployment => deployment.id === fleetState.activeDeploymentId) || managedDeployments[0];
-	if (selectedDeployment) $("#fleetSelectedDeploymentSelect").value = selectedDeployment.id;
-	replaceSelectOptions("#fleetServerSelect", fleetState.servers, item => item.name || (item.id === "local" ? "Local Computer" : item.id));
+	const botChoices = [{ id: HACHI_BOT_ID, name: "Hachi" }, ...logicalDeployments];
+	replaceSelectOptions("#globalBotSelect", botChoices, item => item.name);
+	if (!botChoices.some(item => item.id === selectedBotId)) selectedBotId = HACHI_BOT_ID;
+	$("#globalBotSelect").value = selectedBotId;
 	setDisabled("#addFleetBotButton", !fleetState.servers.length);
-	replaceSelectOptions("#securityDeploymentSelect", fleetState.deployments, item => item.name);
 	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
 	renderFleetSecurityCapabilities();
-	renderFleetFolderMode();
-	if (activeView === "fleet") void refreshFleetOverview();
+	renderSelectedBotContext();
+	if (selectedBotId !== HACHI_BOT_ID) void refreshFleetOverview();
 }
 
 function readableStatus(value) {
@@ -3340,27 +3507,22 @@ function renderFleetOverview(overview = null) {
 }
 
 async function refreshFleetOverview() {
-	const deploymentId = $("#fleetSelectedDeploymentSelect")?.value;
+	const deploymentId = selectedBotId === HACHI_BOT_ID ? "" : selectedBotId;
 	const requestId = ++fleetOverviewRequestId;
 	if (!deploymentId) {
 		renderFleetOverview(null);
 		return null;
 	}
 	const overview = await api.getFleetDeploymentOverview(deploymentId);
-	if (requestId === fleetOverviewRequestId && deploymentId === $("#fleetSelectedDeploymentSelect")?.value) renderFleetOverview(overview);
+	if (requestId === fleetOverviewRequestId && deploymentId === selectedBotId) {
+		renderFleetOverview(overview);
+		renderExternalDashboard(overview);
+	}
 	return overview;
 }
 
-function renderFleetFolderMode() {
-	const server = fleetState?.servers?.find(item => item.id === $("#fleetServerSelect")?.value);
-	const local = server?.connection?.type === "local";
-	setDisabled("#chooseFleetBotFolderButton", !local);
-	const input = $("#fleetDeploymentForm input[name=\"installPath\"]");
-	if (input) input.placeholder = local ? "Choose the local bot repository" : "/srv/bots/my-bot";
-}
-
 function renderFleetSecurityCapabilities() {
-	const deployment = fleetState?.deployments?.find(item => item.id === $("#securityDeploymentSelect")?.value);
+	const deployment = selectedFleetDeployment();
 	const definition = fleetState?.botTypes?.find(item => item.id === deployment?.botTypeId);
 	const capabilities = definition?.source === "native" ? definition.capabilities : (deployment?.approvedCapabilities || {});
 	setDisabled("#fleetBackupButton", !capabilities?.backups);
@@ -3383,8 +3545,7 @@ function renderTestingProfileEditor(profile = null) {
 	setDisabled("#deleteTestingProfileButton", !profile);
 	for (const button of form.querySelectorAll('[data-action="copy-testing-secret"]')) {
 		const field = button.dataset.secretField;
-		button.disabled = !profile?.hasValues?.[field];
-		button.title = profile?.hasValues?.[field] ? "Copy saved value to clipboard for 60 seconds" : "No saved value";
+		configureSecretCopyButton(button, profile?.hasValues?.[field]);
 	}
 }
 
@@ -3411,12 +3572,19 @@ function renderTestingRunner(runs = testingRuns) {
 		return server?.connection?.type === "local";
 	});
 	replaceSelectOptions("#testingDeploymentSelect", deployments, deployment => deployment.name);
+	const contextualDeployment = selectedBotId === HACHI_BOT_ID ? deployments.find(deployment => {
+		const definition = fleetState?.botTypes?.find(type => type.id === deployment.botTypeId);
+		return definition?.source === "native";
+	}) : deployments.find(deployment => deployment.id === selectedBotId);
+	if (contextualDeployment && $("#testingDeploymentSelect")) $("#testingDeploymentSelect").value = contextualDeployment.id;
 	replaceSelectOptions("#testingIdentitySelect", testingProfiles, profile => `${profile.name}${profile.isDefault ? " · Default" : ""}`);
 	const deploymentId = $("#testingDeploymentSelect")?.value || "";
+	const deployment = deployments.find(item => item.id === deploymentId);
 	const runState = testingRuns.find(run => run.deploymentId === deploymentId);
 	const running = ["running", "starting", "stopping"].includes(runState?.status);
 	setDisabled("#startTestingBotButton", !deploymentId || !$("#testingIdentitySelect")?.value || running);
 	setDisabled("#stopTestingBotButton", !running);
+	setDisabled("#resetTestingCommandsButton", !deploymentId || !$("#testingIdentitySelect")?.value || !deployment?.testCommandsAvailable);
 	setText("#testingRunOutput", runState ?
 		`Status: ${runState.status}${runState.exitCode === null ? "" : ` · Exit code: ${runState.exitCode}`}\n${runState.output || "No process output yet."}` :
 		"Select a local bot and testing identity.");
@@ -3448,6 +3616,10 @@ async function refreshFleet() {
 }
 
 async function refreshCurrentView() {
+	if (selectedBotId !== HACHI_BOT_ID && ["dashboard", "setup", "updates", "database", "diagnostics"].includes(activeView)) {
+		await refreshFleetOverview();
+		return { message: `${selectedBotName()} refreshed.` };
+	}
 	if (activeView === "fleet") {
 		await refreshFleet();
 		return { message: "Fleet refreshed." };
@@ -3499,25 +3671,15 @@ function renderState(nextState) {
 	setText("#sidebarStatusText", install.label);
 	setDot("#sidebarStatusDot", install.dot);
 	// Dashboard status cards.
-	setText("#botStatus", bot.label);
-	setText("#botDetail", bot.detail);
-	setDot("#botDot", bot.dot);
-
-	setText("#installStatus", install.label);
-	setText("#installDetail", install.detail);
-	setDot("#installDot", install.dot);
-
-	setText("#updateStatus", updates.label);
-	setText("#updateDetail", updates.detail);
-	setDot("#updateDot", updates.dot);
-
-	setText("#deployStatus", scan.configurationReady ? "Ready" : "Needs config");
-	setText("#deployDetail", scan.configurationReady ? "Global and guild commands" : "Save configuration first");
-	setDot("#deployDot", scan.configurationReady ? "good" : "warn");
-
-	setText("#dashboardDatabaseStatus", database.label);
-	setText("#dashboardDatabaseDetail", database.detail);
-	setDot("#dashboardDatabaseDot", database.dot);
+	renderStatusCard("bot", bot);
+	renderStatusCard("install", install);
+	renderStatusCard("update", updates);
+	renderStatusCard("deploy", {
+		detail: scan.configurationReady ? "Global and guild commands" : "Save configuration first",
+		dot: scan.configurationReady ? "good" : "warn",
+		label: scan.configurationReady ? "Ready" : "Needs config",
+	});
+	renderStatusCard("dashboardDatabase", database);
 
 	// Dashboard/panel metadata.
 	setText("#runtimeMeta", state.pm2?.message || (state.runtimeTarget === "remote" ? "Remote PM2 process: Hachi" : "PM2 process: Hachi"));
@@ -3553,11 +3715,11 @@ function renderState(nextState) {
 	const installInput = $("#installPathInput");
 
 	// Do not overwrite the user's typing while the install path input has focus.
-	if (installInput && document.activeElement !== installInput) {
+	if (selectedBotId === HACHI_BOT_ID && installInput && document.activeElement !== installInput) {
 		installInput.value = state.runtimeTarget === "remote" ? state.scan?.installPath || "" : state.installPath || "";
 	}
 
-	renderInstallChecks(scan);
+	if (selectedBotId === HACHI_BOT_ID) renderInstallChecks(scan);
 	maybeShowSetupGuide();
 }
 
@@ -3574,6 +3736,12 @@ async function refreshConfig() {
 async function refreshLogs() {
 	// Refresh visible log snapshots. updateLogPolling calls this repeatedly
 	// while Logs is open so the panel feels close to real time.
+	if (selectedBotId !== HACHI_BOT_ID) {
+		const result = await api.getFleetDeploymentLogs(selectedBotId, 300);
+		setLogText("pm2Logs", result.logs || "No bot logs returned.");
+		setText("#eventLogs", `Showing ${selectedBotName()} runtime logs. HachiGen activity remains available in Diagnostics.`);
+		return;
+	}
 	const logs = await api.getLogs();
 	const pm2Text = logs.pm2 || logs.local || "No logs found.";
 	lastPm2LogText = pm2Text;
@@ -3788,28 +3956,44 @@ function handleChange(event) {
 		updateRemotePortMode();
 	}
 
-	if (event.target.id === "securityDeploymentSelect") {
-		renderFleetSecurityCapabilities();
-	}
 
-	if (event.target.id === "fleetServerSelect") {
-		renderFleetFolderMode();
+	if (event.target.id === "globalBotSelect") {
+		selectedBotId = event.target.value || HACHI_BOT_ID;
+		window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
+		databaseView = null;
+		renderSelectedBotContext();
+		if (selectedBotId === HACHI_BOT_ID) {
+			renderState(state);
+		} else {
+			api.setActiveFleetDeployment(selectedBotId).then(renderFleet).catch(error => {
+				recordRendererEvent("error", `Could not persist selected bot: ${error.message || error}`, { label: "Select bot" });
+			});
+			if ($("#testingDeploymentSelect")) $("#testingDeploymentSelect").value = selectedBotId;
+			renderTestingRunner();
+			refreshFleetOverview().catch(error => toast(error.message || "Bot status refresh failed.", "error"));
+			loadExternalConfiguration().catch(error => setText("#externalConfigurationMessage", error.message));
+			if (activeView === "logs") refreshLogs();
+		}
 	}
-
-	if (event.target.id === "fleetSelectedDeploymentSelect") {
-		runAction("Select fleet bot", async () => {
-			const fleet = await api.setActiveFleetDeployment(event.target.value);
-			renderFleet(fleet);
-			return { message: "Selected Fleet bot changed." };
-		});
-	}
-
 	if (["testingDeploymentSelect", "testingIdentitySelect"].includes(event.target.id)) {
 		renderTestingRunner();
 	}
 
 	if (event.target.name === "runtimeTarget") {
 		const nextTarget = event.target.value === "remote" ? "remote" : "local";
+		const externalDeployment = selectedBotId !== HACHI_BOT_ID ? selectedFleetDeployment() : null;
+		if (externalDeployment) {
+			const matchingDeployment = (fleetState?.deployments || []).find(deployment => {
+				const server = fleetState.servers.find(item => item.id === deployment.serverId);
+				return deployment.botTypeId === externalDeployment.botTypeId && (server?.connection?.type === "ssh" ? "remote" : "local") === nextTarget;
+			});
+			if (matchingDeployment) {
+				selectedBotId = matchingDeployment.id;
+				window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
+				api.setActiveFleetDeployment(selectedBotId).then(renderFleet).catch(error => toast(error.message, "error"));
+			}
+			return;
+		}
 
 		runAction("Set runtime target", () => api.setRuntimeTarget(nextTarget))
 			.then(async result => {
@@ -3826,6 +4010,120 @@ function handleChange(event) {
 				}
 			});
 	}
+}
+
+function renderExternalConfiguration(configuration) {
+	externalConfiguration = configuration;
+	const files = configuration?.files || [];
+	setText("#externalConfigurationMeta", files.length ? "" : "No supported .env or JSON configuration detected");
+	setDisabled("#saveConfigurationButton", !files.length);
+	const container = $("#externalConfigurationFields");
+	if (!container) return;
+	const elements = [];
+	for (const file of files) {
+		for (const field of file.fields) {
+			const label = document.createElement("label");
+			label.className = "field";
+			const title = document.createElement("span");
+			title.textContent = field.key;
+			const input = document.createElement("input");
+			input.dataset.configKey = field.key;
+			input.dataset.configPath = file.path;
+			input.type = field.sensitive ? "password" : "text";
+			input.placeholder = field.sensitive ? (field.hasValue ? "Sensitive value saved — enter to replace" : "Enter sensitive value") : "";
+			input.value = field.sensitive ? "" : String(field.value);
+			if (field.type === "number") input.type = "number";
+			label.append(title);
+			if (field.sensitive) {
+				const row = document.createElement("div");
+				row.className = "secret-field-row";
+				const copy = document.createElement("button");
+				copy.className = "button secondary compact";
+				copy.type = "button";
+				copy.dataset.action = "copy-secret";
+				copy.dataset.configKey = field.key;
+				copy.dataset.configPath = file.path;
+				copy.textContent = "Copy";
+				configureSecretCopyButton(copy, field.hasValue);
+				row.append(input, copy);
+				label.append(row);
+			} else {
+				label.append(input);
+			}
+			elements.push(label);
+		}
+	}
+	container.replaceChildren(...elements);
+}
+
+async function loadExternalConfiguration() {
+	if (selectedBotId === HACHI_BOT_ID) return;
+	renderExternalConfiguration(await api.getFleetDeploymentConfiguration(selectedBotId));
+}
+
+async function saveExternalConfiguration(deployment) {
+	const files = externalConfiguration?.files || [];
+	let result = externalConfiguration;
+	for (const file of files) {
+		const fields = file.fields.map(field => {
+			const input = [...$all("#externalConfigurationFields input")].find(item => item.dataset.configPath === file.path && item.dataset.configKey === field.key);
+			return { key: field.key, value: input?.value ?? "" };
+		});
+		result = await api.saveFleetDeploymentConfiguration(deployment.id, { fields, hash: file.hash, path: file.path });
+	}
+	renderExternalConfiguration(result);
+	return { message: "Bot configuration saved." };
+}
+
+async function saveExternalRemoteSettings(deployment) {
+	const settings = readRemoteForm();
+	if (!settings.host.trim() || !settings.username.trim() || !settings.sshKeyPath.trim() || !settings.remotePath.trim()) {
+		throw new Error("Host, username, SSH private key, and remote bot path are required.");
+	}
+	const port = settings.portMode === "custom" ? Number.parseInt(settings.port, 10) : 22;
+	let fleet = fleetState || await api.getFleet();
+	let server = fleet.servers.find(item => item.connection?.type === "ssh" &&
+		item.connection.host.toLowerCase() === settings.host.trim().toLowerCase() &&
+		item.connection.username === settings.username.trim() &&
+		Number(item.connection.port) === port);
+	if (!server) {
+		fleet = await api.addFleetServer({
+			connection: { host: settings.host, port, sshKeyPath: settings.sshKeyPath, type: "ssh", username: settings.username },
+			name: settings.host.trim(),
+		});
+		server = fleet.servers.find(item => item.connection?.type === "ssh" &&
+			item.connection.host.toLowerCase() === settings.host.trim().toLowerCase() &&
+			item.connection.username === settings.username.trim() &&
+			Number(item.connection.port) === port);
+	}
+	if (!server) throw new Error("Remote connection could not be resolved.");
+	// A matching endpoint is a shared server-level record. Do not silently use
+	// its old private key when the form contains a different one.
+	if (String(server.connection.sshKeyPath || "").trim().toLowerCase() !== settings.sshKeyPath.trim().toLowerCase()) {
+		throw new Error(`The saved ${server.name} connection uses a different SSH key. Update that Fleet connection before attaching this installation.`);
+	}
+	const existing = fleet.deployments.find(item => item.botTypeId === deployment.botTypeId && item.serverId === server.id && item.installPath === settings.remotePath.trim());
+	if (existing) {
+		selectedBotId = existing.id;
+		window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
+		renderFleet(await api.setActiveFleetDeployment(existing.id));
+		return { message: "Remote installation is already configured." };
+	}
+	fleet = await api.addFleetDeployment({
+		botTypeId: deployment.botTypeId,
+		environment: "production",
+		installPath: settings.remotePath.trim(),
+		name: deployment.name,
+		pm2Name: settings.pm2Name.trim() || deployment.pm2Name,
+		serverId: server.id,
+	});
+	const remoteDeployment = fleet.deployments.find(item => item.botTypeId === deployment.botTypeId && item.serverId === server.id && item.installPath === settings.remotePath.trim());
+	if (remoteDeployment) {
+		selectedBotId = remoteDeployment.id;
+		window.localStorage.setItem(SELECTED_BOT_KEY, selectedBotId);
+	}
+	renderFleet(fleet);
+	return { message: "Remote settings saved." };
 }
 
 function handleMenuAction(payload = {}) {
@@ -3933,6 +4231,75 @@ function handleAction(event) {
 	}
 
 	const action = button.dataset.action;
+	const externalDeployment = selectedBotId !== HACHI_BOT_ID ? selectedFleetDeployment() : null;
+	if (externalDeployment && action === "save-remote-settings") {
+		runAction("Save remote settings", () => saveExternalRemoteSettings(externalDeployment));
+		return;
+	}
+	if (externalDeployment && action === "test-remote") {
+		setText("#remoteTestOutput", "Testing remote connection...");
+		runAction("Test remote connection", () => api.testFleetRemoteConnection(readRemoteForm()), { toast: false })
+			.then(result => {
+				if (!result) return;
+				setText("#remoteTestOutput", formatRemoteTestOutput(result));
+				setText("#remotePreviewLastTest", `${result.ok ? "Passed" : "Failed"} ${formatDateTime(result.checkedAt)} - ${result.message}`);
+				toast(result.message, result.ok ? "info" : "error", { label: "Test remote connection" });
+			});
+		return;
+	}
+	// Shared controls operate on the selected logical bot. Hachi keeps its native
+	// workflow; additional bots cross the IPC boundary only through Fleet APIs.
+	if (externalDeployment && ["start", "stop", "restart"].includes(action)) {
+		const operation = action;
+		runAction(`${operation} ${externalDeployment.name}`, async () => {
+			const result = await api.controlFleetDeployment(externalDeployment.id, operation);
+			await refreshFleetOverview();
+			return result;
+		});
+		return;
+	}
+
+	if (externalDeployment && action === "deploy") {
+		runAction(`Deploy ${externalDeployment.name} commands`, () => api.deployFleetDiscordCommands(externalDeployment.id));
+		return;
+	}
+
+	if (externalDeployment && action === "check-all-updates") {
+		runAction(`Check ${externalDeployment.name} updates`, async () => {
+			const result = await api.getFleetRepositoryStatus(externalDeployment.id, { fetch: true });
+			setText("#externalUpdatesOutput", JSON.stringify(result, null, 2));
+			await refreshFleetOverview();
+			return result;
+		});
+		return;
+	}
+
+	if (externalDeployment && ["validate", "install-validate"].includes(action)) {
+		runAction(`Check ${externalDeployment.name} health`, async () => {
+			const result = await api.checkFleetDeploymentHealth(externalDeployment.id);
+			await refreshFleetOverview();
+			return result;
+		});
+		return;
+	}
+
+	if (externalDeployment && action === "update") {
+		showConfirmModal({
+			confirmText: "Update",
+			meta: "Transactional bot update",
+			summary: `Update ${externalDeployment.name}, validate it, and roll back automatically if the update fails?`,
+			title: `Update ${externalDeployment.name}?`,
+		}).then(confirmed => {
+			if (!confirmed) return;
+			runAction(`Update ${externalDeployment.name}`, async () => {
+				const result = await api.updateFleetDeployment(externalDeployment.id);
+				setText("#externalUpdatesOutput", JSON.stringify(result, null, 2));
+				await refreshFleetOverview();
+				return result;
+			});
+		});
+		return;
+	}
 
 	if (action === "new-testing-profile") {
 		renderTestingProfileEditor(null);
@@ -3989,6 +4356,31 @@ function handleAction(event) {
 		const deploymentId = $("#testingDeploymentSelect")?.value;
 		runAction("Stop testing bot", () => api.stopTestingBot(deploymentId)).then(result => {
 			if (result) renderTestingRunner(result.runs);
+		});
+		return;
+	}
+
+	if (action === "reset-testing-commands") {
+		const deploymentId = $("#testingDeploymentSelect")?.value;
+		const profileId = $("#testingIdentitySelect")?.value;
+		const deployment = fleetState?.deployments?.find(item => item.id === deploymentId);
+		const profile = testingProfiles.find(item => item.id === profileId);
+		showConfirmModal({
+			confirmText: "Delete & Redeploy",
+			details: [
+				"All global commands owned by the selected test application will be deleted.",
+				"Guild commands will be deleted from its current guilds, then the selected bot's approved deployment scripts will run with test credentials.",
+				"Production credentials and production commands are not used.",
+			],
+			meta: `${deployment?.name || "Selected bot"} · ${profile?.name || "Selected test identity"}`,
+			summary: "Reset commands registered to this shared testing application?",
+			title: "Reset test commands?",
+			variant: "warning",
+		}).then(confirmed => {
+			if (!confirmed) return;
+			runAction("Reset test commands", () => api.resetTestingCommands(deploymentId, profileId)).then(result => {
+				if (result) setText("#testingRunOutput", result.message || "Test commands reset.");
+			});
 		});
 		return;
 	}
@@ -4073,6 +4465,9 @@ function handleAction(event) {
 	if (action === "add-fleet-deployment") {
 		const form = $("#fleetDeploymentForm");
 		const values = Object.fromEntries(new window.FormData(form));
+		// Onboarding always starts from the permanent local connection. Remote
+		// deployments are attached only after HachiGen has a reviewed local profile.
+		values.serverId = "local";
 		runAction("Inspect bot", () => api.inspectFleetBotCandidate(values), { toast: false }).then(candidate => {
 			if (!candidate) return;
 			const definition = candidate.definition;
@@ -4140,7 +4535,7 @@ function handleAction(event) {
 	}
 
 	if (["audit-fleet-security", "backup-fleet-database", "encrypt-fleet-database", "restore-fleet-database"].includes(action)) {
-		const deploymentId = $("#securityDeploymentSelect").value;
+		const deploymentId = selectedBotId;
 		const execute = async () => {
 			let result;
 			if (action === "audit-fleet-security") result = await api.auditFleetDeploymentSecurity(deploymentId);
@@ -4168,7 +4563,7 @@ function handleAction(event) {
 	}
 
 	if (["save-fleet-policies", "list-fleet-backups", "prune-fleet-backups", "prune-fleet-logs"].includes(action)) {
-		const deploymentId = $("#securityDeploymentSelect").value;
+		const deploymentId = selectedBotId;
 		runAction("Fleet retention", async () => {
 			let result;
 			if (action === "save-fleet-policies") {
@@ -4353,6 +4748,11 @@ function handleAction(event) {
 	}
 
 	if (action === "copy-secret") {
+		if (externalDeployment) {
+			runAction("Copy sensitive configuration", () => api.copyFleetConfigurationSecret(externalDeployment.id, button.dataset.configPath, button.dataset.configKey));
+			return;
+		}
+
 		const field = button.dataset.secretField || "";
 
 		runAction("Copy saved value", () => api.copyEnvSecret(field), { toast: false })
@@ -4732,7 +5132,7 @@ function handleAction(event) {
 
 	if (action === "refresh") {
 		// Manual state refresh without changing anything.
-		runAction("Refresh", () => refreshState().then(() => ({ message: "State refreshed." })));
+		runAction("Refresh", () => (externalDeployment ? refreshFleetOverview() : refreshState()).then(() => ({ message: "State refreshed." })));
 		return;
 	}
 
@@ -4754,7 +5154,7 @@ function handleAction(event) {
 
 	if (action === "open-folder") {
 		// Opens the selected install folder in File Explorer.
-		runAction("Open folder", () => api.openInstallFolder());
+		runAction("Open folder", () => externalDeployment ? api.openFleetDeploymentFolder(externalDeployment.id) : api.openInstallFolder());
 	}
 }
 
@@ -4777,6 +5177,11 @@ function handleConfigSubmit(event) {
 	// Save Config is a real form submit, so prevent page reload and send the
 	// collected field values to the backend writer.
 	event.preventDefault();
+	const externalDeployment = selectedBotId !== HACHI_BOT_ID ? selectedFleetDeployment() : null;
+	if (externalDeployment) {
+		runAction("Save bot configuration", () => saveExternalConfiguration(externalDeployment));
+		return;
+	}
 	runAction("Save configuration", async () => {
 		const config = await api.saveConfig(readConfigForm());
 		renderConfig(config);

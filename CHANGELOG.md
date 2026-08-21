@@ -16,12 +16,24 @@ Notable changes to HachiGen are documented here.
 - Added a guided production-bot onboarding flow that inspects a selected Git repository, detects package scripts, PM2 configuration, database and log paths, previews the generated capabilities, and stores the approved profile under `Profiles/Bots` without changing the bot repository.
 - Added multiple local Testing identities under `Profiles/Testing`, with Windows-user-protected values in profile `.env` files, one optional default identity, and 60-second clipboard copy controls.
 - Added temporary local bot testing from the Testing tab, including reviewed test-entry detection, in-memory credential injection, parallel production/test operation, redacted process output, and managed stop/exit state.
+- Added confirmed test-command resets that delete global and guild commands only from the selected shared test application, then run the selected bot's test deployment adapter with test credentials injected in memory.
 
 ### Changed
 
-- Changed the Dashboard's generic Bot card to Hachi, removed the Fleet summary card from Hachi's Dashboard, and added selected-bot status cards directly to Fleet.
-- Aligned Fleet status cards with Dashboard terminology and order: selected bot, Install, Updates, Deployment, and Database; made the bot selector inline and labels duplicate deployment names as Local or Remote.
-- Fixed the Fleet header selector cascade so its label, dropdown, and Refresh button remain centered on one horizontal line.
+- Removed the separate additional-bot setup composition. The selected bot now uses Hachi's native Install, validation, cron reference, Runtime Location, Remote Connection controls, connection testing, and Connection Preview directly; only Configuration swaps to repository-derived fields.
+- Additional-bot remote saves now resolve or create the server-level Fleet connection from the shared Hachi remote form, then attach the bot installation without creating another credential store.
+- Separated profile default branches from installation branches. Local setup may use a feature branch while remote production tracks `main`; repository-origin and named-branch validation remain enforced. Live Git status now overrides onboarding snapshots so Bot Profile and updates follow a branch changed after the installation was added.
+- Refactored Hachi and additional-bot rendering to share status-card and install-check components plus the same runtime, update, deployment, and secret-copy action names. Bot adapters now supply data without creating parallel control behavior.
+- Standardized major view, nested panel, and button-group spacing; removed compounded panel margins and matched input-attached button heights to their fields. External configuration is now one continuous form without source-file separator headings. Runtime installation selectors are compact, connection actions have proper separation, and all credential Copy controls use the shared icon.
+- Added one persistent logical-bot selector to the global header. Dashboard, Bot, Updates, Database, Logs, Testing, and Diagnostics now follow Hachi or the selected additional deployment without adding Local/Remote suffixes to bot names.
+- Returned Fleet to connection, bot, and profile inventory management by removing its duplicate selected-bot dashboard and selector. External runtime controls, repository updates, Discord command deployment, logs, database audit/backup, and testing now use the shared bot context.
+- Changed the Hachi navigation item and selected-bot page title dynamically to the selected bot name while preserving Hachi's existing native setup and local/remote controls unchanged.
+- Replaced the sparse additional-bot summary with the native Hachi management layout and repository-derived Configuration fields.
+- Added repository-backed JSON configuration forms with sensitive-field redaction, atomic writes, and hash-based external-change detection; added named-tab remote installation attachment and logical-bot runtime switching.
+- Expanded repository-backed configuration to `.env` files. Token, secret, password, and key values are write-only in the renderer, blank replacements preserve existing values, and saves update only the bot's original file.
+- Added 60-second self-clearing clipboard controls for hidden external-bot configuration values without including those values in renderer state.
+- Aligned the global bot selector with the Open Folder and Refresh buttons, and changed additional-bot onboarding to require a local repository before any remote production installation is attached.
+- Fixed the shared form-field cascade from reintroducing a vertical offset on the global bot selector.
 - Changed credential management so each bot folder is the sole credential store. HachiGen passes credentials to the bot's encrypted storage adapter over stdin and retains only non-secret identity metadata.
 - Changed external credentials to remain unmanaged by default. HachiGen can write them only when a reviewed definition explicitly opts into adapter mode and the `secretEncryption` capability.
 - Redesigned Fleet around neutral additional-bot onboarding, removed built-in bot references and project-specific placeholders, and moved technical support-file JSON behind an explained advanced disclosure that matches the rest of the interface.
@@ -38,6 +50,8 @@ Notable changes to HachiGen are documented here.
 
 ### Fixed
 
+- Fixed remote Hachi Configuration reads intermittently timing out by replacing four concurrent 15-second SSH sessions with one structured, allowlisted remote read and a 30-second operation timeout. Remote saves reuse the same read path.
+- Consolidated native and Fleet SSH connection tests onto one validated execution path, and stopped additional-bot remote saves from silently ignoring a newly selected key when a matching server connection already exists.
 - Fixed the smoke-test CI workflow parser so split CI job assertions do not fail with an undefined helper.
 - Fixed valid-version Fleet registries with an empty server list so Local computer is restored and Connection selectors submit a valid value.
 - Fixed Fleet's generated-profile review so a fallback ecosystem filename is not presented as detected, rejected duplicate SSH endpoints, and added the shared validated SSH key picker to the connection form.

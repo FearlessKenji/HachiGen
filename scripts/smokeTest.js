@@ -274,7 +274,7 @@ function validateRendererAndMenuWiring() {
 	);
 	const databaseSection = indexSource.match(/<section class="view" data-view-panel="database">[\s\S]*?<section class="view" data-view-panel="logs">/u)?.[0] || "";
 	const dashboardSection = indexSource.match(/<section class="view active" data-view-panel="dashboard">[\s\S]*?<section class="view" data-view-panel="setup">/u)?.[0] || "";
-	const fleetSection = indexSource.match(/<section class="view" data-view-panel="fleet">[\s\S]*?<section class="view" data-view-panel="security">/u)?.[0] || "";
+	const fleetSection = indexSource.match(/<section class="view" data-view-panel="fleet">[\s\S]*?<section class="view" data-view-panel="logs">/u)?.[0] || "";
 	assert(
 		fleetSection.includes("Bot Profiles") &&
 			fleetSection.includes("Open Folder") &&
@@ -287,24 +287,61 @@ function validateRendererAndMenuWiring() {
 		"Fleet should use profile-based onboarding, assume production, and exclude the built-in runtime.",
 	);
 	assert(
-		dashboardSection.includes('<div class="card-label">Hachi</div>') &&
+		!fleetSection.includes('id="fleetServerSelect"') &&
+		indexSource.includes("Initial setup requires a local repository") &&
+		rendererSource.includes('values.serverId = "local"') &&
+		managerSource.includes("Initial bot setup requires a local repository"),
+		"Additional-bot onboarding should require a local repository before remote deployment.",
+	);
+	assert(
+		dashboardSection.includes('id="dashboardBotCardLabel">Hachi</div>') &&
 			!dashboardSection.includes('<div class="card-label">Fleet</div>') &&
-			fleetSection.includes('id="fleetSelectedDeploymentSelect"') &&
-			fleetSection.includes('id="fleetRuntimeStatus"') &&
-			fleetSection.includes('id="fleetRepositoryStatus"') &&
-			fleetSection.includes('id="fleetOverviewSecurityStatus"') &&
-			fleetSection.includes('id="fleetConnectionStatus"') &&
-			fleetSection.includes('id="fleetDeploymentStatus"') &&
-			fleetSection.includes('<div class="card-label">Install</div>') &&
-			fleetSection.includes('<div class="card-label">Updates</div>') &&
-			fleetSection.includes('<div class="card-label">Database</div>') &&
-			!fleetSection.includes('<div class="card-label">Security</div>') &&
-			rendererSource.includes('"Remote" : "Local"') &&
-			stylesSource.includes(".fleet-header-actions .select-field.inline-select-field") &&
-			stylesSource.includes("margin-top: 0;") &&
+			indexSource.includes('id="globalBotSelect"') &&
+			indexSource.includes('id="botViewNav"') &&
+			!fleetSection.includes('id="fleetSelectedDeploymentSelect"') &&
+			!fleetSection.includes('class="status-grid fleet-status-grid"') &&
+			rendererSource.includes("SELECTED_BOT_KEY") &&
+			rendererSource.includes("renderExternalDashboard") &&
+			stylesSource.includes(".bot-selector") &&
 			preloadSource.includes("getFleetDeploymentOverview") &&
 			mainSource.includes("manager:get-fleet-deployment-overview"),
-		"Dashboard should be Hachi-specific and Fleet should own selected-bot overview cards.",
+		"The global bot context should drive shared views while Fleet remains an inventory manager.",
+	);
+	assert(
+		rendererSource.includes("function renderStatusCard(") &&
+		rendererSource.includes("function renderCheckList(") &&
+			!indexSource.includes("selected-bot-") &&
+			!rendererSource.includes("copy-external-config-secret") &&
+			indexSource.includes('data-action="start">Start</button>'),
+		"Hachi and additional bots should share renderer components and standard action names.",
+	);
+	assert(
+		managerSource.includes("const targetBranch = branch.stdout.trim() || context.deployment.repositoryBranch"),
+		"Live checked-out branches should override saved installation branch snapshots.",
+	);
+	assert(
+		managerSource.includes("async readRemoteConfigurationFiles()") &&
+			managerSource.includes("const files = await this.readRemoteConfigurationFiles();") &&
+			!managerSource.includes("const [blankEnv, env, blankConfigText, configText] = await Promise.all(["),
+		"Remote Hachi configuration should use one structured SSH read instead of four concurrent sessions.",
+	);
+	assert(
+		indexSource.includes('id="sharedRemoteGrid"') &&
+			!indexSource.includes('id="externalRemoteGrid"') &&
+			rendererSource.includes("function renderExternalRemote(") &&
+			rendererSource.includes("api.testFleetRemoteConnection(readRemoteForm())") &&
+			rendererSource.includes("uses a different SSH key") &&
+			managerSource.includes("async executeRemoteConnectionTest(settings)") &&
+			preloadSource.includes("testFleetRemoteConnection") &&
+			mainSource.includes("manager:test-fleet-remote-connection"),
+		"Hachi and additional bots should share Remote Connection controls and testing without silently replacing shared SSH keys.",
+	);
+	assert(
+		!indexSource.includes('id="externalBotSummary"') &&
+			indexSource.includes('id="hachiConfigurationFields"') &&
+			indexSource.includes('id="externalConfigurationFields" hidden') &&
+			rendererSource.includes('$("#hachiConfigurationFields").hidden = external'),
+		"The bot page should reuse Hachi's native layout and switch only its Configuration fields.",
 	);
 	assert(
 		rendererSource.includes('candidate.detected.ecosystemFound ? definition.runtime.ecosystemFile : "Not detected"') &&
@@ -317,7 +354,11 @@ function validateRendererAndMenuWiring() {
 			indexSource.includes('id="testingProfileForm"') &&
 			indexSource.includes('id="testingDeploymentSelect"') &&
 			indexSource.includes('data-action="start-testing-bot"') &&
+			indexSource.includes('data-action="reset-testing-commands"') &&
 			preloadSource.includes("getTestingProfiles") &&
+			preloadSource.includes("resetTestingCommands") &&
+			mainSource.includes("manager:reset-testing-commands") &&
+			managerSource.includes("async resetTestingCommands") &&
 			preloadSource.includes("startTestingBot") &&
 			preloadSource.includes("copyTestingSecret") &&
 			mainSource.includes("manager:copy-testing-secret") &&
@@ -1028,6 +1069,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 	fs.writeFileSync(path.join(deploymentPath, "start-test.js"), "console.log(process.env.TOKEN);setInterval(()=>{},1000);\n");
 	childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: deploymentPath, stdio: "ignore" });
 	childProcess.execFileSync("git", ["remote", "add", "origin", "https://example.invalid/optional-bot.git"], { cwd: deploymentPath, stdio: "ignore" });
+	childProcess.execFileSync("git", ["checkout", "-b", "test-feature"], { cwd: deploymentPath, stdio: "ignore" });
 	const originalDatabase = Buffer.from("SQLite format 3\0smoke database contents");
 	fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), originalDatabase);
 	let manager = null;
@@ -1060,6 +1102,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 			environment: "test",
 		});
 		const deployment = manager.fleet.deployments.find(item => item.botTypeId === "optional-bot");
+		assert(deployment.repositoryBranch === "test-feature", "Fleet should record each installation's checked-out branch instead of forcing the profile branch.");
 		const overview = await manager.getFleetDeploymentOverview(deployment.id);
 		assert(
 			overview.deployment.name === "Optional Bot Test" &&
