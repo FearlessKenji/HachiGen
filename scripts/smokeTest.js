@@ -1279,6 +1279,27 @@ async function validateFleetCredentialAndBackupSecurity() {
 		assert(!fs.readFileSync(path.join(deploymentPath, "credentials.enc"), "utf8").includes("very-secret-token"), "Bot credential adapter persisted a plaintext token.");
 		assert(!JSON.stringify(manager.getFleetState()).includes("very-secret-token"), "Renderer fleet state exposed a Discord token.");
 		manager.saveTestingProfile({ name: "Runtime Test", TOKEN: "runtime-test-token", clientId: "456" });
+		const encryptedTestingContext = manager.getLocalTestingDeploymentContext("optional-bot");
+		encryptedTestingContext.definition = {
+			...encryptedTestingContext.definition,
+			capabilities: { ...encryptedTestingContext.definition.capabilities, databaseToolConnection: true },
+		};
+		const testingIdentity = manager.readTestingIdentity("runtime-test");
+		const firstEncryptedEnvironment = manager.testingDatabaseEnvironment(encryptedTestingContext, testingIdentity);
+		const secondEncryptedEnvironment = manager.testingDatabaseEnvironment(encryptedTestingContext, testingIdentity);
+		assert(
+			firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_ENCRYPTION === "encrypted" &&
+			firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_KEY.length >= 32 &&
+			firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_KEY === secondEncryptedEnvironment.env.OPTIONAL_BOT_DB_KEY,
+			"Encrypted testing databases should receive one stable key per identity and bot.",
+		);
+		const protectedTestingSecrets = fs.readFileSync(path.join(userDataPath, "Profiles", "Testing", "runtime-test", "secrets.env"), "utf8");
+		const parsedTestingSecrets = requireFresh("src", "configuration.js").parseDotEnvContent(protectedTestingSecrets);
+		assert(
+			String(parsedTestingSecrets.HACHIGEN_DATABASE_KEY_OPTIONAL_BOT || "").startsWith("os:v1:") &&
+			!protectedTestingSecrets.includes(firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_KEY),
+			"Testing database keys should remain OS-protected and absent from plaintext profile files.",
+		);
 		manager.setActiveFleetDeployment(remoteDeployment.id);
 		assert(manager.getLocalTestingDeploymentContext("optional-bot").deployment.id === deployment.id, "Testing should resolve the logical bot's local repository while production targets remote.");
 		const testingStart = await manager.startTestingBot("optional-bot", "runtime-test");

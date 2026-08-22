@@ -4,6 +4,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Every encrypted testing database now receives its own OS-protected key, separate from production and from other test identities. HachiGen injects it only while that test bot or Testing Data Viewer runs. Existing plaintext test data is backed up and converted before startup, while the production database remains untouched.
 - Additional bots can now advertise their own SQLCipher encryption and verification scripts. Once the updated Bot Profile is reviewed, HachiGen uses that bot's approved database adapter to view encrypted production or isolated testing data through the same Database page while keys remain in the bot's existing environment or key file.
 - Saved remote bots now hydrate correctly on first launch without requiring Test Connection. HachiGen no longer launches duplicate overviews or simultaneous SSH probe chains that can make a reachable install appear missing.
 - The Database Data Viewer can now switch between Production and any saved testing identity for the selected bot. Test databases are view-only, and the Source and Table labels are displayed inline with their selectors.

@@ -6,6 +6,7 @@ Notable changes to HachiGen are documented here.
 
 ### Added
 
+- Added independent per-identity, per-bot SQLCipher keys for isolated testing databases. Keys use the existing operating-system-protected testing secret store, are injected only into the local testing process and viewer, and plaintext test databases are backed up and transactionally converted before startup.
 - Added automatic external-bot SQLCipher capability discovery and a separately approved repository-owned database-tool capability, allowing the shared Data Viewer to read encrypted production and isolated testing databases without exposing their keys to the interface or assuming older encryption profiles contain an adapter.
 - Added a read-only Production/Testing source selector to the shared Database Data Viewer. Testing sources resolve the selected bot's isolated database under its testing identity profile without changing production maintenance targets.
 - Added an explicit changed-profile reapproval workflow that shows requested capabilities, revalidates the selected installation, and only then refreshes its immutable permission snapshot.

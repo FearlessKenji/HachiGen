@@ -2129,6 +2129,30 @@ class HachiManager {
 		return { id: safeId, guildIds: normalizeConfigIdList(metadata.guildIds), name: metadata.name || safeId, values };
 	}
 
+	getTestingDatabaseKey(profileId, botTypeId) {
+		if (!this.protectSecret || !this.unprotectSecret) {
+			throw new Error("Operating-system secret protection is unavailable.");
+		}
+		const safeProfileId = normalizeProfileId(profileId);
+		const safeBotId = normalizeProfileId(botTypeId, "bot");
+		const field = `HACHIGEN_DATABASE_KEY_${safeBotId.replace(/[^a-z0-9]+/giu, "_").toUpperCase()}`;
+		const secretsPath = path.join(this.testingProfilesDir, safeProfileId, "secrets.env");
+		const previous = fileExists(secretsPath) ? fs.readFileSync(secretsPath, "utf8") : "";
+		const protectedValue = String(parseDotEnvContent(previous)[field] || "");
+		if (protectedValue.startsWith("os:v1:")) {
+			return this.unprotectSecret(protectedValue.slice("os:v1:".length));
+		}
+		// Each test identity and bot pair gets an independent key. It stays in the
+		// existing OS-protected testing secret store and is never returned to the UI.
+		const key = crypto.randomBytes(32).toString("base64url");
+		const updated = updateDotEnvContent(previous, {
+			HACHIGEN_TEST_SECRETS_PROTECTION: "os",
+			[field]: `os:v1:${this.protectSecret(key)}`,
+		});
+		fs.writeFileSync(secretsPath, updated, { encoding: "utf8", mode: 0o600 });
+		return key;
+	}
+
 	testingIdentityEnvironment(identity, overrides = {}) {
 		return {
 			...process.env,
@@ -2158,13 +2182,78 @@ class HachiManager {
 		const databaseRoot = path.join(this.testingProfilesDir, identity.id, "data", normalizeProfileId(context.definition.id, "bot"));
 		ensureDir(databaseRoot);
 		const databasePath = path.join(databaseRoot, path.basename(declaredPath));
+		const env = {
+			[supportedKey]: databasePath,
+			HACHIGEN_TEST_DATABASE_PATH: databasePath,
+		};
+		if (context.definition.capabilities?.databaseToolConnection) {
+			const databasePrefix = context.definition.id.replace(/[^a-z0-9]+/giu, "_").replace(/^_+|_+$/gu, "").toUpperCase();
+			env[`${databasePrefix}_DB_ENCRYPTION`] = "encrypted";
+			env[`${databasePrefix}_DB_KEY`] = this.getTestingDatabaseKey(identity.id, context.definition.id);
+			env[`${databasePrefix}_DB_KEY_FILE`] = "";
+		}
 		return {
 			databasePath,
-			env: {
-				[supportedKey]: databasePath,
-				HACHIGEN_TEST_DATABASE_PATH: databasePath,
-			},
+			env,
 		};
+	}
+
+	async prepareEncryptedTestingDatabase(context, testDatabase) {
+		if (!context.definition.capabilities?.databaseToolConnection || !testDatabase.databasePath) {
+			return;
+		}
+		const status = databaseFileStatus(testDatabase.databasePath);
+		if (status.status === "missing" || status.encryptedLikely) {
+			return;
+		}
+		if (status.status !== "plaintext") {
+			throw new Error(`The isolated testing database has an unsupported format: ${status.detail}`);
+		}
+		const databaseRoot = path.dirname(testDatabase.databasePath);
+		const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+		const backupPath = path.join(databaseRoot, `${path.basename(testDatabase.databasePath, path.extname(testDatabase.databasePath))}-pre-encryption-${stamp}${path.extname(testDatabase.databasePath)}`);
+		const encryptedPath = `${testDatabase.databasePath}.encrypted-${crypto.randomUUID()}`;
+		const displacedPath = `${testDatabase.databasePath}.plaintext-${crypto.randomUUID()}`;
+		fs.copyFileSync(testDatabase.databasePath, backupPath, fs.constants.COPYFILE_EXCL);
+		const conversionScript = [
+			"const db=require('./database/dbEncryption.js');",
+			"db.convertPlainDatabaseToEncrypted({sourcePath:process.env.HACHIGEN_SOURCE_DATABASE,targetPath:process.env.HACHIGEN_TARGET_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+			"db.verifyEncryptedDatabaseFile({dbPath:process.env.HACHIGEN_TARGET_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+		].join("");
+		const databasePrefix = context.definition.id.replace(/[^a-z0-9]+/giu, "_").replace(/^_+|_+$/gu, "").toUpperCase();
+		const result = await run("node", ["-e", conversionScript], {
+			allowFailure: true,
+			cwd: context.deployment.installPath,
+			env: {
+				...process.env,
+				HACHIGEN_DATABASE_KEY: testDatabase.env[`${databasePrefix}_DB_KEY`],
+				HACHIGEN_SOURCE_DATABASE: testDatabase.databasePath,
+				HACHIGEN_TARGET_DATABASE: encryptedPath,
+			},
+			timeoutMs: 120000,
+		});
+		if (result.code !== 0 || !fileExists(encryptedPath)) {
+			fs.rmSync(encryptedPath, { force: true });
+			throw new Error(result.stderr || "The isolated testing database could not be encrypted. Its plaintext backup was retained.");
+		}
+		// Swap only after conversion and keyed verification succeed. Any rename
+		// failure restores the original bytes; the timestamped backup is retained.
+		try {
+			fs.renameSync(testDatabase.databasePath, displacedPath);
+			fs.renameSync(encryptedPath, testDatabase.databasePath);
+			fs.rmSync(displacedPath, { force: true });
+		} catch (error) {
+			fs.rmSync(encryptedPath, { force: true });
+			if (fileExists(displacedPath) && !fileExists(testDatabase.databasePath)) {
+				fs.renameSync(displacedPath, testDatabase.databasePath);
+			}
+			throw error;
+		}
+		this.log(`Encrypted isolated testing database for ${context.definition.displayName}.`, {
+			area: "testing",
+			backupPath,
+			botTypeId: context.definition.id,
+		});
 	}
 
 	async resetTestingCommands(deploymentId, profileId) {
@@ -2258,6 +2347,7 @@ class HachiManager {
 		}
 		const identity = this.readTestingIdentity(profileId);
 		const testDatabase = this.testingDatabaseEnvironment(context, identity);
+		await this.prepareEncryptedTestingDatabase(context, testDatabase);
 		const env = this.testingIdentityEnvironment(identity, testDatabase.env);
 		// Use the bot host's Node runtime; process.execPath is HachiGen.exe in packaged builds.
 		const child = childProcess.spawn("node", [entryPath, ...command.args.slice(1)], {
@@ -3126,10 +3216,7 @@ class HachiManager {
 
 	async readTestingDatabaseTable(botTypeId, profileId, tableName = "", sort = {}) {
 		const context = this.getLocalTestingDeploymentContext(botTypeId);
-		const identity = this.getTestingProfiles().find(item => item.id === normalizeProfileId(profileId));
-		if (!identity) {
-			throw new Error("Testing identity was not found.");
-		}
+		const identity = this.readTestingIdentity(profileId);
 		const declaredPath = context.definition.paths?.database;
 		if (!declaredPath) {
 			throw new Error(`${context.definition.displayName} does not declare a database.`);
@@ -3154,9 +3241,11 @@ class HachiManager {
 			{ action: "view", dbPath: databasePath, root: context.deployment.installPath, sort, table: tableName } :
 			{ dbPath: databaseFile, root: ".", sort, table: tableName };
 		const workerFile = approvedEncryptedViewer ? DATABASE_WORKER_FILE : SQLITE_VIEWER_WORKER_FILE;
+		const testDatabase = approvedEncryptedViewer ? this.testingDatabaseEnvironment(context, identity) : { env: {} };
 		const result = await run("node", [path.join(this.managerRoot, "src", workerFile)], {
 			allowFailure: true,
 			cwd: databaseRoot,
+			env: { ...process.env, ...testDatabase.env },
 			input: JSON.stringify(request),
 			timeoutMs: 120000,
 		});
