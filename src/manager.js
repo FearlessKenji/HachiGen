@@ -2545,6 +2545,12 @@ class HachiManager {
 		if (databasePath) {
 			definition.paths.database = databasePath;
 			definition.capabilities.backups = true;
+			if (scripts["database:encrypt"] && scripts["database:verify"] && fileExists(path.join(installPath, "database", "dbToolConnection.js"))) {
+				definition.capabilities.databaseEncryption = true;
+				definition.capabilities.databaseToolConnection = true;
+				definition.commands.databaseEncrypt = { executable: "npm", args: ["run", "database:encrypt"] };
+				definition.commands.databaseVerify = { executable: "npm", args: ["run", "database:verify"] };
+			}
 		}
 		if (logsPath) {
 			definition.paths.logs = logsPath;
@@ -3071,13 +3077,19 @@ class HachiManager {
 		// Viewing is observational: the worker confines the current profile path to
 		// the deployment root and opens SQLite read-only. Profile changes continue
 		// to block every command or database mutation until they are reapproved.
-		const request = { dbPath: databasePath, root: ".", sort, table: tableName };
-		const workerSource = fs.readFileSync(path.join(this.managerRoot, "src", SQLITE_VIEWER_WORKER_FILE), "utf8");
+		const approvedEncryptedViewer = context.definition.capabilities?.databaseToolConnection &&
+			context.deployment.approvedCapabilities?.databaseToolConnection &&
+			context.deployment.definitionFingerprint === context.definition.fingerprint;
+		const request = approvedEncryptedViewer ?
+			{ action: "view", dbPath: databasePath, root: ".", sort, table: tableName } :
+			{ dbPath: databasePath, root: ".", sort, table: tableName };
+		const workerFile = approvedEncryptedViewer ? DATABASE_WORKER_FILE : SQLITE_VIEWER_WORKER_FILE;
+		const workerSource = fs.readFileSync(path.join(this.managerRoot, "src", workerFile), "utf8");
 		let result;
 		if (context.server.connection.type === "ssh") {
 			// Keep the generic viewer outside the managed bot repository and remove it
 			// after every attempt so read-only inspection leaves no support files behind.
-			const workerPath = `/tmp/hachigen-sqlite-viewer-${crypto.randomUUID()}.js`;
+			const workerPath = `/tmp/hachigen-${approvedEncryptedViewer ? "database" : "sqlite-viewer"}-${crypto.randomUUID()}.js`;
 			try {
 				await this.runFleetRemoteCommand(
 					context.server,
@@ -3097,7 +3109,7 @@ class HachiManager {
 			if (!isPathInside(context.deployment.installPath, absoluteDatabasePath) || !fileExists(absoluteDatabasePath)) {
 				throw new Error("The declared database is missing or outside the deployment root.");
 			}
-			result = await run("node", [path.join(this.managerRoot, "src", SQLITE_VIEWER_WORKER_FILE)], {
+			result = await run("node", [path.join(this.managerRoot, "src", workerFile)], {
 				allowFailure: true,
 				cwd: context.deployment.installPath,
 				input: JSON.stringify(request),
@@ -3122,8 +3134,8 @@ class HachiManager {
 		if (!declaredPath) {
 			throw new Error(`${context.definition.displayName} does not declare a database.`);
 		}
-		// Test data is isolated under the identity profile. The generic SQLite
-		// worker opens it read-only and is confined to this exact data directory.
+		// Test data is isolated under the identity profile. Encrypted bot profiles
+		// reuse their approved repository-owned connection adapter and key lookup.
 		const databaseRoot = path.join(
 			this.testingProfilesDir,
 			identity.id,
@@ -3135,8 +3147,14 @@ class HachiManager {
 		if (!isPathInside(this.testingProfilesDir, databasePath) || !fileExists(databasePath)) {
 			throw new Error(`No ${context.definition.displayName} database exists for ${identity.name} yet.`);
 		}
-		const request = { dbPath: databaseFile, root: ".", sort, table: tableName };
-		const result = await run("node", [path.join(this.managerRoot, "src", SQLITE_VIEWER_WORKER_FILE)], {
+		const approvedEncryptedViewer = context.definition.capabilities?.databaseToolConnection &&
+			context.deployment.approvedCapabilities?.databaseToolConnection &&
+			context.deployment.definitionFingerprint === context.definition.fingerprint;
+		const request = approvedEncryptedViewer ?
+			{ action: "view", dbPath: databasePath, root: context.deployment.installPath, sort, table: tableName } :
+			{ dbPath: databaseFile, root: ".", sort, table: tableName };
+		const workerFile = approvedEncryptedViewer ? DATABASE_WORKER_FILE : SQLITE_VIEWER_WORKER_FILE;
+		const result = await run("node", [path.join(this.managerRoot, "src", workerFile)], {
 			allowFailure: true,
 			cwd: databaseRoot,
 			input: JSON.stringify(request),

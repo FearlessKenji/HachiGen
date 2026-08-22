@@ -1032,6 +1032,18 @@ function validateDatabaseWorkerStaging() {
 			workerSource.includes("createRequire(path.join(path.resolve(root || \".\"), \"package.json\"))"),
 			"Database worker should load Hachi modules from the selected install root.",
 		);
+		assert(
+			workerSource.includes("request.action === `view` ? {} : loadExpectedSchema(request.root)"),
+			"External encrypted viewers should not require Hachi's schema audit module.",
+		);
+		assert(
+			managerSource.includes('scripts["database:encrypt"]') && managerSource.includes('path.join(installPath, "database", "dbToolConnection.js")'),
+			"Fleet inspection should discover repository-owned database encryption adapters.",
+		);
+		assert(
+			managerSource.includes("approvedEncryptedViewer ? DATABASE_WORKER_FILE : SQLITE_VIEWER_WORKER_FILE"),
+			"Fleet database viewing should select an approved encrypted adapter when available.",
+		);
 		assert(managerSource.includes("const remoteWorkerPath = \".hachigen/database-worker.js\""), "Remote database worker should stage into .hachigen/.");
 		assert(managerSource.includes("await this.writeRemoteText(remoteWorkerPath, remoteWorkerSource)"), "Remote database worker should upload bundled source before launch.");
 		assert(managerSource.includes("cat >") && managerSource.includes("input: JSON.stringify(request)"), "Remote database worker should stream source and requests through stdin.");
