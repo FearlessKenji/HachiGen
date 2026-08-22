@@ -23,7 +23,7 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
-- Added a lightweight startup snapshot, selected-bot-first loading, tab-level lazy loading for Configuration, Logs, Testing, Database details, and Diagnostics, and concurrent native repository/scan/database/PM2 probes.
+- Added a lightweight startup snapshot, selected-bot-first loading, tab-level lazy loading for Configuration, Logs, Testing, Database details, and Diagnostics, concurrent local probes, and ordered remote probes.
 - Replaced deployment-ID UI selection with a stable logical bot selection and a per-bot active installation target. Shared operations now resolve Local Development or Remote Server immediately before execution, matching Hachi's runtime-target pathway.
 - Reused the native Hachi Dashboard, Setup, Updates, Database, Logs, Testing, and Diagnostics compositions for selected additional bots instead of maintaining parallel Fleet panels and action rows; adapters now populate the shared controls and disable only unsupported capabilities.
 - Reduced Fleet deployment rows to Select and Remove and removed the redundant Fleet Activity panel; operational status and controls remain on Dashboard and the selected bot's shared views.
@@ -67,6 +67,7 @@ Notable changes to HachiGen are documented here.
 
 ### Fixed
 
+- Removed duplicate initial additional-bot overview hydration and serialized saved remote overview/Hachi state probes to prevent simultaneous SSH banner exchanges from making valid installations appear missing until Test Connection was run.
 - Testing identity guild IDs now render as a comma-separated list in the single-line editor instead of collapsing newline-separated IDs into one apparent number, and Data Viewer labels now sit inline with their selectors.
 - Added a local Testing-tab profile review pathway so remote production outages cannot block approval of a bot's local testing adapter, and changed Hachi state refreshes to report failed SSH probes as unavailable component status instead of rejecting the complete state response.
 - Testing actions now resolve the selected bot's current local installation by logical bot identity, refresh Fleet before rendering testing controls, and no longer submit stale or removed deployment IDs after Fleet changes.

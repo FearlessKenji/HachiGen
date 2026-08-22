@@ -3678,7 +3678,6 @@ function renderFleet(nextFleet) {
 	setText("#fleetDefinitionErrors", fleetState.botDefinitionErrors?.length ? fleetState.botDefinitionErrors.map(item => `${item.fileName}: ${item.message}`).join("\n") : "");
 	renderFleetSecurityCapabilities();
 	renderSelectedBotContext();
-	if (selectedBotId !== HACHI_BOT_ID) void refreshFleetOverview();
 }
 
 function readableStatus(value) {

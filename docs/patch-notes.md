@@ -4,11 +4,12 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Saved remote bots now hydrate correctly on first launch without requiring Test Connection. HachiGen no longer launches duplicate overviews or simultaneous SSH probe chains that can make a reachable install appear missing.
 - The Database Data Viewer can now switch between Production and any saved testing identity for the selected bot. Test databases are view-only, and the Source and Table labels are displayed inline with their selectors.
 - Saved testing guild IDs now remain visibly separated by commas when reopened.
 - Changed additional-bot profiles can now be reviewed directly in Testing against the required local repository, even while production targets an unavailable remote server. Hachi remote timeouts now leave the interface usable and show unavailable status instead of breaking the complete refresh.
 - Starting, stopping, or resetting commands for a test bot now follows its current local repository even after installations are replaced or the production target is remote. Changed bot profiles still require an explicit one-time Review & Reapprove for safety.
-- HachiGen now opens from a lightweight local snapshot and loads only the selected bot's Dashboard first. Configuration, Logs, Testing, Database details, and Diagnostics load when opened, while independent health checks run concurrently.
+- HachiGen now opens from a lightweight local snapshot and loads only the selected bot's Dashboard first. Configuration, Logs, Testing, Database details, and Diagnostics load when opened; local checks run concurrently while remote checks use one reliable ordered pathway.
 - Additional bots now switch local and remote installations through the same logical selected-bot pathway used by Hachi. The selected bot stays constant while its active installation changes, and every shared tab follows that target automatically.
 - Switching an additional bot between Local Development and Remote Server now reloads the database from that active installation instead of retaining rows cached from the previous location.
 - Testing runs now keep their database under the selected testing identity's profile. HachiGen will not start a database-backed test process unless the bot supports an isolated database-path environment variable, preventing production data from being overwritten.

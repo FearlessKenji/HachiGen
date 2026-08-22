@@ -3175,11 +3175,25 @@ class HachiManager {
 
 	async getFleetDeploymentOverview(deploymentId) {
 		const context = this.getFleetDeploymentContext(deploymentId);
-		const [healthResult, repositoryResult, securityResult] = await Promise.allSettled([
-			this.checkFleetDeploymentHealth(deploymentId),
-			this.getFleetRepositoryStatus(deploymentId),
-			this.auditFleetDeploymentSecurity(deploymentId),
-		]);
+		const probes = [
+			() => this.checkFleetDeploymentHealth(deploymentId),
+			() => this.getFleetRepositoryStatus(deploymentId),
+			() => this.auditFleetDeploymentSecurity(deploymentId),
+		];
+		// Many SSH servers throttle simultaneous unauthenticated handshakes. Remote
+		// overview reads share one ordered pathway; local filesystem/process probes
+		// remain concurrent because they do not create connection pressure.
+		const results = context.server.connection.type === "ssh" ? [] : await Promise.allSettled(probes.map(probe => probe()));
+		if (context.server.connection.type === "ssh") {
+			for (const probe of probes) {
+				try {
+					results.push({ status: "fulfilled", value: await probe() });
+				} catch (reason) {
+					results.push({ status: "rejected", reason });
+				}
+			}
+		}
+		const [healthResult, repositoryResult, securityResult] = results;
 		const failure = result => result.status === "rejected" ? { error: readableCause(result.reason) } : result.value;
 		return {
 			deployment: {
@@ -7825,10 +7839,7 @@ process.stdout.write(JSON.stringify({
 		// Build the complete state object consumed by renderer/app.js. This keeps
 		// the renderer simple: it redraws from one object instead of coordinating
 		// several backend calls itself.
-		// Start independent filesystem/process probes together. Repository identity
-		// still gates update-state reuse, but it does not need to block scanning,
-		// database inspection, or PM2 status collection.
-		const repositoryPromise = this.getRepositoryInfo().catch(error => ({
+		const readRepository = () => this.getRepositoryInfo().catch(error => ({
 			currentBranch: null,
 			error: error.message || "Repository status could not be read.",
 			isGit: false,
@@ -7838,39 +7849,53 @@ process.stdout.write(JSON.stringify({
 			updateRemote: UPDATE_REMOTE,
 			updateTarget: UPDATE_TARGET,
 		}));
-		// Attach rejection handlers immediately while repository/stash work runs;
-		// this avoids a fast probe rejection becoming temporarily unhandled.
-		const detailsPromise = Promise.all([
-			this.getQuickScan().catch(error => ({
-				configurationMissing: [],
-				configurationReady: false,
-				dependenciesReady: false,
-				error: error.message || "Installation status could not be read.",
-				hasGit: false,
-				hasNodeModules: false,
-				installPath: this.getRuntimeTarget() === "remote" ? this.settings.remote?.remotePath || "" : this.getInstallPath(),
-				missingDependencies: [],
-				missingFiles: [],
-				projectFound: false,
-				source: this.getRuntimeTarget(),
-			})),
-			this.getDatabaseState().catch(error => ({
-				backups: [],
-				error: error.message || "Database status could not be read.",
-				exists: false,
-				path: "Unavailable",
-				size: 0,
-				sizeLabel: "0 B",
-				source: this.getRuntimeTarget(),
-			})),
-			this.getPm2Status().catch(error => ({
-				installed: false,
-				message: error.message || "Runtime status could not be read.",
-				registered: false,
-				status: "unavailable",
-			})),
-		]);
-		const repository = await repositoryPromise;
+		const readScan = () => this.getQuickScan().catch(error => ({
+			configurationMissing: [],
+			configurationReady: false,
+			dependenciesReady: false,
+			error: error.message || "Installation status could not be read.",
+			hasGit: false,
+			hasNodeModules: false,
+			installPath: this.getRuntimeTarget() === "remote" ? this.settings.remote?.remotePath || "" : this.getInstallPath(),
+			missingDependencies: [],
+			missingFiles: [],
+			projectFound: false,
+			source: this.getRuntimeTarget(),
+		}));
+		const readDatabase = () => this.getDatabaseState().catch(error => ({
+			backups: [],
+			error: error.message || "Database status could not be read.",
+			exists: false,
+			path: "Unavailable",
+			size: 0,
+			sizeLabel: "0 B",
+			source: this.getRuntimeTarget(),
+		}));
+		const readPm2 = () => this.getPm2Status().catch(error => ({
+			installed: false,
+			message: error.message || "Runtime status could not be read.",
+			registered: false,
+			status: "unavailable",
+		}));
+		let repository;
+		let scan;
+		let database;
+		let pm2;
+		if (this.getRuntimeTarget() === "remote") {
+			// Use the same single-target pathway as other remote operations. Opening
+			// several SSH handshakes at once can trigger server-side banner throttling.
+			repository = await readRepository();
+			scan = await readScan();
+			database = await readDatabase();
+			pm2 = await readPm2();
+		} else {
+			[repository, scan, database, pm2] = await Promise.all([
+				readRepository(),
+				readScan(),
+				readDatabase(),
+				readPm2(),
+			]);
+		}
 
 		if (!this.updateStateMatchesRepository(repository)) {
 			this.updateState = createUncheckedUpdateState("Updates have not been checked for this install path yet.");
@@ -7886,8 +7911,6 @@ process.stdout.write(JSON.stringify({
 			// instead of breaking the whole Dashboard render.
 			this.updateState.stash = this.settings.activeStash || null;
 		}
-
-		const [scan, database, pm2] = await detailsPromise;
 
 		return {
 			appName: "HachiGen",

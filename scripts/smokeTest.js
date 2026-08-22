@@ -334,10 +334,12 @@ function validateRendererAndMenuWiring() {
 		"The shared viewer should support inline Production/Testing sources and preserve visible testing guild-ID separators.",
 	);
 	assert(
-		managerSource.includes("const repositoryPromise = this.getRepositoryInfo()") &&
-			managerSource.includes("const detailsPromise = Promise.all([") &&
-			managerSource.includes("const [scan, database, pm2] = await detailsPromise"),
-		"Native state collection should run independent probes concurrently.",
+		managerSource.includes('this.getRuntimeTarget() === "remote"') &&
+			managerSource.includes("repository = await readRepository()") &&
+			managerSource.includes("scan = await readScan()") &&
+			managerSource.includes("[repository, scan, database, pm2] = await Promise.all([") &&
+			managerSource.includes('context.server.connection.type === "ssh" ? [] : await Promise.allSettled'),
+		"Local state probes should remain concurrent while remote state and Fleet overview probes are serialized.",
 	);
 	assert(
 		/selectedBotId === HACHI_BOT_ID\)[\s\S]*refreshState\(\)\.catch/u.test(rendererSource),
