@@ -4,6 +4,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Before encrypting or rotating any additional-bot database, HachiGen now rechecks the selected local or remote installation for its package scripts, encryption adapters, declared SQLCipher dependency, and installed driver. A failed preflight stops before the bot, backups, keys, or database are changed.
 - Test databases are no longer encrypted automatically when a bot starts. Select the testing identity in Database and use **Encrypt Data** when ready; after encryption, the same action becomes **Rotate Key**. The selected testing status refreshes immediately without touching production.
 - Fixed Paldeck disappearing from HachiGen after its encrypted database profile was generated. Repository-owned database-tool access is now recognized as a supported, separately reviewed capability.
 - Every encrypted testing database now receives its own OS-protected key, separate from production and from other test identities. HachiGen injects it only while that test bot or Testing Data Viewer runs. Existing plaintext test data is backed up and converted before startup, while the production database remains untouched.

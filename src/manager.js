@@ -2222,6 +2222,7 @@ class HachiManager {
 		if (!context.definition.capabilities?.databaseToolConnection || !context.deployment.approvedCapabilities?.databaseToolConnection) {
 			throw new Error(`${context.definition.displayName} does not have an approved encrypted database adapter.`);
 		}
+		await this.verifyFleetDatabaseEncryptionPrerequisites(context);
 		const identity = this.readTestingIdentity(profileId);
 		const testDatabase = this.testingDatabaseEnvironment(context, identity);
 		if (!context.definition.capabilities?.databaseToolConnection || !testDatabase.databasePath) {
@@ -2680,7 +2681,10 @@ class HachiManager {
 		if (databasePath) {
 			definition.paths.database = databasePath;
 			definition.capabilities.backups = true;
-			if (scripts["database:encrypt"] && scripts["database:verify"] && fileExists(path.join(installPath, "database", "dbToolConnection.js"))) {
+			const cipherDeclared = Boolean(packageJson.dependencies?.[CIPHER_DRIVER_PACKAGE] || packageJson.optionalDependencies?.[CIPHER_DRIVER_PACKAGE]);
+			const encryptionFilesFound = fileExists(path.join(installPath, "database", "dbToolConnection.js")) &&
+				fileExists(path.join(installPath, "database", "dbEncryption.js"));
+			if (scripts["database:encrypt"] && scripts["database:verify"] && cipherDeclared && encryptionFilesFound && cipherDriverStatus(installPath).installed) {
 				definition.capabilities.databaseEncryption = true;
 				definition.capabilities.databaseToolConnection = true;
 				definition.commands.databaseEncrypt = { executable: "npm", args: ["run", "database:encrypt"] };
@@ -3556,6 +3560,7 @@ class HachiManager {
 		if (!context.definition.commands?.databaseEncrypt || !context.definition.commands?.databaseVerify) {
 			throw new Error("External bot definition must declare databaseEncrypt and databaseVerify commands.");
 		}
+		await this.verifyFleetDatabaseEncryptionPrerequisites(context);
 		const recovery = await this.backupFleetDatabase(deploymentId);
 		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
 		try {
@@ -3569,6 +3574,47 @@ class HachiManager {
 			await this.restoreFleetDatabaseBackup(deploymentId, recovery.backupId);
 			throw new Error(`${error.message} Original database restored from encrypted recovery backup.`);
 		}
+	}
+
+	async verifyFleetDatabaseEncryptionPrerequisites(context) {
+		const script = [
+			"const fs=require('node:fs'),path=require('node:path');",
+			`const driver=${JSON.stringify(CIPHER_DRIVER_PACKAGE)},failures=[];`,
+			"let pkg={};try{pkg=JSON.parse(fs.readFileSync('package.json','utf8'));}catch{failures.push('package.json is missing or invalid');}",
+			"if(!pkg.scripts?.['database:encrypt'])failures.push('package script database:encrypt is missing');",
+			"if(!pkg.scripts?.['database:verify'])failures.push('package script database:verify is missing');",
+			"if(!(pkg.dependencies?.[driver]||pkg.optionalDependencies?.[driver]))failures.push(driver+' is not declared as a runtime dependency');",
+			"for(const file of ['database/dbEncryption.js','database/dbToolConnection.js'])if(!fs.existsSync(file))failures.push(file+' is missing');",
+			"try{require.resolve(driver,{paths:[process.cwd()]});}catch{failures.push(driver+' is not installed in this application');}",
+			"try{const tool=require(path.resolve('database/dbToolConnection.js'));",
+			"if(typeof tool.openToolDatabase!=='function')failures.push('database tool adapter is invalid');",
+			"}catch(error){failures.push('database tool adapter cannot load: '+error.message);}",
+			"try{const encryption=require(path.resolve('database/dbEncryption.js'));",
+			"for(const name of ['convertPlainDatabaseToEncrypted','verifyEncryptedDatabaseFile','rekeyEncryptedDatabase'])",
+			"if(typeof encryption[name]!=='function')failures.push('database encryption adapter lacks '+name);",
+			"}catch(error){failures.push('database encryption adapter cannot load: '+error.message);}",
+			"process.stdout.write(JSON.stringify({failures,ok:failures.length===0}));",
+		].join("");
+		let result;
+		if (context.server.connection.type === "ssh") {
+			result = await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
+				{ allowFailure: true, log: false, timeoutMs: 60000 },
+			);
+		} else {
+			result = await run("node", ["-e", script], {
+				allowFailure: true,
+				cwd: context.deployment.installPath,
+				timeoutMs: 60000,
+			});
+		}
+		const report = parseJsonText(String(result.stdout || "").trim(), null);
+		if (result.code !== 0 || !report?.ok) {
+			const detail = report?.failures?.join("; ") || result.stderr || "installation verification did not return a valid result";
+			throw new Error(`Database encryption preflight failed for ${context.definition.displayName}: ${detail}. No database changes were made.`);
+		}
+		return report;
 	}
 
 	setFleetDeploymentPolicies(deploymentId, values = {}) {

@@ -25,6 +25,7 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
+- Added a final read-only encryption preflight against the currently selected installation. HachiGen now requires the encryption and verification scripts, repository adapters, declared runtime SQLCipher package, resolvable installed driver, and expected adapter functions before creating a backup, stopping a bot, or changing any database bytes.
 - Changed isolated testing database protection from automatic startup conversion to an explicit, source-aware Database action. Plain test databases now show **Encrypt Data**, encrypted test databases show **Rotate Key**, and successful actions immediately refresh the selected testing status.
 - Fixed saved external bot profiles disappearing after requesting the generated `databaseToolConnection` capability by adding that capability to the external-profile validation allowlist.
 - Added a lightweight startup snapshot, selected-bot-first loading, tab-level lazy loading for Configuration, Logs, Testing, Database details, and Diagnostics, concurrent local probes, and ordered remote probes.

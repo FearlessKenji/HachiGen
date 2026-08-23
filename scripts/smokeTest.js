@@ -476,7 +476,7 @@ function validateRendererAndMenuWiring() {
 	);
 	assert(
 		rendererSource.includes('testingSource ? (testingEncrypted ? "Rotate Key" : "Encrypt Data")') &&
-			rendererSource.includes('api.protectTestingDatabase(selectedBotId, profileId)') &&
+			rendererSource.includes("api.protectTestingDatabase(selectedBotId, profileId)") &&
 			!managerSource.includes("await this.prepareEncryptedTestingDatabase(context, testDatabase)"),
 		"Testing database encryption should be explicit, source-aware, and immediately refreshable instead of running during test startup.",
 	);
@@ -1436,6 +1436,42 @@ function validateTestingIdentityProtection() {
 	}
 }
 
+async function validateDatabaseEncryptionPreflight() {
+	const { HachiManager } = requireFresh("src", "manager.js");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-encryption-preflight-"));
+	const installPath = path.join(tempDir, "bot");
+	const driverRoot = path.join(installPath, "node_modules", "better-sqlite3-multiple-ciphers");
+	fs.mkdirSync(path.join(installPath, "database"), { recursive: true });
+	fs.writeFileSync(path.join(installPath, "package.json"), JSON.stringify({
+		dependencies: { "better-sqlite3-multiple-ciphers": "1.0.0" },
+		scripts: { "database:encrypt": "node encrypt.js", "database:verify": "node verify.js" },
+	}));
+	fs.writeFileSync(path.join(installPath, "database", "dbToolConnection.js"), "module.exports={openToolDatabase(){}};\n");
+	fs.writeFileSync(path.join(installPath, "database", "dbEncryption.js"), "module.exports={convertPlainDatabaseToEncrypted(){},verifyEncryptedDatabaseFile(){},rekeyEncryptedDatabase(){}};\n");
+	const manager = new HachiManager({ defaultInstallPath: tempDir, managerRoot: projectRoot, userDataPath: path.join(tempDir, "userData") });
+	const context = {
+		definition: { displayName: "Preflight Bot" },
+		deployment: { installPath },
+		server: { connection: { type: "local" } },
+	};
+	try {
+		let missingInstallRejected = false;
+		try {
+			await manager.verifyFleetDatabaseEncryptionPrerequisites(context);
+		} catch (error) {
+			missingInstallRejected = error.message.includes("is not installed") && error.message.includes("No database changes were made");
+		}
+		assert(missingInstallRejected, "Encryption preflight should reject a declared but uninstalled SQLCipher package before mutation.");
+		fs.mkdirSync(driverRoot, { recursive: true });
+		fs.writeFileSync(path.join(driverRoot, "package.json"), JSON.stringify({ main: "index.js", name: "better-sqlite3-multiple-ciphers", version: "1.0.0" }));
+		fs.writeFileSync(path.join(driverRoot, "index.js"), "module.exports=function SmokeCipherDriver(){};\n");
+		const report = await manager.verifyFleetDatabaseEncryptionPrerequisites(context);
+		assert(report.ok && report.failures.length === 0, "Encryption preflight should accept a complete current installation.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
 async function main() {
 	await test("package metadata and lockfile are consistent", validatePackageMetadata);
 	await test("required project files exist", validateProjectFiles);
@@ -1456,6 +1492,7 @@ async function main() {
 	await test("update checks are deduplicated", validateUpdateCheckDeduplication);
 	await test("fleet credentials and database backups stay encrypted", validateFleetCredentialAndBackupSecurity);
 	await test("testing identities stay OS-protected and out of renderer state", validateTestingIdentityProtection);
+	await test("database encryption preflight verifies current package installation", validateDatabaseEncryptionPreflight);
 
 	console.log("");
 	console.log(`Smoke test complete: ${results.passed} passed, ${results.failed} failed.`);
