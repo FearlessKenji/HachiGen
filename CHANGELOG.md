@@ -25,6 +25,7 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
+- Fixed saved external bot profiles disappearing after requesting the generated `databaseToolConnection` capability by adding that capability to the external-profile validation allowlist.
 - Added a lightweight startup snapshot, selected-bot-first loading, tab-level lazy loading for Configuration, Logs, Testing, Database details, and Diagnostics, concurrent local probes, and ordered remote probes.
 - Replaced deployment-ID UI selection with a stable logical bot selection and a per-bot active installation target. Shared operations now resolve Local Development or Remote Server immediately before execution, matching Hachi's runtime-target pathway.
 - Reused the native Hachi Dashboard, Setup, Updates, Database, Logs, Testing, and Diagnostics compositions for selected additional bots instead of maintaining parallel Fleet panels and action rows; adapters now populate the shared controls and disable only unsupported capabilities.

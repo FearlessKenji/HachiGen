@@ -64,9 +64,12 @@ async function validateBotRegistryFoundation() {
 		displayName: "Optional Bot",
 		repository: { url: "https://example.invalid/optional-bot.git", branch: "main" },
 		runtime: { ecosystemFile: "config/ecosystem.config.js", pm2Name: "OptionalBot" },
-		capabilities: { backups: true, databaseEncryption: true },
+		capabilities: { backups: true, databaseEncryption: true, databaseToolConnection: true },
 	});
-	assert(external.source === "external" && external.capabilities.databaseEncryption, "Optional bots should load as external definitions.");
+	assert(
+		external.source === "external" && external.capabilities.databaseEncryption && external.capabilities.databaseToolConnection,
+		"Optional bots should load approved encryption and repository-owned database-tool capabilities.",
+	);
 	assert(external.credentials.mode === "external" && external.fingerprint, "External bots should default to unmanaged credentials and receive a definition fingerprint.");
 	let rejectedUnsafeCredentialAdapter = false;
 	try {

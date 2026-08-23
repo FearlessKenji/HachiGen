@@ -6,7 +6,7 @@ const REGISTRY_VERSION = 1;
 const LOCAL_SERVER_ID = "local";
 const NATIVE_HACHI_TYPE_ID = "hachi";
 const EXTERNAL_CAPABILITY_NAMES = new Set([
-	"backups", "configuration", "databaseEncryption", "databaseMaintenance",
+	"backups", "configuration", "databaseEncryption", "databaseMaintenance", "databaseToolConnection",
 	"discordCommands", "gitUpdates", "logs", "pm2", "secretEncryption",
 ]);
 
