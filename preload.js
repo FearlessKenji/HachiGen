@@ -112,6 +112,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	readDatabaseTable: (tableName, sort) => invoke("manager:read-database-table", tableName, sort),
 	readFleetDatabaseTable: (deploymentId, tableName, sort) => invoke("manager:read-fleet-database-table", deploymentId, tableName, sort),
 	readTestingDatabaseTable: (botTypeId, profileId, tableName, sort) => invoke("manager:read-testing-database-table", botTypeId, profileId, tableName, sort),
+	protectTestingDatabase: (botTypeId, profileId) => invoke("manager:protect-testing-database", botTypeId, profileId),
 	migrateDatabase: () => invoke("manager:migrate-database"),
 	forceMigrateDatabase: () => invoke("manager:force-migrate-database"),
 	backupDatabase: options => invoke("manager:backup-database", options),

@@ -475,6 +475,12 @@ function validateRendererAndMenuWiring() {
 		"Additional bots should use the generic read-only database viewer while retaining the shared sanitation panel.",
 	);
 	assert(
+		rendererSource.includes('testingSource ? (testingEncrypted ? "Rotate Key" : "Encrypt Data")') &&
+			rendererSource.includes('api.protectTestingDatabase(selectedBotId, profileId)') &&
+			!managerSource.includes("await this.prepareEncryptedTestingDatabase(context, testDatabase)"),
+		"Testing database encryption should be explicit, source-aware, and immediately refreshable instead of running during test startup.",
+	);
+	assert(
 		rendererSource.includes("Installation-bound data must never survive a local/remote switch") &&
 			rendererSource.includes("fleetBackupState = []") &&
 			rendererSource.includes('if (activeView === "database") await loadDatabaseViewer()'),
@@ -1289,18 +1295,20 @@ async function validateFleetCredentialAndBackupSecurity() {
 		};
 		const testingIdentity = manager.readTestingIdentity("runtime-test");
 		const firstEncryptedEnvironment = manager.testingDatabaseEnvironment(encryptedTestingContext, testingIdentity);
-		const secondEncryptedEnvironment = manager.testingDatabaseEnvironment(encryptedTestingContext, testingIdentity);
+		const firstTestingDatabaseKey = manager.getTestingDatabaseKey("runtime-test", "optional-bot");
+		const secondTestingDatabaseKey = manager.getTestingDatabaseKey("runtime-test", "optional-bot");
 		assert(
-			firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_ENCRYPTION === "encrypted" &&
-			firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_KEY.length >= 32 &&
-			firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_KEY === secondEncryptedEnvironment.env.OPTIONAL_BOT_DB_KEY,
-			"Encrypted testing databases should receive one stable key per identity and bot.",
+			!firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_ENCRYPTION &&
+			!firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_KEY &&
+			firstTestingDatabaseKey.length >= 32 &&
+			firstTestingDatabaseKey === secondTestingDatabaseKey,
+			"Plain testing databases should remain plaintext until explicitly encrypted while retaining one stable protected key per identity and bot.",
 		);
 		const protectedTestingSecrets = fs.readFileSync(path.join(userDataPath, "Profiles", "Testing", "runtime-test", "secrets.env"), "utf8");
 		const parsedTestingSecrets = requireFresh("src", "configuration.js").parseDotEnvContent(protectedTestingSecrets);
 		assert(
 			String(parsedTestingSecrets.HACHIGEN_DATABASE_KEY_OPTIONAL_BOT || "").startsWith("os:v1:") &&
-			!protectedTestingSecrets.includes(firstEncryptedEnvironment.env.OPTIONAL_BOT_DB_KEY),
+			!protectedTestingSecrets.includes(firstTestingDatabaseKey),
 			"Testing database keys should remain OS-protected and absent from plaintext profile files.",
 		);
 		manager.setActiveFleetDeployment(remoteDeployment.id);

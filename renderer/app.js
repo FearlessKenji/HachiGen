@@ -1213,6 +1213,31 @@ function renderExternalDatabase(overview) {
 	renderSimpleList("#databaseSanitizeList", [], "A bot-specific sanitation adapter is required.", () => document.createElement("li"));
 }
 
+function renderTestingDatabaseState(view) {
+	const database = view?.database || {};
+	const encrypted = Boolean(database.encryptedLikely);
+	const exists = database.status !== "missing";
+	setText("#databaseMeta", `Test: ${view?.source?.profileName || "Testing identity"}`);
+	setText("#databaseMessage", database.detail || "Testing database status unavailable.");
+	setText("#databaseStatus", exists ? "Found" : "Missing");
+	setText("#databasePath", database.path || "Not found");
+	setText("#databaseSize", formatFileSize(database.size || 0));
+	setText("#databaseModified", "Not reported");
+	setText("#databaseAuditStatus", database.label || readableStatus(database.status));
+	setText("#databaseProtectionMeta", "Isolated testing database protection");
+	setDot("#databaseProtectionDot", encrypted ? "good" : database.status === "plaintext" ? "warn" : "muted");
+	setText("#databaseProtectionStatus", encrypted ? "Encrypted" : database.label || "Not encrypted");
+	setText("#databaseProtectionDetail", database.detail || "Protection status unavailable.");
+	setText("#databaseProtectionKeyFile", encrypted ? "OS-protected testing profile" : "Created when Encrypt Data is approved");
+	setText("#databaseProtectionRecommendedPath", "Testing identity profile");
+	setText("#databaseProtectionDatabaseFile", database.path || "Not found");
+	setText("#databaseProtectionDriver", "Approved bot adapter");
+	setText("#databaseProtectionCipherTest", encrypted ? "Passed by Data Viewer" : "Not run");
+	setText("#databaseProtectionRuntime", encrypted ? "Encrypted on next test start" : "Plain SQLite testing mode");
+	setText("#databaseProtectionChecked", formatDateTime(new Date().toISOString()));
+	setText("#databaseProtectionMessage", encrypted ? "The production database and key are not used." : "Stop the test bot, then use Encrypt Data when ready.");
+}
+
 function renderExternalDatabaseBackups(backups = []) {
 	fleetBackupState = backups;
 	setText("#databaseBackupSummary", backups.length ? `${pluralize(backups.length, "encrypted backup")} available.` : "No encrypted backups found.");
@@ -3510,6 +3535,8 @@ async function loadDatabaseViewer(tableName = "", sort = databaseSort) {
 			direction: result.sortDirection || "",
 		});
 		setDatabaseView(result);
+		if (testingProfileId) renderTestingDatabaseState(result);
+		renderFleetSecurityCapabilities();
 		if (!external && !testingProfileId) {
 			renderDatabase(result.database);
 		}
@@ -3758,10 +3785,12 @@ function renderFleetSecurityCapabilities() {
 	setDisabled("#exportDatabaseKeyBackupButton", external);
 	setDisabled("#rotateDatabaseBackupsButton", external && !capabilities?.backups);
 	if (external) {
-		$("#databaseKeyActionButton").dataset.action = "encrypt-fleet-database";
+		const testingSource = databaseSource.startsWith("testing:");
+		const testingEncrypted = Boolean(databaseView?.database?.encryptedLikely);
+		$("#databaseKeyActionButton").dataset.action = testingSource ? "protect-testing-database" : "encrypt-fleet-database";
 		$("#rotateDatabaseBackupsButton").dataset.action = "prune-fleet-backups";
 		$("#verifyDatabaseProtectionButton").dataset.action = "audit-fleet-security";
-		setElementText($("#databaseKeyActionButton"), "Encrypt Database");
+		setElementText($("#databaseKeyActionButton"), testingSource ? (testingEncrypted ? "Rotate Key" : "Encrypt Data") : "Encrypt Database");
 	} else {
 		$("#databaseKeyActionButton").dataset.action = "generate-database-key";
 		$("#rotateDatabaseBackupsButton").dataset.action = "rotate-database-backups";
@@ -4929,6 +4958,28 @@ function handleAction(event) {
 				if (confirmed) runAction("Fleet database security", execute);
 			});
 		}
+		return;
+	}
+
+	if (action === "protect-testing-database") {
+		const profileId = databaseSource.startsWith("testing:") ? databaseSource.slice("testing:".length) : "";
+		const encrypted = Boolean(databaseView?.database?.encryptedLikely);
+		if (!profileId) return;
+		showConfirmModal({
+			title: encrypted ? "Rotate testing database key?" : "Encrypt testing database?",
+			meta: "Isolated testing data only",
+			summary: encrypted ?
+				"HachiGen will back up the selected testing database, rotate its protected key, and verify access." :
+				"HachiGen will back up and encrypt only the selected testing database. Production data and keys are not used.",
+			confirmText: encrypted ? "Rotate Key" : "Encrypt Data",
+			variant: "warning",
+		}).then(confirmed => {
+			if (!confirmed) return;
+			runAction(encrypted ? "Rotate testing database key" : "Encrypt testing database", () =>
+				api.protectTestingDatabase(selectedBotId, profileId)).then(result => {
+				if (result?.ok) refreshCurrentDatabaseViewer();
+			});
+		});
 		return;
 	}
 

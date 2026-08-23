@@ -2153,6 +2153,18 @@ class HachiManager {
 		return key;
 	}
 
+	setTestingDatabaseKey(profileId, botTypeId, key) {
+		const safeProfileId = normalizeProfileId(profileId);
+		const safeBotId = normalizeProfileId(botTypeId, "bot");
+		const field = `HACHIGEN_DATABASE_KEY_${safeBotId.replace(/[^a-z0-9]+/giu, "_").toUpperCase()}`;
+		const secretsPath = path.join(this.testingProfilesDir, safeProfileId, "secrets.env");
+		const previous = fileExists(secretsPath) ? fs.readFileSync(secretsPath, "utf8") : "";
+		fs.writeFileSync(secretsPath, updateDotEnvContent(previous, {
+			HACHIGEN_TEST_SECRETS_PROTECTION: "os",
+			[field]: `os:v1:${this.protectSecret(key)}`,
+		}), { encoding: "utf8", mode: 0o600 });
+	}
+
 	testingIdentityEnvironment(identity, overrides = {}) {
 		return {
 			...process.env,
@@ -2186,7 +2198,7 @@ class HachiManager {
 			[supportedKey]: databasePath,
 			HACHIGEN_TEST_DATABASE_PATH: databasePath,
 		};
-		if (context.definition.capabilities?.databaseToolConnection) {
+		if (context.definition.capabilities?.databaseToolConnection && databaseFileStatus(databasePath).encryptedLikely) {
 			const databasePrefix = context.definition.id.replace(/[^a-z0-9]+/giu, "_").replace(/^_+|_+$/gu, "").toUpperCase();
 			env[`${databasePrefix}_DB_ENCRYPTION`] = "encrypted";
 			env[`${databasePrefix}_DB_KEY`] = this.getTestingDatabaseKey(identity.id, context.definition.id);
@@ -2198,52 +2210,85 @@ class HachiManager {
 		};
 	}
 
-	async prepareEncryptedTestingDatabase(context, testDatabase) {
+	async protectTestingDatabase(botTypeId, profileId) {
+		const context = this.getLocalTestingDeploymentContext(botTypeId);
+		const running = this.testingRuns.get(context.deployment.id);
+		if (running?.status === "running" || running?.status === "starting") {
+			throw new Error("Stop the test bot before encrypting or rotating its database key.");
+		}
+		if (context.definition.source === "external" && context.deployment.definitionFingerprint !== context.definition.fingerprint) {
+			throw new Error(`${context.definition.displayName} profile changed after approval. Review and reapprove it before modifying test data.`);
+		}
+		if (!context.definition.capabilities?.databaseToolConnection || !context.deployment.approvedCapabilities?.databaseToolConnection) {
+			throw new Error(`${context.definition.displayName} does not have an approved encrypted database adapter.`);
+		}
+		const identity = this.readTestingIdentity(profileId);
+		const testDatabase = this.testingDatabaseEnvironment(context, identity);
 		if (!context.definition.capabilities?.databaseToolConnection || !testDatabase.databasePath) {
-			return;
+			throw new Error(`${context.definition.displayName} does not declare an isolated testing database.`);
 		}
 		const status = databaseFileStatus(testDatabase.databasePath);
-		if (status.status === "missing" || status.encryptedLikely) {
-			return;
+		if (status.status === "missing") {
+			throw new Error("Start the test bot once to create its isolated database before encrypting it.");
 		}
-		if (status.status !== "plaintext") {
+		if (status.status !== "plaintext" && !status.encryptedLikely) {
 			throw new Error(`The isolated testing database has an unsupported format: ${status.detail}`);
 		}
 		const databaseRoot = path.dirname(testDatabase.databasePath);
 		const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
-		const backupPath = path.join(databaseRoot, `${path.basename(testDatabase.databasePath, path.extname(testDatabase.databasePath))}-pre-encryption-${stamp}${path.extname(testDatabase.databasePath)}`);
+		const operation = status.encryptedLikely ? "key-rotation" : "encryption";
+		const backupPath = path.join(databaseRoot, `${path.basename(testDatabase.databasePath, path.extname(testDatabase.databasePath))}-pre-${operation}-${stamp}${path.extname(testDatabase.databasePath)}`);
 		const encryptedPath = `${testDatabase.databasePath}.encrypted-${crypto.randomUUID()}`;
 		const displacedPath = `${testDatabase.databasePath}.plaintext-${crypto.randomUUID()}`;
 		fs.copyFileSync(testDatabase.databasePath, backupPath, fs.constants.COPYFILE_EXCL);
-		const conversionScript = [
-			"const db=require('./database/dbEncryption.js');",
-			"db.convertPlainDatabaseToEncrypted({sourcePath:process.env.HACHIGEN_SOURCE_DATABASE,targetPath:process.env.HACHIGEN_TARGET_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
-			"db.verifyEncryptedDatabaseFile({dbPath:process.env.HACHIGEN_TARGET_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
-		].join("");
-		const databasePrefix = context.definition.id.replace(/[^a-z0-9]+/giu, "_").replace(/^_+|_+$/gu, "").toUpperCase();
+		const oldKey = this.getTestingDatabaseKey(identity.id, context.definition.id);
+		const newKey = status.encryptedLikely ? crypto.randomBytes(32).toString("base64url") : oldKey;
+		const conversionScript = status.encryptedLikely ?
+			[
+				"const db=require('./database/dbEncryption.js');",
+				"db.rekeyEncryptedDatabase({dbPath:process.env.HACHIGEN_SOURCE_DATABASE,oldKey:process.env.HACHIGEN_OLD_DATABASE_KEY,newKey:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+				"db.verifyEncryptedDatabaseFile({dbPath:process.env.HACHIGEN_SOURCE_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+			].join("") :
+			[
+				"const db=require('./database/dbEncryption.js');",
+				"db.convertPlainDatabaseToEncrypted({sourcePath:process.env.HACHIGEN_SOURCE_DATABASE,targetPath:process.env.HACHIGEN_TARGET_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+				"db.verifyEncryptedDatabaseFile({dbPath:process.env.HACHIGEN_TARGET_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+			].join("");
 		const result = await run("node", ["-e", conversionScript], {
 			allowFailure: true,
 			cwd: context.deployment.installPath,
 			env: {
 				...process.env,
-				HACHIGEN_DATABASE_KEY: testDatabase.env[`${databasePrefix}_DB_KEY`],
+				HACHIGEN_DATABASE_KEY: newKey,
+				HACHIGEN_OLD_DATABASE_KEY: oldKey,
 				HACHIGEN_SOURCE_DATABASE: testDatabase.databasePath,
 				HACHIGEN_TARGET_DATABASE: encryptedPath,
 			},
 			timeoutMs: 120000,
 		});
-		if (result.code !== 0 || !fileExists(encryptedPath)) {
+		if (result.code !== 0 || (!status.encryptedLikely && !fileExists(encryptedPath))) {
 			fs.rmSync(encryptedPath, { force: true });
-			throw new Error(result.stderr || "The isolated testing database could not be encrypted. Its plaintext backup was retained.");
+			if (status.encryptedLikely) {
+				fs.copyFileSync(backupPath, testDatabase.databasePath);
+			}
+			throw new Error(result.stderr || `The isolated testing database ${operation} failed. Its safety backup was retained.`);
 		}
 		// Swap only after conversion and keyed verification succeed. Any rename
 		// failure restores the original bytes; the timestamped backup is retained.
 		try {
+			if (status.encryptedLikely) {
+				this.setTestingDatabaseKey(identity.id, context.definition.id, newKey);
+				return { database: databaseFileStatus(testDatabase.databasePath), message: "Testing database key rotated and verified.", ok: true };
+			}
 			fs.renameSync(testDatabase.databasePath, displacedPath);
 			fs.renameSync(encryptedPath, testDatabase.databasePath);
 			fs.rmSync(displacedPath, { force: true });
 		} catch (error) {
 			fs.rmSync(encryptedPath, { force: true });
+			if (status.encryptedLikely) {
+				fs.copyFileSync(backupPath, testDatabase.databasePath);
+				this.setTestingDatabaseKey(identity.id, context.definition.id, oldKey);
+			}
 			if (fileExists(displacedPath) && !fileExists(testDatabase.databasePath)) {
 				fs.renameSync(displacedPath, testDatabase.databasePath);
 			}
@@ -2254,6 +2299,7 @@ class HachiManager {
 			backupPath,
 			botTypeId: context.definition.id,
 		});
+		return { database: databaseFileStatus(testDatabase.databasePath), message: "Testing database encrypted and verified.", ok: true };
 	}
 
 	async resetTestingCommands(deploymentId, profileId) {
@@ -2347,7 +2393,6 @@ class HachiManager {
 		}
 		const identity = this.readTestingIdentity(profileId);
 		const testDatabase = this.testingDatabaseEnvironment(context, identity);
-		await this.prepareEncryptedTestingDatabase(context, testDatabase);
 		const env = this.testingIdentityEnvironment(identity, testDatabase.env);
 		// Use the bot host's Node runtime; process.execPath is HachiGen.exe in packaged builds.
 		const child = childProcess.spawn("node", [entryPath, ...command.args.slice(1)], {
@@ -3258,7 +3303,11 @@ class HachiManager {
 			botTypeId: context.definition.id,
 			profileId: identity.id,
 		});
-		return { ...parsed, source: { profileId: identity.id, profileName: identity.name, type: "testing" } };
+		return {
+			...parsed,
+			database: databaseFileStatus(databasePath),
+			source: { profileId: identity.id, profileName: identity.name, type: "testing" },
+		};
 	}
 
 	async checkFleetDeploymentHealth(deploymentId) {

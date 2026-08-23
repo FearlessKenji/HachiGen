@@ -1092,6 +1092,7 @@ function registerIpc() {
 	ipcMain.handle("manager:read-database-table", (_event, tableName, sort) => manager.readDatabaseTable(tableName, sort));
 	ipcMain.handle("manager:read-fleet-database-table", (_event, deploymentId, tableName, sort) => manager.readFleetDatabaseTable(deploymentId, tableName, sort));
 	ipcMain.handle("manager:read-testing-database-table", (_event, botTypeId, profileId, tableName, sort) => manager.readTestingDatabaseTable(botTypeId, profileId, tableName, sort));
+	ipcMain.handle("manager:protect-testing-database", (_event, botTypeId, profileId) => manager.protectTestingDatabase(botTypeId, profileId));
 	ipcMain.handle("manager:migrate-database", () => manager.migrateDatabase({ force: false }));
 	ipcMain.handle("manager:force-migrate-database", () => manager.migrateDatabase({ force: true }));
 	ipcMain.handle("manager:review-database-sanitation", () => manager.reviewDatabaseSanitation());
