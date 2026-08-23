@@ -481,6 +481,12 @@ function validateRendererAndMenuWiring() {
 		"Testing database encryption should be explicit, source-aware, and immediately refreshable instead of running during test startup.",
 	);
 	assert(
+		rendererSource.includes("Additional bots must refresh through their selected deployment adapter") &&
+			rendererSource.includes("await refreshFleetOverview()") &&
+			rendererSource.includes("if (selectedBotId === HACHI_BOT_ID) {\n\t\t\trenderStashedChanges"),
+		"Shared actions should not repaint native Hachi database state over a selected external bot.",
+	);
+	assert(
 		rendererSource.includes("Installation-bound data must never survive a local/remote switch") &&
 			rendererSource.includes("fleetBackupState = []") &&
 			rendererSource.includes('if (activeView === "database") await loadDatabaseViewer()'),

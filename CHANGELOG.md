@@ -25,6 +25,7 @@ Notable changes to HachiGen are documented here.
 
 ### Changed
 
+- Fixed shared action completion repainting native Hachi state over a selected external bot. Paldeck Verify now refreshes through its active local or remote deployment and retains that audit's actual database header, protection status, and controls.
 - Added a final read-only encryption preflight against the currently selected installation. HachiGen now requires the encryption and verification scripts, repository adapters, declared runtime SQLCipher package, resolvable installed driver, and expected adapter functions before creating a backup, stopping a bot, or changing any database bytes.
 - Changed isolated testing database protection from automatic startup conversion to an explicit, source-aware Database action. Plain test databases now show **Encrypt Data**, encrypted test databases show **Rotate Key**, and successful actions immediately refresh the selected testing status.
 - Fixed saved external bot profiles disappearing after requesting the generated `databaseToolConnection` capability by adding that capability to the external-profile validation allowlist.

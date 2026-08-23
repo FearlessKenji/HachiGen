@@ -4096,8 +4096,13 @@ async function runAction(label, action, options = {}) {
 
 	try {
 		const result = await action();
-		// Most actions can affect several panels, so redraw state afterward.
-		await refreshState();
+		// Additional bots must refresh through their selected deployment adapter.
+		// Pulling native state here would repaint Hachi over the external bot view.
+		if (selectedBotId === HACHI_BOT_ID) {
+			await refreshState();
+		} else {
+			await refreshFleetOverview();
+		}
 		if (options.toast !== false) {
 			toast(result?.message || `${label} complete.`);
 		}
@@ -4116,11 +4121,16 @@ async function runAction(label, action, options = {}) {
 		setBusy(false);
 		// Buttons may have been disabled while busy; re-apply stash-specific
 		// and database-specific enable/disable rules after restoring button state.
-		renderStashedChanges(state?.updates);
-		renderHachiUpdateSummary();
-		renderHachiGenUpdate(state?.hachiGenUpdate);
-		renderDatabase(state?.database);
+		if (selectedBotId === HACHI_BOT_ID) {
+			renderStashedChanges(state?.updates);
+			renderHachiUpdateSummary();
+			renderHachiGenUpdate(state?.hachiGenUpdate);
+			renderDatabase(state?.database);
+		} else if (databaseSource.startsWith("testing:") && databaseView) {
+			renderTestingDatabaseState(databaseView);
+		}
 		renderDatabaseViewer(databaseView);
+		renderFleetSecurityCapabilities();
 		renderConfig(lastConfig);
 		setDisabled("#openFolderButton", state?.runtimeTarget === "remote");
 		setDisabled("#browseInstallButton", state?.runtimeTarget === "remote");
@@ -4942,7 +4952,6 @@ function handleAction(event) {
 				await api.auditFleetDeploymentSecurity(deploymentId) :
 				await api.encryptFleetDatabase(deploymentId);
 			setText("#fleetLogMaintenanceOutput", JSON.stringify(result, null, 2));
-			await refreshFleetOverview();
 			return { message: result.message || "Security operation completed." };
 		};
 		if (action === "audit-fleet-security") {
