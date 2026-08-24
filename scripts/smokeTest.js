@@ -1473,6 +1473,17 @@ async function validateDatabaseEncryptionPreflight() {
 		fs.writeFileSync(path.join(driverRoot, "index.js"), "module.exports=function SmokeCipherDriver(){};\n");
 		const report = await manager.verifyFleetDatabaseEncryptionPrerequisites(context);
 		assert(report.ok && report.failures.length === 0, "Encryption preflight should accept a complete current installation.");
+		let missingRotationRejected = false;
+		try {
+			await manager.verifyFleetDatabaseEncryptionPrerequisites(context, { requireRotation: true });
+		} catch (error) {
+			missingRotationRejected = error.message.includes("database:rotate is missing");
+		}
+		assert(missingRotationRejected, "Key rotation should require a current database:rotate package adapter.");
+		const packageJson = JSON.parse(fs.readFileSync(path.join(installPath, "package.json"), "utf8"));
+		packageJson.scripts["database:rotate"] = "node rotate.js";
+		fs.writeFileSync(path.join(installPath, "package.json"), JSON.stringify(packageJson));
+		assert((await manager.verifyFleetDatabaseEncryptionPrerequisites(context, { requireRotation: true })).ok, "Rotation preflight should accept an installed rotation adapter.");
 	} finally {
 		fs.rmSync(tempDir, { force: true, recursive: true });
 	}

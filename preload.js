@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	backupFleetDatabase: deploymentId => invoke("manager:backup-fleet-database", deploymentId),
 	restoreFleetDatabaseBackup: (deploymentId, backupId) => invoke("manager:restore-fleet-database-backup", deploymentId, backupId),
 	encryptFleetDatabase: deploymentId => invoke("manager:encrypt-fleet-database", deploymentId),
+	rotateFleetDatabaseKey: deploymentId => invoke("manager:rotate-fleet-database-key", deploymentId),
 	getFleetRepositoryStatus: (deploymentId, options) => invoke("manager:get-fleet-repository-status", deploymentId, options),
 	updateFleetDeployment: deploymentId => invoke("manager:update-fleet-deployment", deploymentId),
 	deployFleetDiscordCommands: deploymentId => invoke("manager:deploy-fleet-discord-commands", deploymentId),
@@ -127,7 +128,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	convertDatabaseEncryption: () => invoke("manager:convert-database-encryption"),
 	rotateDatabaseKey: options => invoke("manager:rotate-database-key", options),
 	rotateDatabaseBackups: () => invoke("manager:rotate-database-backups"),
-	exportDatabaseKeyBackup: () => invoke("manager:export-database-key-backup"),
+	exportDatabaseKeyBackup: deploymentId => invoke("manager:export-database-key-backup", deploymentId),
 
 	// OS integration action. main.js owns shell access.
 	openInstallFolder: () => invoke("manager:open-install-folder"),

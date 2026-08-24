@@ -316,6 +316,7 @@ let setupGuideAutoShown = false;
 let diagnosticsState = null;
 let fleetState = null;
 let fleetOverviewRequestId = 0;
+let externalDatabaseProtectionStatus = "unknown";
 let selectedBotId = window.localStorage.getItem(SELECTED_BOT_KEY) || HACHI_BOT_ID;
 let externalConfiguration = null;
 let fleetBackupState = [];
@@ -1190,6 +1191,7 @@ function renderExternalDatabase(overview) {
 	const exists = !["missing", "not-applicable", "unknown", "error"].includes(status);
 	const protectedDatabase = status === "protected";
 	const unverified = status === "encrypted-unverified";
+	externalDatabaseProtectionStatus = status;
 	setText("#databaseMeta", status === "not-applicable" ? "No database declared by this Bot Profile" : `${selectedBotName()} database`);
 	setText("#databaseMessage", overview?.security?.error || database.message || "Run Verify to refresh database protection status.");
 	setText("#databaseStatus", exists ? "Found" : status === "not-applicable" ? "Not configured" : "Missing");
@@ -3782,15 +3784,18 @@ function renderFleetSecurityCapabilities() {
 	setDisabled("#forceMigrateDatabaseButton", external);
 	setDisabled("#sanitizeDatabaseButton", external);
 	setDisabled("#databaseKeyActionButton", external && !capabilities?.databaseEncryption);
-	setDisabled("#exportDatabaseKeyBackupButton", external);
+	setDisabled("#exportDatabaseKeyBackupButton", external && !["protected", "encrypted-unverified"].includes(externalDatabaseProtectionStatus));
 	setDisabled("#rotateDatabaseBackupsButton", external && !capabilities?.backups);
 	if (external) {
 		const testingSource = databaseSource.startsWith("testing:");
 		const testingEncrypted = Boolean(databaseView?.database?.encryptedLikely);
-		$("#databaseKeyActionButton").dataset.action = testingSource ? "protect-testing-database" : "encrypt-fleet-database";
+		const productionEncrypted = ["protected", "encrypted-unverified"].includes(externalDatabaseProtectionStatus);
+		const productionCanRotate = Boolean(definition?.commands?.databaseRotate);
+		$("#databaseKeyActionButton").dataset.action = testingSource ? "protect-testing-database" : productionEncrypted ? "rotate-fleet-database-key" : "encrypt-fleet-database";
 		$("#rotateDatabaseBackupsButton").dataset.action = "prune-fleet-backups";
 		$("#verifyDatabaseProtectionButton").dataset.action = "audit-fleet-security";
-		setElementText($("#databaseKeyActionButton"), testingSource ? (testingEncrypted ? "Rotate Key" : "Encrypt Data") : "Encrypt Database");
+		setElementText($("#databaseKeyActionButton"), testingSource ? (testingEncrypted ? "Rotate Key" : "Encrypt Data") : productionEncrypted ? "Rotate Key" : "Encrypt Database");
+		setDisabled("#databaseKeyActionButton", !capabilities?.databaseEncryption || (!testingSource && productionEncrypted && !productionCanRotate));
 	} else {
 		$("#databaseKeyActionButton").dataset.action = "generate-database-key";
 		$("#rotateDatabaseBackupsButton").dataset.action = "rotate-database-backups";
@@ -4945,23 +4950,27 @@ function handleAction(event) {
 		return;
 	}
 
-	if (["audit-fleet-security", "encrypt-fleet-database"].includes(action)) {
+	if (["audit-fleet-security", "encrypt-fleet-database", "rotate-fleet-database-key"].includes(action)) {
 		const deploymentId = selectedBotId;
 		const execute = async () => {
 			const result = action === "audit-fleet-security" ?
-				await api.auditFleetDeploymentSecurity(deploymentId) :
-				await api.encryptFleetDatabase(deploymentId);
+				await api.auditFleetDeploymentSecurity(deploymentId) : action === "rotate-fleet-database-key" ?
+					await api.rotateFleetDatabaseKey(deploymentId) :
+					await api.encryptFleetDatabase(deploymentId);
 			setText("#fleetLogMaintenanceOutput", JSON.stringify(result, null, 2));
 			return { message: result.message || "Security operation completed." };
 		};
 		if (action === "audit-fleet-security") {
 			runAction("Fleet security", execute);
 		} else {
+			const rotating = action === "rotate-fleet-database-key";
 			showConfirmModal({
-				title: "Encrypt deployment database?",
+				title: rotating ? "Rotate deployment database key?" : "Encrypt deployment database?",
 				meta: "Database safety confirmation",
-				summary: "HachiGen will stop the selected deployment and retain or create a recovery copy. Verify the selected deployment before continuing.",
-				confirmText: "Encrypt",
+				summary: rotating ?
+					"The bot will stop, create a safety backup, atomically rekey its encrypted database, update its existing key store, and verify access." :
+					"HachiGen will stop the selected deployment and retain or create a recovery copy. Verify the selected deployment before continuing.",
+				confirmText: rotating ? "Rotate Key" : "Encrypt",
 				variant: "danger",
 			}).then(confirmed => {
 				if (confirmed) runAction("Fleet database security", execute);
@@ -5372,7 +5381,7 @@ function handleAction(event) {
 				return;
 			}
 
-			runAction("Export database key backup", () => api.exportDatabaseKeyBackup());
+			runAction("Export database key backup", () => api.exportDatabaseKeyBackup(selectedBotId === HACHI_BOT_ID ? "" : selectedBotId));
 		});
 		return;
 	}

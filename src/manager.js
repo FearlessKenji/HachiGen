@@ -2689,6 +2689,9 @@ class HachiManager {
 				definition.capabilities.databaseToolConnection = true;
 				definition.commands.databaseEncrypt = { executable: "npm", args: ["run", "database:encrypt"] };
 				definition.commands.databaseVerify = { executable: "npm", args: ["run", "database:verify"] };
+				if (scripts["database:rotate"]) {
+					definition.commands.databaseRotate = { executable: "npm", args: ["run", "database:rotate"] };
+				}
 			}
 		}
 		if (logsPath) {
@@ -3576,13 +3579,60 @@ class HachiManager {
 		}
 	}
 
-	async verifyFleetDatabaseEncryptionPrerequisites(context) {
+	async rotateFleetDatabaseKey(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "databaseEncryption");
+		if (!context.definition.commands?.databaseRotate) {
+			throw new Error("This bot profile does not declare a databaseRotate command. Review the updated profile before rotating its key.");
+		}
+		await this.verifyFleetDatabaseEncryptionPrerequisites(context, { requireRotation: true });
+		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		await this.runFleetDefinitionCommand(deploymentId, "databaseRotate", { timeoutMs: 600000 });
+		const audit = await this.auditFleetDeploymentSecurity(deploymentId);
+		if (!audit.ok) {
+			throw new Error(audit.database?.message || "The bot's key rotation command completed, but the selected database could not be verified.");
+		}
+		return { ...audit, message: "Database key rotated and verified. The bot retained its safety backup." };
+	}
+
+	async exportFleetDatabaseKeyBackup(deploymentId, destinationPath) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "databaseEncryption");
+		await this.verifyFleetDatabaseEncryptionPrerequisites(context);
+		const script = [
+			"const path=require('node:path'),db=require('./database/dbEncryption.js');",
+			"const info=db.readDatabaseKeyFromEnvFile(path.resolve('.env'),process.env,process.cwd());",
+			"if(!String(info.key||'').trim())throw Error('No database key is configured.');",
+			"process.stdout.write(JSON.stringify({key:Buffer.from(info.key,'utf8').toString('base64'),ok:true}));",
+		].join("");
+		const commandResult = context.server.connection.type === "ssh" ?
+			await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
+				{ allowFailure: true, log: false, timeoutMs: 60000 },
+			) :
+			await run("node", ["-e", script], { allowFailure: true, cwd: context.deployment.installPath, timeoutMs: 60000 });
+		const payload = parseJsonText(String(commandResult.stdout || "").trim(), null);
+		if (commandResult.code !== 0 || !payload?.ok || !payload.key) {
+			throw new Error(commandResult.stderr || "The selected bot did not return a database key.");
+		}
+		const key = Buffer.from(payload.key, "base64").toString("utf8").trim();
+		if (!key) {
+			throw new Error("The selected bot returned an empty database key.");
+		}
+		fs.writeFileSync(destinationPath, `${key}\n`, { encoding: "utf8", mode: 0o600 });
+		return { ok: true, message: "Database key backup exported." };
+	}
+
+	async verifyFleetDatabaseEncryptionPrerequisites(context, { requireRotation = false } = {}) {
 		const script = [
 			"const fs=require('node:fs'),path=require('node:path');",
 			`const driver=${JSON.stringify(CIPHER_DRIVER_PACKAGE)},failures=[];`,
+			`const requireRotation=${JSON.stringify(requireRotation)};`,
 			"let pkg={};try{pkg=JSON.parse(fs.readFileSync('package.json','utf8'));}catch{failures.push('package.json is missing or invalid');}",
 			"if(!pkg.scripts?.['database:encrypt'])failures.push('package script database:encrypt is missing');",
 			"if(!pkg.scripts?.['database:verify'])failures.push('package script database:verify is missing');",
+			"if(requireRotation&&!pkg.scripts?.['database:rotate'])failures.push('package script database:rotate is missing');",
 			"if(!(pkg.dependencies?.[driver]||pkg.optionalDependencies?.[driver]))failures.push(driver+' is not declared as a runtime dependency');",
 			"for(const file of ['database/dbEncryption.js','database/dbToolConnection.js'])if(!fs.existsSync(file))failures.push(file+' is missing');",
 			"try{require.resolve(driver,{paths:[process.cwd()]});}catch{failures.push(driver+' is not installed in this application');}",

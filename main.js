@@ -958,6 +958,7 @@ function registerIpc() {
 	ipcMain.handle("manager:backup-fleet-database", (_event, deploymentId) => manager.backupFleetDatabase(deploymentId));
 	ipcMain.handle("manager:restore-fleet-database-backup", (_event, deploymentId, backupId) => manager.restoreFleetDatabaseBackup(deploymentId, backupId));
 	ipcMain.handle("manager:encrypt-fleet-database", (_event, deploymentId) => manager.encryptFleetDatabase(deploymentId));
+	ipcMain.handle("manager:rotate-fleet-database-key", (_event, deploymentId) => manager.rotateFleetDatabaseKey(deploymentId));
 	ipcMain.handle("manager:get-fleet-repository-status", (_event, deploymentId, options) => manager.getFleetRepositoryStatus(deploymentId, options));
 	ipcMain.handle("manager:update-fleet-deployment", (_event, deploymentId) => manager.updateFleetDeployment(deploymentId));
 	ipcMain.handle("manager:deploy-fleet-discord-commands", (_event, deploymentId) => manager.deployFleetDiscordCommands(deploymentId));
@@ -1143,9 +1144,9 @@ function registerIpc() {
 		rotateBackups: Boolean(options.rotateBackups),
 	}));
 	ipcMain.handle("manager:rotate-database-backups", () => manager.rotateDatabaseBackups());
-	ipcMain.handle("manager:export-database-key-backup", async () => {
+	ipcMain.handle("manager:export-database-key-backup", async (_event, deploymentId = "") => {
 		const result = await dialog.showSaveDialog(mainWindow, {
-			defaultPath: "hachi-db-key-backup.key",
+			defaultPath: deploymentId ? "bot-db-key-backup.key" : "hachi-db-key-backup.key",
 			filters: [
 				{ name: "Key backup", extensions: ["key", "txt"] },
 				{ name: "All files", extensions: ["*"] },
@@ -1157,7 +1158,7 @@ function registerIpc() {
 			return { ok: false, message: "Database key backup export canceled." };
 		}
 
-		return manager.exportDatabaseKeyBackup(result.filePath);
+		return deploymentId ? manager.exportFleetDatabaseKeyBackup(deploymentId, result.filePath) : manager.exportDatabaseKeyBackup(result.filePath);
 	});
 
 	// OS integration channel. shell.openPath has to stay in the main process
