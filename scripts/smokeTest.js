@@ -1353,6 +1353,12 @@ async function validateFleetCredentialAndBackupSecurity() {
 		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");
 		const backup = await manager.backupFleetDatabase("optional-bot");
 		assert(fs.readFileSync(backup.backupPath).subarray(0, 5).toString() === "HGBK1", "Fleet database backup should use encrypted HGBK1 format.");
+		const backupKeyBeforeRotation = manager.getFleetBackupVault().records[backup.backupId].key;
+		const backupRotation = await manager.rotateFleetBackupKeys("optional-bot");
+		assert(
+			backupRotation.rotated === 1 && manager.getFleetBackupVault().records[backup.backupId].key !== backupKeyBeforeRotation,
+			"Fleet Rotate Backups should replace protected envelope keys without pruning backup records.",
+		);
 		fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), "damaged");
 		await manager.restoreFleetDatabaseBackup("optional-bot", backup.backupId);
 		assert(fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase), "Encrypted fleet backup did not restore original database bytes.");

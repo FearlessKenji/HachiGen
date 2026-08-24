@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	restoreFleetDatabaseBackup: (deploymentId, backupId) => invoke("manager:restore-fleet-database-backup", deploymentId, backupId),
 	encryptFleetDatabase: deploymentId => invoke("manager:encrypt-fleet-database", deploymentId),
 	rotateFleetDatabaseKey: deploymentId => invoke("manager:rotate-fleet-database-key", deploymentId),
+	rotateFleetBackupKeys: deploymentId => invoke("manager:rotate-fleet-backup-keys", deploymentId),
 	getFleetRepositoryStatus: (deploymentId, options) => invoke("manager:get-fleet-repository-status", deploymentId, options),
 	updateFleetDeployment: deploymentId => invoke("manager:update-fleet-deployment", deploymentId),
 	deployFleetDiscordCommands: deploymentId => invoke("manager:deploy-fleet-discord-commands", deploymentId),

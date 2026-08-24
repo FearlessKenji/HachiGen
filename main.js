@@ -959,6 +959,7 @@ function registerIpc() {
 	ipcMain.handle("manager:restore-fleet-database-backup", (_event, deploymentId, backupId) => manager.restoreFleetDatabaseBackup(deploymentId, backupId));
 	ipcMain.handle("manager:encrypt-fleet-database", (_event, deploymentId) => manager.encryptFleetDatabase(deploymentId));
 	ipcMain.handle("manager:rotate-fleet-database-key", (_event, deploymentId) => manager.rotateFleetDatabaseKey(deploymentId));
+	ipcMain.handle("manager:rotate-fleet-backup-keys", (_event, deploymentId) => manager.rotateFleetBackupKeys(deploymentId));
 	ipcMain.handle("manager:get-fleet-repository-status", (_event, deploymentId, options) => manager.getFleetRepositoryStatus(deploymentId, options));
 	ipcMain.handle("manager:update-fleet-deployment", (_event, deploymentId) => manager.updateFleetDeployment(deploymentId));
 	ipcMain.handle("manager:deploy-fleet-discord-commands", (_event, deploymentId) => manager.deployFleetDiscordCommands(deploymentId));

@@ -4,7 +4,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
-- Protected Paldeck installations now show **Rotate Key** instead of **Encrypt Database**. Rotation performs a real bot-owned rekey with rollback, and **Export Key Backup** now works for the selected encrypted bot just as it does for Hachi. Plain databases continue to show the encryption action.
+- Protected Paldeck installations now show **Rotate Key** instead of **Encrypt Database**. Rotation performs a real bot-owned rekey with rollback, **Export Key Backup** works for the selected encrypted bot, and **Rotate Backups** gives every HachiGen-managed backup a new protected encryption key instead of pruning it. Plain databases continue to show the encryption action.
 - Fixed Verify on remote Paldeck replacing its Database page with Hachi's encrypted database details. External-bot actions now refresh through the selected bot and installation, so plaintext Paldeck remains reported as plaintext.
 - Before encrypting or rotating any additional-bot database, HachiGen now rechecks the selected local or remote installation for its package scripts, encryption adapters, declared SQLCipher dependency, and installed driver. A failed preflight stops before the bot, backups, keys, or database are changed.
 - Test databases are no longer encrypted automatically when a bot starts. Select the testing identity in Database and use **Encrypt Data** when ready; after encryption, the same action becomes **Rotate Key**. The selected testing status refreshes immediately without touching production.

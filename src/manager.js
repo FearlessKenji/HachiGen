@@ -3624,6 +3624,76 @@ class HachiManager {
 		return { ok: true, message: "Database key backup exported." };
 	}
 
+	async rotateFleetBackupKeys(deploymentId) {
+		if (!this.protectSecret || !this.unprotectSecret) {
+			throw new Error("Operating-system backup-key protection is unavailable.");
+		}
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
+		const vault = this.getFleetBackupVault();
+		const records = Object.values(vault.records).filter(record => record.deploymentId === context.deployment.id && record.serverId === context.server.id);
+		let rotated = 0;
+		for (const record of records) {
+			const oldProtectedKey = record.key;
+			const oldKey = this.unprotectSecret(oldProtectedKey);
+			const newKey = crypto.randomBytes(32).toString("base64");
+			const iv = crypto.randomBytes(12);
+			const temporaryPath = `${record.backupPath}.key-rotation-${crypto.randomUUID()}.tmp`;
+			if (context.server.connection.type === "ssh") {
+				// Re-encrypt into a temporary sibling; the vault key changes before the
+				// atomic rename so a failed commit can restore the prior protected key.
+				const script = [
+					"const fs=require('fs'),c=require('crypto'),p=JSON.parse(fs.readFileSync(0,'utf8')),b=fs.readFileSync(p.src);",
+					"if(b.subarray(0,5).toString()!=='HGBK1')throw Error('Invalid backup');",
+					"const d=c.createDecipheriv('aes-256-gcm',Buffer.from(p.oldKey,'base64'),b.subarray(5,17));",
+					"d.setAuthTag(b.subarray(17,33));",
+					"const raw=Buffer.concat([d.update(b.subarray(33)),d.final()]),iv=Buffer.from(p.iv,'base64');",
+					"const x=c.createCipheriv('aes-256-gcm',Buffer.from(p.newKey,'base64'),iv);",
+					"const enc=Buffer.concat([x.update(raw),x.final()]);",
+					"fs.writeFileSync(p.dest,Buffer.concat([Buffer.from('HGBK1'),iv,x.getAuthTag(),enc]),{mode:384});",
+				].join("");
+				await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
+					input: JSON.stringify({ src: record.backupPath, dest: temporaryPath, oldKey, newKey, iv: iv.toString("base64") }),
+					log: false,
+					timeoutMs: 300000,
+				});
+			} else {
+				const source = fs.readFileSync(record.backupPath);
+				if (source.subarray(0, 5).toString() !== "HGBK1") {
+					throw new Error("Backup format is invalid.");
+				}
+				const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(oldKey, "base64"), source.subarray(5, 17));
+				decipher.setAuthTag(source.subarray(17, 33));
+				const raw = Buffer.concat([decipher.update(source.subarray(33)), decipher.final()]);
+				const cipher = crypto.createCipheriv("aes-256-gcm", Buffer.from(newKey, "base64"), iv);
+				const encrypted = Buffer.concat([cipher.update(raw), cipher.final()]);
+				fs.writeFileSync(temporaryPath, Buffer.concat([Buffer.from("HGBK1"), iv, cipher.getAuthTag(), encrypted]), { mode: 0o600 });
+			}
+			record.key = this.protectSecret(newKey);
+			try {
+				this.saveFleetBackupVault(vault);
+				if (context.server.connection.type === "ssh") {
+					const commitCommand = `cd ${quoteRemotePath(context.deployment.installPath)} && mv ${quotePosix(temporaryPath)} ${quotePosix(record.backupPath)}`;
+					await this.runFleetRemoteCommand(context.server, commitCommand, { log: false, timeoutMs: 30000 });
+				} else {
+					fs.copyFileSync(temporaryPath, record.backupPath);
+					fs.rmSync(temporaryPath, { force: true });
+				}
+				rotated += 1;
+			} catch (error) {
+				record.key = oldProtectedKey;
+				this.saveFleetBackupVault(vault);
+				if (context.server.connection.type === "ssh") {
+					await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && rm -f ${quotePosix(temporaryPath)}`, { allowFailure: true, log: false, timeoutMs: 30000 });
+				} else {
+					fs.rmSync(temporaryPath, { force: true });
+				}
+				throw error;
+			}
+		}
+		return { ok: true, rotated, message: `${rotated} backup encryption key${rotated === 1 ? "" : "s"} rotated.` };
+	}
+
 	async verifyFleetDatabaseEncryptionPrerequisites(context, { requireRotation = false } = {}) {
 		const script = [
 			"const fs=require('node:fs'),path=require('node:path');",

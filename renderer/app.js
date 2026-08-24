@@ -3792,7 +3792,7 @@ function renderFleetSecurityCapabilities() {
 		const productionEncrypted = ["protected", "encrypted-unverified"].includes(externalDatabaseProtectionStatus);
 		const productionCanRotate = Boolean(definition?.commands?.databaseRotate);
 		$("#databaseKeyActionButton").dataset.action = testingSource ? "protect-testing-database" : productionEncrypted ? "rotate-fleet-database-key" : "encrypt-fleet-database";
-		$("#rotateDatabaseBackupsButton").dataset.action = "prune-fleet-backups";
+		$("#rotateDatabaseBackupsButton").dataset.action = "rotate-fleet-backups";
 		$("#verifyDatabaseProtectionButton").dataset.action = "audit-fleet-security";
 		setElementText($("#databaseKeyActionButton"), testingSource ? (testingEncrypted ? "Rotate Key" : "Encrypt Data") : productionEncrypted ? "Rotate Key" : "Encrypt Database");
 		setDisabled("#databaseKeyActionButton", !capabilities?.databaseEncryption || (!testingSource && productionEncrypted && !productionCanRotate));
@@ -5354,6 +5354,24 @@ function handleAction(event) {
 			}
 
 			runAction("Rotate database backups", () => api.rotateDatabaseBackups());
+		});
+		return;
+	}
+
+	if (action === "rotate-fleet-backups") {
+		showConfirmModal({
+			confirmText: "Rotate Backups",
+			details: [
+				"Each HachiGen-managed backup will receive a new independent encryption key.",
+				"Backup contents and retention are unchanged.",
+				"A failed vault or file commit restores the previous protected key.",
+			],
+			meta: "Selected bot backup key maintenance",
+			summary: "Rotate encryption keys for this installation's managed backups?",
+			title: "Rotate database backup keys?",
+			variant: "warning",
+		}).then(confirmed => {
+			if (confirmed) runAction("Rotate database backups", () => api.rotateFleetBackupKeys(selectedBotId));
 		});
 		return;
 	}
