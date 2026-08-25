@@ -4,6 +4,8 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Added protection-aware Fleet database restores. Restoring a plaintext backup over an encrypted database now requires explicit confirmation, creates a uniquely named encrypted recovery backup, invokes the bot's approved plaintext-runtime adapter, and retains key material for rollback.
+
 ### Added
 
 - Added independent per-identity, per-bot SQLCipher keys for isolated testing databases. Keys use the existing operating-system-protected testing secret store, are injected only into the local testing process and viewer, and plaintext test databases are backed up and transactionally converted before startup.

@@ -1214,6 +1214,12 @@ async function validateFleetCredentialAndBackupSecurity() {
 		"fs.mkdirSync(path.dirname(db),{recursive:true});fs.writeFileSync(db,'isolated test database');",
 		"console.log(process.env.TOKEN);setInterval(()=>{},1000);",
 	].join(""));
+	fs.writeFileSync(path.join(deploymentPath, "plaintext.js"), [
+		"const fs=require('node:fs');",
+		"const p='data/bot.sqlite',h=Buffer.from('SQLite format 3\\0');",
+		"if(!fs.readFileSync(p).subarray(0,16).equals(h))throw Error('not plaintext');",
+		"fs.writeFileSync('plaintext-runtime.enabled','true');",
+	].join(""));
 	fs.writeFileSync(path.join(deploymentPath, "bot-settings.yaml"), "# retained comment\nfeature:\n  enabled: true\napiToken: smoke-secret\n");
 	childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: deploymentPath, stdio: "ignore" });
 	childProcess.execFileSync("git", ["remote", "add", "origin", "https://example.invalid/optional-bot.git"], { cwd: deploymentPath, stdio: "ignore" });
@@ -1240,6 +1246,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 			capabilities: { backups: true, databaseEncryption: true, secretEncryption: true },
 			commands: {
 				credentialsWrite: { executable: "node", args: ["credentials-write.js"] },
+				databasePlaintext: { executable: "node", args: ["plaintext.js"] },
 				testStart: { executable: "node", args: ["start-test.js"] },
 			},
 		}));
@@ -1360,8 +1367,18 @@ async function validateFleetCredentialAndBackupSecurity() {
 			"Fleet Rotate Backups should replace protected envelope keys without pruning backup records.",
 		);
 		fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), "damaged");
-		await manager.restoreFleetDatabaseBackup("optional-bot", backup.backupId);
+		const restoreInspection = await manager.inspectFleetDatabaseRestore("optional-bot", backup.backupId);
+		assert(restoreInspection.disablesEncryption, "Restore inspection should detect an encrypted-looking to plaintext transition.");
+		let unconfirmedRestoreRejected = false;
+		try {
+			await manager.restoreFleetDatabaseBackup("optional-bot", backup.backupId);
+		} catch (error) {
+			unconfirmedRestoreRejected = error.message.includes("requires explicit confirmation");
+		}
+		assert(unconfirmedRestoreRejected, "A plaintext transition should be rejected without explicit confirmation.");
+		await manager.restoreFleetDatabaseBackup("optional-bot", backup.backupId, { allowPlaintextTransition: true });
 		assert(fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase), "Encrypted fleet backup did not restore original database bytes.");
+		assert(fs.existsSync(path.join(deploymentPath, "plaintext-runtime.enabled")), "Plaintext restore did not invoke the bot-owned runtime adapter.");
 		manager.getRepositoryInfo = async () => {
 			throw new Error("remote unavailable");
 		};

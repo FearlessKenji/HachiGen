@@ -2692,6 +2692,9 @@ class HachiManager {
 				if (scripts["database:rotate"]) {
 					definition.commands.databaseRotate = { executable: "npm", args: ["run", "database:rotate"] };
 				}
+				if (scripts["database:plaintext"]) {
+					definition.commands.databasePlaintext = { executable: "npm", args: ["run", "database:plaintext"] };
+				}
 			}
 		}
 		if (logsPath) {
@@ -2873,6 +2876,7 @@ class HachiManager {
 		const capabilityByCommand = {
 			credentialsWrite: "secretEncryption",
 			databaseEncrypt: "databaseEncryption",
+			databasePlaintext: "databaseEncryption",
 			databaseVerify: "databaseEncryption",
 			deployCommands: "discordCommands",
 			deployGlobalCommands: "discordCommands",
@@ -3456,7 +3460,7 @@ class HachiManager {
 		};
 	}
 
-	async backupFleetDatabase(deploymentId) {
+	async backupFleetDatabase(deploymentId, { prune = true } = {}) {
 		if (!this.protectSecret) {
 			throw new Error("Operating-system backup-key encryption is unavailable.");
 		}
@@ -3467,7 +3471,9 @@ class HachiManager {
 			throw new Error("This bot type does not declare a database.");
 		}
 		const backupId = `backup-${crypto.randomUUID()}`;
-		const fileName = `database-${runtimeArchiveStamp()}.hgbak`;
+		// A restore can create its recovery backup in the same second as the selected
+		// source. The UUID prevents that safety copy from overwriting its own input.
+		const fileName = `database-${runtimeArchiveStamp()}-${crypto.randomUUID()}.hgbak`;
 		const key = crypto.randomBytes(32);
 		const iv = crypto.randomBytes(12);
 		let backupPath;
@@ -3509,11 +3515,13 @@ class HachiManager {
 		};
 		this.saveFleetBackupVault(vault);
 		this.log(`Encrypted fleet database backup created for ${context.deployment.name}.`, { area: "fleet-backup", backupId, deploymentId, serverId: context.server.id });
-		await this.pruneFleetBackups(deploymentId);
+		if (prune) {
+			await this.pruneFleetBackups(deploymentId);
+		}
 		return { backupId, backupPath, bytes, encrypted: true, ok: true };
 	}
 
-	async restoreFleetDatabaseBackup(deploymentId, backupId) {
+	async inspectFleetDatabaseRestore(deploymentId, backupId) {
 		if (!this.unprotectSecret) {
 			throw new Error("Operating-system backup-key decryption is unavailable.");
 		}
@@ -3525,16 +3533,18 @@ class HachiManager {
 		}
 		const databaseRelativePath = context.definition.paths?.database;
 		const key = this.unprotectSecret(record.key);
-		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		let result;
 		if (context.server.connection.type === "ssh") {
-			// Restore keeps the prior remote file beside the database for recovery.
+			// Decrypt only in memory and return two headers; inspection never writes a
+			// plaintext temporary copy to the selected remote installation.
 			// eslint-disable-next-line max-len
-			const script = "const fs=require('node:fs'),p=JSON.parse(fs.readFileSync(0,'utf8')),c=require('node:crypto'),b=fs.readFileSync(p.src);if(b.subarray(0,5).toString()!=='HGBK1')throw Error('Invalid backup');const d=c.createDecipheriv('aes-256-gcm',Buffer.from(p.key,'base64'),b.subarray(5,17));d.setAuthTag(b.subarray(17,33));const out=Buffer.concat([d.update(b.subarray(33)),d.final()]);try{fs.copyFileSync(p.dest,p.dest+'.pre-restore')}catch{}fs.writeFileSync(p.dest,out,{mode:384});";
-			await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
+			const script = "const fs=require('node:fs'),p=JSON.parse(fs.readFileSync(0,'utf8')),c=require('node:crypto'),b=fs.readFileSync(p.src);if(b.subarray(0,5).toString()!=='HGBK1')throw Error('Invalid backup');const d=c.createDecipheriv('aes-256-gcm',Buffer.from(p.key,'base64'),b.subarray(5,17));d.setAuthTag(b.subarray(17,33));const out=Buffer.concat([d.update(b.subarray(33)),d.final()]),h=Buffer.from('SQLite format 3\0');let current='missing';if(fs.existsSync(p.dest))current=fs.readFileSync(p.dest).subarray(0,16).equals(h)?'plaintext':'encrypted';console.log(JSON.stringify({backup:out.subarray(0,16).equals(h)?'plaintext':'encrypted',current}));";
+			const command = await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
 				input: JSON.stringify({ src: record.backupPath, dest: databaseRelativePath, key }),
 				log: false,
 				timeoutMs: 300000,
 			});
+			result = parseJsonText(command.stdout, null);
 		} else {
 			const buffer = fs.readFileSync(record.backupPath);
 			if (buffer.subarray(0, 5).toString() !== "HGBK1") {
@@ -3544,14 +3554,95 @@ class HachiManager {
 			decipher.setAuthTag(buffer.subarray(17, 33));
 			const restored = Buffer.concat([decipher.update(buffer.subarray(33)), decipher.final()]);
 			const destination = path.join(context.deployment.installPath, databaseRelativePath);
-			if (fileExists(destination)) {
-				fs.copyFileSync(destination, `${destination}.pre-restore`);
+			const currentHeader = fileExists(destination) ? fs.readFileSync(destination).subarray(0, 16) : null;
+			result = {
+				backup: restored.subarray(0, 16).equals(SQLITE_HEADER) ? "plaintext" : "encrypted",
+				current: currentHeader ? (currentHeader.equals(SQLITE_HEADER) ? "plaintext" : "encrypted") : "missing",
+			};
+		}
+		if (!result) {
+			throw new Error("Database restore inspection did not return a valid result.");
+		}
+		return {
+			backupId,
+			backupProtection: result.backup,
+			currentProtection: result.current,
+			disablesEncryption: result.current === "encrypted" && result.backup === "plaintext",
+		};
+	}
+
+	async writeFleetDatabaseBackupToDestination(context, record, key, databaseRelativePath) {
+		if (context.server.connection.type === "ssh") {
+			// Backup encryption keys cross the SSH boundary through stdin and the
+			// replacement leaves no decrypted temporary file on the remote server.
+			// eslint-disable-next-line max-len
+			const script = "const fs=require('node:fs'),p=JSON.parse(fs.readFileSync(0,'utf8')),c=require('node:crypto'),b=fs.readFileSync(p.src);if(b.subarray(0,5).toString()!=='HGBK1')throw Error('Invalid backup');const d=c.createDecipheriv('aes-256-gcm',Buffer.from(p.key,'base64'),b.subarray(5,17));d.setAuthTag(b.subarray(17,33));const out=Buffer.concat([d.update(b.subarray(33)),d.final()]);fs.writeFileSync(p.dest,out,{mode:384});for(const s of ['-wal','-shm','-journal'])fs.rmSync(p.dest+s,{force:true});";
+			await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
+				input: JSON.stringify({ src: record.backupPath, dest: databaseRelativePath, key }),
+				log: false,
+				timeoutMs: 300000,
+			});
+			return;
+		}
+		const buffer = fs.readFileSync(record.backupPath);
+		if (buffer.subarray(0, 5).toString() !== "HGBK1") {
+			throw new Error("Backup format is invalid.");
+		}
+		const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(key, "base64"), buffer.subarray(5, 17));
+		decipher.setAuthTag(buffer.subarray(17, 33));
+		const restored = Buffer.concat([decipher.update(buffer.subarray(33)), decipher.final()]);
+		const destination = path.join(context.deployment.installPath, databaseRelativePath);
+		fs.writeFileSync(destination, restored, { mode: 0o600 });
+		removeLocalDatabaseSidecars(destination);
+	}
+
+	async restoreFleetDatabaseBackup(deploymentId, backupId, { allowPlaintextTransition = false } = {}) {
+		if (!this.unprotectSecret) {
+			throw new Error("Operating-system backup-key decryption is unavailable.");
+		}
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
+		const record = this.getFleetBackupVault().records[backupId];
+		if (!record || record.deploymentId !== context.deployment.id || record.serverId !== context.server.id) {
+			throw new Error("Backup does not belong to this deployment and server.");
+		}
+		// Reinspect at the mutation boundary so stale renderer state cannot silently
+		// authorize an encrypted-to-plaintext transition.
+		const inspection = await this.inspectFleetDatabaseRestore(deploymentId, backupId);
+		if (inspection.disablesEncryption && !allowPlaintextTransition) {
+			throw new Error("This restore changes the database from encrypted to plaintext and requires explicit confirmation.");
+		}
+		if (inspection.disablesEncryption && !context.definition.commands?.databasePlaintext) {
+			throw new Error("This bot profile does not declare a database:plaintext adapter. Review the bot profile before restoring a plaintext backup.");
+		}
+		// Do not run retention until the selected restore has completed; a policy of
+		// one backup must not prune the very backup this operation is about to read.
+		const recovery = await this.backupFleetDatabase(deploymentId, { prune: false });
+		const recoveryRecord = this.getFleetBackupVault().records[recovery.backupId];
+		const databaseRelativePath = context.definition.paths?.database;
+		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		try {
+			await this.writeFleetDatabaseBackupToDestination(context, record, this.unprotectSecret(record.key), databaseRelativePath);
+			if (inspection.disablesEncryption) {
+				await this.runFleetDefinitionCommand(deploymentId, "databasePlaintext", { timeoutMs: 120000 });
 			}
-			fs.writeFileSync(destination, restored, { mode: 0o600 });
-			removeLocalDatabaseSidecars(destination);
+		} catch (error) {
+			if (recoveryRecord) {
+				await this.writeFleetDatabaseBackupToDestination(context, recoveryRecord, this.unprotectSecret(recoveryRecord.key), databaseRelativePath).catch(() => null);
+			}
+			throw new Error(`${error.message} The pre-restore database backup was reapplied.`);
 		}
 		this.log(`Encrypted fleet database backup restored for ${context.deployment.name}.`, { area: "fleet-backup", backupId, deploymentId });
-		return { backupId, deploymentId, ok: true, message: "Database restored. Start the deployment after reviewing its security audit." };
+		return {
+			backupId,
+			deploymentId,
+			disabledEncryption: inspection.disablesEncryption,
+			ok: true,
+			recoveryBackupId: recovery.backupId,
+			message: inspection.disablesEncryption ?
+				"Plaintext database restored and database encryption disabled. The prior encrypted database and key material were retained for recovery." :
+				"Database restored. The prior database was retained as an encrypted recovery backup.",
+		};
 	}
 
 	async encryptFleetDatabase(deploymentId) {

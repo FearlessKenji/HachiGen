@@ -3058,23 +3058,43 @@ function runDatabaseRestoreFlow() {
 			toast("No backup is available to restore.", "error", { label: "Restore database" });
 			return;
 		}
-		showConfirmModal({
-			confirmText: "Restore",
-			meta: "Database safety confirmation",
-			summary: `Restore the latest ${selectedBotName()} database backup?`,
-			title: "Restore database backup?",
-			variant: "danger",
-		}).then(confirmed => {
-			if (confirmed) {
+		runAction("Inspect database backup", () => api.inspectFleetDatabaseRestore(selectedBotId, latest.backupId), { toast: false })
+			.then(async inspection => {
+				if (!inspection) {
+					return;
+				}
+				const plaintextTransition = Boolean(inspection.disablesEncryption);
+				const confirmed = await showConfirmModal({
+					confirmText: plaintextTransition ? "Restore as Plaintext" : "Restore",
+					details: plaintextTransition ? [
+						"The selected backup is plaintext, while the current database is encrypted.",
+						"HachiGen will disable database encryption in the bot's runtime configuration after restoring it.",
+						"The current encrypted database and its key material will be retained for recovery.",
+						"Data written after the selected backup was created will be lost.",
+					] : [
+						`Backup protection: ${inspection.backupProtection}`,
+						"The current database will be retained as an encrypted recovery backup.",
+					],
+					meta: plaintextTransition ? "Encryption will be disabled" : "Database safety confirmation",
+					summary: plaintextTransition ?
+						`Restore the latest ${selectedBotName()} backup and return its database to plaintext?` :
+						`Restore the latest ${selectedBotName()} database backup?`,
+					title: plaintextTransition ? "Restore plaintext database?" : "Restore database backup?",
+					variant: "danger",
+				});
+				if (!confirmed) {
+					return;
+				}
 				runAction("Restore database", async () => {
-					const result = await api.restoreFleetDatabaseBackup(selectedBotId, latest.backupId);
+					const result = await api.restoreFleetDatabaseBackup(selectedBotId, latest.backupId, {
+						allowPlaintextTransition: plaintextTransition,
+					});
 					databaseView = null;
 					await refreshFleetOverview();
 					await refreshCurrentDatabaseViewer();
 					return result;
 				});
-			}
-		});
+			});
 		return;
 	}
 	// Let the native picker choose a backup, then use a themed confirmation

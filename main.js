@@ -956,7 +956,8 @@ function registerIpc() {
 	ipcMain.handle("manager:run-fleet-definition-command", (_event, deploymentId, commandName) => manager.runFleetDefinitionCommand(deploymentId, commandName));
 	ipcMain.handle("manager:audit-fleet-deployment-security", (_event, deploymentId) => manager.auditFleetDeploymentSecurity(deploymentId));
 	ipcMain.handle("manager:backup-fleet-database", (_event, deploymentId) => manager.backupFleetDatabase(deploymentId));
-	ipcMain.handle("manager:restore-fleet-database-backup", (_event, deploymentId, backupId) => manager.restoreFleetDatabaseBackup(deploymentId, backupId));
+	ipcMain.handle("manager:inspect-fleet-database-restore", (_event, deploymentId, backupId) => manager.inspectFleetDatabaseRestore(deploymentId, backupId));
+	ipcMain.handle("manager:restore-fleet-database-backup", (_event, deploymentId, backupId, options) => manager.restoreFleetDatabaseBackup(deploymentId, backupId, options));
 	ipcMain.handle("manager:encrypt-fleet-database", (_event, deploymentId) => manager.encryptFleetDatabase(deploymentId));
 	ipcMain.handle("manager:rotate-fleet-database-key", (_event, deploymentId) => manager.rotateFleetDatabaseKey(deploymentId));
 	ipcMain.handle("manager:rotate-fleet-backup-keys", (_event, deploymentId) => manager.rotateFleetBackupKeys(deploymentId));
