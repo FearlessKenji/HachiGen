@@ -2611,6 +2611,23 @@ function createModalCheckbox({ checked = false, description = "", id = "modalChe
 	return wrapper;
 }
 
+function createModalSelect({ id, label, options = [] } = {}) {
+	const field = document.createElement("label");
+	field.className = "field";
+	const title = document.createElement("span");
+	title.textContent = label;
+	const select = document.createElement("select");
+	select.id = id;
+	for (const option of options) {
+		const element = document.createElement("option");
+		element.value = option.value;
+		element.textContent = option.label;
+		select.append(element);
+	}
+	field.append(title, select);
+	return field;
+}
+
 function createModalButton({ action, disabled = false, id, label, variant = "secondary" }) {
 	// The shared modal footer is rebuilt each time the popup opens. Buttons use
 	// the same data-action event routing as the rest of HachiGen.
@@ -2950,12 +2967,20 @@ function showDatabaseBackupTransferModal() {
 			actions: [
 				{ action: "database-transfer-close", label: "Close", variant: "secondary" },
 				{ action: "database-transfer-backup", label: "Backup Current", variant: "info" },
-				{ action: "database-transfer-restore", disabled: !backups.length, label: "Restore Latest", variant: "warning" },
+				{ action: "database-transfer-restore", disabled: !backups.length, label: "Restore Backup", variant: "warning" },
 				{ action: "prune-fleet-backups", label: "Rotate Backups", variant: "secondary" },
 			],
 			content: [
 				createModalSummary(`Back up or restore the ${selectedBotName()} database without leaving HachiGen.`),
-				createModalDetails(["Backups are encrypted by HachiGen.", "Restore Latest uses the newest backup shown on this Database page."]),
+				createModalDetails(["Backups are encrypted by HachiGen.", "Choose the exact recovery point before restoring."]),
+				createModalSelect({
+					id: "fleetRestoreBackupSelect",
+					label: "Backup",
+					options: backups.map(backup => ({
+						label: `${formatDateTime(backup.createdAt)} — ${backup.backupId}`,
+						value: backup.backupId,
+					})),
+				}),
 			],
 			meta: `${selectedBotName()} database`,
 			title: "Backup / Transfer Database",
@@ -3051,14 +3076,14 @@ function runDatabaseBackupFlow() {
 		});
 }
 
-function runDatabaseRestoreFlow() {
+function runDatabaseRestoreFlow(requestedBackupId = "") {
 	if (selectedBotId !== HACHI_BOT_ID) {
-		const latest = fleetBackupState?.[0];
-		if (!latest) {
+		const selectedBackup = fleetBackupState?.find(backup => backup.backupId === requestedBackupId) || fleetBackupState?.[0];
+		if (!selectedBackup) {
 			toast("No backup is available to restore.", "error", { label: "Restore database" });
 			return;
 		}
-		runAction("Inspect database backup", () => api.inspectFleetDatabaseRestore(selectedBotId, latest.backupId), { toast: false })
+		runAction("Inspect database backup", () => api.inspectFleetDatabaseRestore(selectedBotId, selectedBackup.backupId), { toast: false })
 			.then(async inspection => {
 				if (!inspection) {
 					return;
@@ -3086,7 +3111,7 @@ function runDatabaseRestoreFlow() {
 					return;
 				}
 				runAction("Restore database", async () => {
-					const result = await api.restoreFleetDatabaseBackup(selectedBotId, latest.backupId, {
+					const result = await api.restoreFleetDatabaseBackup(selectedBotId, selectedBackup.backupId, {
 						allowPlaintextTransition: plaintextTransition,
 					});
 					databaseView = null;
@@ -5446,8 +5471,9 @@ function handleAction(event) {
 	}
 
 	if (action === "database-transfer-restore") {
+		const selectedBackupId = $("#fleetRestoreBackupSelect")?.value || "";
 		closeSharedModal();
-		runDatabaseRestoreFlow();
+		runDatabaseRestoreFlow(selectedBackupId);
 		return;
 	}
 
