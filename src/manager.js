@@ -2902,6 +2902,36 @@ class HachiManager {
 		);
 	}
 
+	async runFleetPlaintextDatabaseAdapter(context) {
+		this.assertFleetCapability(context, "databaseEncryption");
+		if (context.definition.commands?.databasePlaintext) {
+			return this.runFleetDefinitionCommand(context.deployment.id, "databasePlaintext", { timeoutMs: 120000 });
+		}
+		let packageJson;
+		if (context.server.connection.type === "ssh") {
+			const script = "const p=require('./package.json');process.stdout.write(JSON.stringify({available:Boolean(p.scripts&&p.scripts['database:plaintext'])}))";
+			const result = await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
+				{ log: false, timeoutMs: 30000 },
+			);
+			packageJson = parseJsonText(result.stdout, {});
+		} else {
+			packageJson = { available: Boolean(readJson(path.join(context.deployment.installPath, "package.json"), {})?.scripts?.["database:plaintext"]) };
+		}
+		if (!packageJson.available) {
+			throw new Error("The selected installation does not provide the required database:plaintext adapter.");
+		}
+		// Compatibility for profiles approved before plaintext restore was added:
+		// only this fixed package script is allowed under databaseEncryption approval.
+		return this.runFleetDeploymentCommand(
+			context,
+			{ command: "npm", args: ["run", "database:plaintext"] },
+			"npm run database:plaintext",
+			{ timeoutMs: 120000 },
+		);
+	}
+
 	async runFleetGit(context, args, options = {}) {
 		if (context.server.connection.type === "ssh") {
 			return this.runFleetRemoteCommand(
@@ -3612,9 +3642,6 @@ class HachiManager {
 		if (inspection.disablesEncryption && !allowPlaintextTransition) {
 			throw new Error("This restore changes the database from encrypted to plaintext and requires explicit confirmation.");
 		}
-		if (inspection.disablesEncryption && !context.definition.commands?.databasePlaintext) {
-			throw new Error("This bot profile does not declare a database:plaintext adapter. Review the bot profile before restoring a plaintext backup.");
-		}
 		// Do not run retention until the selected restore has completed; a policy of
 		// one backup must not prune the very backup this operation is about to read.
 		const recovery = await this.backupFleetDatabase(deploymentId, { prune: false });
@@ -3624,7 +3651,7 @@ class HachiManager {
 		try {
 			await this.writeFleetDatabaseBackupToDestination(context, record, this.unprotectSecret(record.key), databaseRelativePath);
 			if (inspection.disablesEncryption) {
-				await this.runFleetDefinitionCommand(deploymentId, "databasePlaintext", { timeoutMs: 120000 });
+				await this.runFleetPlaintextDatabaseAdapter(context);
 			}
 		} catch (error) {
 			if (recoveryRecord) {

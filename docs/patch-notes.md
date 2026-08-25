@@ -5,6 +5,7 @@ These notes are written for people running the HachiGen desktop manager. For the
 # Unreleased
 
 - Database restore now recognizes when a backup will change a bot from encrypted storage back to plaintext. HachiGen explains the change, asks for confirmation, updates the bot's runtime mode automatically, and keeps the encrypted database and key available for recovery.
+- Existing Paldeck profiles do not need to be removed and re-added for plaintext restore; HachiGen checks the selected installation for the new adapter when it is needed.
 
 - Protected Paldeck installations now show **Rotate Key** instead of **Encrypt Database**. Rotation performs a real bot-owned rekey with rollback, **Export Key Backup** works for the selected encrypted bot, and **Rotate Backups** gives every HachiGen-managed backup a new protected encryption key instead of pruning it. Plain databases continue to show the encryption action.
 - Fixed Verify on remote Paldeck replacing its Database page with Hachi's encrypted database details. External-bot actions now refresh through the selected bot and installation, so plaintext Paldeck remains reported as plaintext.

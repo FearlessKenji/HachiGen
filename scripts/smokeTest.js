@@ -1220,6 +1220,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 		"if(!fs.readFileSync(p).subarray(0,16).equals(h))throw Error('not plaintext');",
 		"fs.writeFileSync('plaintext-runtime.enabled','true');",
 	].join(""));
+	fs.writeFileSync(path.join(deploymentPath, "package.json"), JSON.stringify({ scripts: { "database:plaintext": "node plaintext.js" } }));
 	fs.writeFileSync(path.join(deploymentPath, "bot-settings.yaml"), "# retained comment\nfeature:\n  enabled: true\napiToken: smoke-secret\n");
 	childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: deploymentPath, stdio: "ignore" });
 	childProcess.execFileSync("git", ["remote", "add", "origin", "https://example.invalid/optional-bot.git"], { cwd: deploymentPath, stdio: "ignore" });
@@ -1246,7 +1247,6 @@ async function validateFleetCredentialAndBackupSecurity() {
 			capabilities: { backups: true, databaseEncryption: true, secretEncryption: true },
 			commands: {
 				credentialsWrite: { executable: "node", args: ["credentials-write.js"] },
-				databasePlaintext: { executable: "node", args: ["plaintext.js"] },
 				testStart: { executable: "node", args: ["start-test.js"] },
 			},
 		}));
