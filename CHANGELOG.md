@@ -4,6 +4,8 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Replaced the raw SQLite `file is not a database` error with an explicit Review & Reapprove instruction when an encrypted additional-bot database cannot use its changed repository-owned viewer adapter.
+
 - Fixed Fleet and Hachi runtime status parsing when PM2 prints a `[PM2]` startup banner before its JSON process list.
 
 - Added protection-aware Fleet database restores. Restoring a plaintext backup over an encrypted database now requires explicit confirmation, creates a uniquely named encrypted recovery backup, invokes the bot's approved plaintext-runtime adapter, and retains key material for rollback.

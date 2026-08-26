@@ -3281,6 +3281,17 @@ class HachiManager {
 		const approvedEncryptedViewer = context.definition.capabilities?.databaseToolConnection &&
 			context.deployment.approvedCapabilities?.databaseToolConnection &&
 			context.deployment.definitionFingerprint === context.definition.fingerprint;
+		if (!approvedEncryptedViewer && context.deployment.approvedCapabilities?.databaseToolConnection) {
+			const security = await this.auditFleetDeploymentSecurity(deploymentId);
+			if (security.database?.encryptedLikely || security.database?.plaintext === false) {
+				// Never load repository-owned connection code after its immutable profile
+				// fingerprint changes. Explain the approval boundary before the generic
+				// SQLite worker produces the misleading "file is not a database" error.
+				const botName = context.definition.displayName;
+				throw new Error(`${botName} uses an encrypted database, but its Bot Profile changed after approval. ` +
+					`Open ${botName}, then use Review & Reapprove before viewing it.`);
+			}
+		}
 		const request = approvedEncryptedViewer ?
 			{ action: "view", dbPath: databasePath, root: ".", sort, table: tableName } :
 			{ dbPath: databasePath, root: ".", sort, table: tableName };

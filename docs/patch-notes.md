@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Encrypted additional-bot databases now explain when **Review & Reapprove** is required instead of incorrectly reporting that the file is not a database.
+
 - Fixed additional-bot Dashboard status showing a JSON error when PM2 starts its background daemon while HachiGen checks the bot.
 
 - Database restore now recognizes when a backup will change a bot from encrypted storage back to plaintext. HachiGen explains the change, asks for confirmation, updates the bot's runtime mode automatically, and keeps the encrypted database and key available for recovery.
