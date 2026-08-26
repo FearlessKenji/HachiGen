@@ -1592,18 +1592,43 @@ function nodeVersionMeetsMinimum(versionText) {
 		(parsed.major === MIN_NODE_VERSION.major && parsed.minor >= MIN_NODE_VERSION.minor);
 }
 
-// PM2 sometimes prints non-JSON text around `pm2 jlist` output. Extracting the
-// array portion makes status checks more forgiving without hiding parse errors.
+// PM2 can print banners such as "[PM2] Spawning..." before `pm2 jlist`. Scan
+// balanced arrays instead of assuming the first bracket starts the JSON payload.
 function parsePm2Json(stdout) {
 	const text = String(stdout || "");
-	const start = text.indexOf("[");
-	const end = text.lastIndexOf("]");
-
-	if (start === -1 || end === -1 || end < start) {
-		return [];
+	for (let start = text.indexOf("["); start !== -1; start = text.indexOf("[", start + 1)) {
+		let depth = 0;
+		let escaped = false;
+		let quoted = false;
+		for (let index = start; index < text.length; index += 1) {
+			const character = text[index];
+			if (quoted) {
+				if (escaped) {
+					escaped = false;
+				} else if (character === "\\") {
+					escaped = true;
+				} else if (character === "\"") {
+					quoted = false;
+				}
+				continue;
+			}
+			if (character === "\"") {
+				quoted = true;
+			} else if (character === "[") {
+				depth += 1;
+			} else if (character === "]") {
+				depth -= 1;
+				if (depth === 0) {
+					const parsed = parseJsonText(text.slice(start, index + 1), null);
+					if (Array.isArray(parsed)) {
+						return parsed;
+					}
+					break;
+				}
+			}
+		}
 	}
-
-	return JSON.parse(text.slice(start, end + 1));
+	throw new Error("PM2 did not return a valid JSON process list.");
 }
 
 // Convert one `git status --porcelain` line into the object the Updates UI
@@ -10594,4 +10619,5 @@ process.stdout.write(JSON.stringify({ backupDir, copied }));
 
 module.exports = {
 	HachiManager,
+	parsePm2Json,
 };

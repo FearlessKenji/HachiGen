@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Fixed additional-bot Dashboard status showing a JSON error when PM2 starts its background daemon while HachiGen checks the bot.
+
 - Database restore now recognizes when a backup will change a bot from encrypted storage back to plaintext. HachiGen explains the change, asks for confirmation, updates the bot's runtime mode automatically, and keeps the encrypted database and key available for recovery.
 - Existing Paldeck profiles do not need to be removed and re-added for plaintext restore; HachiGen checks the selected installation for the new adapter when it is needed.
 - **Backup / Transfer** now includes a backup selector for additional bots, so a specific pre-encryption recovery point can be chosen instead of always restoring the latest backup.

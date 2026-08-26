@@ -1196,6 +1196,21 @@ async function validateUpdateCheckDeduplication() {
 	}
 }
 
+function validatePm2BannerParsing() {
+	const { parsePm2Json } = requireFresh("src", "manager.js");
+	const processList = [{ name: "Paldeck", pm2_env: { status: "online" } }];
+	const parsed = parsePm2Json(`[PM2] Spawning PM2 daemon\n[PM2] PM2 Successfully daemonized\n${JSON.stringify(processList)}\n`);
+	assert(parsed.length === 1 && parsed[0].name === "Paldeck", "PM2 startup banners should not be parsed as the JSON process list.");
+	assert(parsePm2Json("PM2 notice\n[]\n").length === 0, "An empty PM2 process list should remain a valid not-registered result.");
+	let malformedRejected = false;
+	try {
+		parsePm2Json("[PM2] banner only");
+	} catch (error) {
+		malformedRejected = error.message.includes("valid JSON process list");
+	}
+	assert(malformedRejected, "Malformed PM2 output should return a stable diagnostic instead of leaking a JSON parser exception.");
+}
+
 async function validateFleetCredentialAndBackupSecurity() {
 	const { HachiManager } = requireFresh("src", "manager.js");
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-fleet-security-"));
@@ -1530,6 +1545,7 @@ async function main() {
 	await test("generic SQLite viewer reads additional bot databases", validateGenericSqliteViewerWorker);
 	await test("logs redact secrets and hide Git plumbing", validateLoggingAndQuietState);
 	await test("update checks are deduplicated", validateUpdateCheckDeduplication);
+	await test("PM2 startup banners do not break runtime status", validatePm2BannerParsing);
 	await test("fleet credentials and database backups stay encrypted", validateFleetCredentialAndBackupSecurity);
 	await test("testing identities stay OS-protected and out of renderer state", validateTestingIdentityProtection);
 	await test("database encryption preflight verifies current package installation", validateDatabaseEncryptionPreflight);

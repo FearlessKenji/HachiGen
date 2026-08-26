@@ -4,6 +4,8 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Fixed Fleet and Hachi runtime status parsing when PM2 prints a `[PM2]` startup banner before its JSON process list.
+
 - Added protection-aware Fleet database restores. Restoring a plaintext backup over an encrypted database now requires explicit confirmation, creates a uniquely named encrypted recovery backup, invokes the bot's approved plaintext-runtime adapter, and retains key material for rollback.
 - Existing approved bot profiles can use the narrowly scoped `database:plaintext` package adapter without being removed and added again; HachiGen verifies that script in the selected installation before running it.
 - Fleet database restore now lets the user choose the exact managed backup instead of always restoring the newest entry.
