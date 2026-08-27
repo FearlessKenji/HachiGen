@@ -72,7 +72,11 @@ function discordApiRequest(method, route, token, body = null) {
 			response.on("end", () => {
 				const text = Buffer.concat(chunks).toString("utf8");
 				if ((response.statusCode || 0) < 200 || (response.statusCode || 0) >= 300) {
-					reject(new Error(`Discord API returned HTTP ${response.statusCode}: ${text.slice(0, 240)}`));
+					const details = parseJsonText(text, null);
+					const error = new Error(`Discord API returned HTTP ${response.statusCode}: ${details?.message || text.slice(0, 240)}`);
+					error.discordCode = details?.code || null;
+					error.statusCode = response.statusCode || 0;
+					reject(error);
 					return;
 				}
 				resolve(text ? parseJsonText(text, null) : null);
@@ -2460,18 +2464,44 @@ class HachiManager {
 			throw new Error(`${context.definition.displayName} does not define a test command deployment script.`);
 		}
 		const identity = this.readTestingIdentity(profileId);
-		const applicationId = encodeURIComponent(identity.values.clientId);
-		const botGuilds = await discordApiRequest("GET", "/users/@me/guilds?limit=200", identity.values.TOKEN);
-		const guildIds = new Set([
-			...identity.guildIds,
-			...(Array.isArray(botGuilds) ? botGuilds.map(guild => String(guild.id || "")).filter(Boolean) : []),
+		const [botUser, botGuilds] = await Promise.all([
+			discordApiRequest("GET", "/users/@me", identity.values.TOKEN),
+			discordApiRequest("GET", "/users/@me/guilds?limit=200", identity.values.TOKEN),
 		]);
+		const tokenApplicationId = String(botUser?.id || "");
+		if (!tokenApplicationId || tokenApplicationId !== identity.values.clientId) {
+			throw new Error(
+				`The testing identity's client ID (${identity.values.clientId || "missing"}) does not match ` +
+				`the bot token's application ID (${tokenApplicationId || "unavailable"}). Correct the testing identity before resetting commands.`,
+			);
+		}
+		const applicationId = encodeURIComponent(tokenApplicationId);
+		const guildIds = new Set(Array.isArray(botGuilds) ? botGuilds.map(guild => String(guild.id || "")).filter(Boolean) : []);
+		const inaccessibleGuildIds = identity.guildIds.filter(guildId => !guildIds.has(guildId));
+		if (inaccessibleGuildIds.length) {
+			throw new Error(
+				`The test bot does not have access to configured guild ID${inaccessibleGuildIds.length === 1 ? "" : "s"}: ` +
+				`${inaccessibleGuildIds.join(", ")}. Invite the test bot to ${inaccessibleGuildIds.length === 1 ? "that server" : "those servers"} ` +
+				"or remove the inaccessible ID from the testing identity before resetting commands.",
+			);
+		}
 
 		// Bulk-overwrite with an empty array deletes commands only for this test
 		// application. Production application IDs and tokens never enter this path.
 		await discordApiRequest("PUT", `/applications/${applicationId}/commands`, identity.values.TOKEN, []);
+		const skippedGuildIds = [];
 		for (const guildId of guildIds) {
-			await discordApiRequest("PUT", `/applications/${applicationId}/guilds/${encodeURIComponent(guildId)}/commands`, identity.values.TOKEN, []);
+			try {
+				await discordApiRequest("PUT", `/applications/${applicationId}/guilds/${encodeURIComponent(guildId)}/commands`, identity.values.TOKEN, []);
+			} catch (error) {
+				if (error.discordCode === 50001 || error.statusCode === 403) {
+					// The bot can leave a guild between discovery and cleanup. Continue with
+					// remaining guilds and report the race instead of failing the whole reset.
+					skippedGuildIds.push(guildId);
+					continue;
+				}
+				throw error;
+			}
 		}
 
 		const env = this.testingIdentityEnvironment(identity);
@@ -2498,10 +2528,19 @@ class HachiManager {
 		}
 		this.log(`Test commands reset for ${context.deployment.name} using ${identity.name}.`, {
 			area: "testing",
+			skippedGuildIds,
 			deploymentId: concreteDeploymentId,
 			profileId: identity.id,
 		});
-		return { deploymentId: concreteDeploymentId, guildCount: guildIds.size, ok: true, message: "Test application commands were deleted and redeployed." };
+		return {
+			deploymentId: concreteDeploymentId,
+			guildCount: guildIds.size,
+			ok: true,
+			skippedGuildIds,
+			message: skippedGuildIds.length ?
+				`Test commands were redeployed. ${skippedGuildIds.length} inaccessible guild cleanup ${skippedGuildIds.length === 1 ? "was" : "were"} skipped.` :
+				"Test application commands were deleted and redeployed.",
+		};
 	}
 
 	getTestingRunState() {
