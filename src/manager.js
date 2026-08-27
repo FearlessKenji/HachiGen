@@ -1988,8 +1988,8 @@ class HachiManager {
 		this.botDefinitionsDir = path.join(this.profilesDir, "Bots");
 		this.testingProfilesDir = path.join(this.profilesDir, "Testing");
 		// Tests and embedders may isolate backup writes while production keeps the
-		// user-visible Backups folder at HachiGen's root.
-		this.backupsRoot = backupsRoot || path.join(this.managerRoot, "Backups");
+		// user-visible backups folder at HachiGen's root.
+		this.backupsRoot = backupsRoot || path.join(this.managerRoot, "backups");
 		this.protectSecret = protectSecret || null;
 		this.unprotectSecret = unprotectSecret || null;
 
@@ -6584,7 +6584,7 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 			...result,
 			backupId: recovery.backupId,
 			backupPath: recovery.backupPath,
-			message: "Database encrypted. The plaintext recovery point is stored in HachiGen's shared Backups folder.",
+			message: "Database encrypted. The plaintext recovery point is stored in HachiGen's shared backups folder.",
 			database: await this.getDatabaseState(),
 		};
 	}
@@ -7390,7 +7390,7 @@ process.stdout.write(JSON.stringify({
 		await this.checkpointLocalDatabase();
 		const context = this.getFleetDeploymentContext("hachi");
 		const backup = this.createFleetBackupRecord(context, fs.readFileSync(paths.database), { reason });
-		this.logDatabase(`Hachi ${reason} backup created in the root Backups folder.`);
+		this.logDatabase(`Hachi ${reason} backup created in the root backups folder.`);
 		return { ...backup, fileName: path.basename(backup.backupPath), message: "Hachi database backup created." };
 	}
 

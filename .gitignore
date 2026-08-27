@@ -17,7 +17,7 @@ dist/
 logs/
 exports/
 manager/backups/
-Backups/
+backups/
 *.log
 npm-debug.log*
 yarn-debug.log*

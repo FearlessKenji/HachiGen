@@ -4,11 +4,13 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Standardized the root backup directory as lowercase `backups` and removed the obsolete local `manager/backups/paldeck` source after its migrated HGBK container and vault registration were validated.
+
 - Simplified managed backup names throughout Database and restore selection to a purpose-and-date format such as `pre-encryption-08-21-2026`; opaque backup IDs and HGBK filenames remain internal.
 
 - Fixed migrated pre-encryption backups appearing indistinguishable from encrypted database restore points. Backup listings now inspect the database inside the encrypted HGBK container and preserve the original legacy filename for display.
 
-- Unified Hachi and additional-bot database backups under `Backups/<Bot>/<Installation>/` at the HachiGen root. Local and remote installations now use the same OS-protected HGBK vault, retention, restore, and envelope-key rotation pathways without writing new managed backups into bot repositories.
+- Unified Hachi and additional-bot database backups under `backups/<Bot>/<Installation>/` at the HachiGen root. Local and remote installations now use the same OS-protected HGBK vault, retention, restore, and envelope-key rotation pathways without writing new managed backups into bot repositories.
 - Added rollback-safe legacy backup migration. Registered HGBK records and older Hachi/Paldeck SQLite backups are copied into the canonical profile folder, checksum-verified or encrypted into HGBK, and left at their original locations so an older build can still be restored.
 - Routed Hachi backup, restore, pull/push safety copies, encryption recovery, and key-rotation recovery through the shared backup system. Plaintext restores now update Hachi's runtime encryption mode after explicit confirmation, while transient bot-side rollback files are removed after successful encryption operations.
 
