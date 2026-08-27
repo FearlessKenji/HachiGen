@@ -4,6 +4,8 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Fixed encrypted Fleet backup restoration after a plaintext transition. New encrypted recovery points snapshot their matching bot runtime key under operating-system protection, restore the key and database together, verify keyed access before success, and roll both states back on failure. Legacy Paldeck/Hachi recovery points can use a retained conventional key file when it verifies the restored database.
+
 ## v1.2.0 - 2026-08-27
 
 - Fixed packaged backup storage resolving inside `app.asar`. Installed and portable builds now place the shared lowercase `backups` directory beside `HachiGen.exe`, while packaged smoke tests use an isolated temporary profile.

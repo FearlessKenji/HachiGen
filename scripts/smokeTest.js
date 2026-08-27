@@ -1421,10 +1421,34 @@ async function validateFleetCredentialAndBackupSecurity() {
 		);
 		const sameDayBackup = await manager.backupFleetDatabase("optional-bot");
 		assert(/backup-\d{2}-\d{2}-\d{4}-2\.hgbak$/u.test(path.basename(sameDayBackup.backupPath)), "Same-day backup filenames should receive a readable numeric suffix.");
+		const runtimeKey = "smoke-database-runtime-key";
+		const encryptedRecovery = manager.createFleetBackupRecord(
+			manager.getFleetDeploymentContext("optional-bot"),
+			Buffer.from("encrypted-looking-database"),
+			{ databaseRuntimeKey: { key: runtimeKey, source: "direct" }, reason: "pre-restore" },
+		);
+		const encryptedRecoveryRecord = manager.getFleetBackupVault().records[encryptedRecovery.backupId];
+		assert(
+			encryptedRecoveryRecord.databaseRuntimeKey &&
+			!JSON.stringify(encryptedRecoveryRecord).includes(runtimeKey) &&
+			manager.backupDatabaseRuntimeKey(encryptedRecoveryRecord).key === runtimeKey,
+			"Encrypted recovery points should retain their matching runtime key only under operating-system protection.",
+		);
+		await manager.applyFleetDatabaseRuntimeKey(
+			manager.getFleetDeploymentContext("optional-bot"),
+			manager.backupDatabaseRuntimeKey(encryptedRecoveryRecord),
+		);
+		const restoredRuntimeEnvironment = requireFresh("src", "configuration.js").parseDotEnv(path.join(deploymentPath, ".env"));
+		assert(
+			restoredRuntimeEnvironment.OPTIONAL_BOT_DB_ENCRYPTION === "encrypted" &&
+			restoredRuntimeEnvironment.OPTIONAL_BOT_DB_KEY === runtimeKey &&
+			!restoredRuntimeEnvironment.OPTIONAL_BOT_DB_KEY_FILE,
+			"Encrypted backup restore should reinstate the selected profile's matching runtime key configuration.",
+		);
 		const backupKeyBeforeRotation = manager.getFleetBackupVault().records[backup.backupId].key;
 		const backupRotation = await manager.rotateFleetBackupKeys("optional-bot");
 		assert(
-			backupRotation.rotated === 2 && manager.getFleetBackupVault().records[backup.backupId].key !== backupKeyBeforeRotation,
+			backupRotation.rotated === 3 && manager.getFleetBackupVault().records[backup.backupId].key !== backupKeyBeforeRotation,
 			"Fleet Rotate Backups should replace protected envelope keys without pruning backup records.",
 		);
 		fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), "damaged");

@@ -2073,7 +2073,7 @@ class HachiManager {
 		return candidate;
 	}
 
-	createFleetBackupRecord(context, content, { createdAt = new Date().toISOString(), legacySource = "", reason = "backup" } = {}) {
+	createFleetBackupRecord(context, content, { createdAt = new Date().toISOString(), databaseRuntimeKey = null, legacySource = "", reason = "backup" } = {}) {
 		if (!this.protectSecret) {
 			throw new Error("Operating-system backup-key encryption is unavailable.");
 		}
@@ -2090,6 +2090,9 @@ class HachiManager {
 			vault.records[backupId] = {
 				backupPath,
 				createdAt,
+				databaseRuntimeKey: databaseRuntimeKey?.key ? this.protectSecret(databaseRuntimeKey.key) : undefined,
+				databaseRuntimeKeyFile: databaseRuntimeKey?.keyFilePath || undefined,
+				databaseRuntimeKeySource: databaseRuntimeKey?.source || undefined,
 				deploymentId: context.deployment.id,
 				key: this.protectSecret(key.toString("base64")),
 				legacySource: legacySource || undefined,
@@ -3863,7 +3866,14 @@ class HachiManager {
 			}
 			content = fs.readFileSync(sourcePath);
 		}
-		const backup = this.createFleetBackupRecord(context, content, { reason });
+		let databaseRuntimeKey = null;
+		if (!content.subarray(0, 16).equals(SQLITE_HEADER)) {
+			databaseRuntimeKey = await this.readFleetDatabaseRuntimeKey(context);
+			if (!databaseRuntimeKey?.key) {
+				throw new Error("The database is encrypted, but its runtime key could not be read. HachiGen will not create an incomplete recovery point.");
+			}
+		}
+		const backup = this.createFleetBackupRecord(context, content, { databaseRuntimeKey, reason });
 		this.log(`Encrypted fleet database backup created for ${context.deployment.name}.`, { area: "fleet-backup", backupId: backup.backupId, deploymentId, serverId: context.server.id });
 		if (prune) {
 			await this.pruneFleetBackups(deploymentId);
@@ -3951,6 +3961,112 @@ class HachiManager {
 		removeLocalDatabaseSidecars(destination);
 	}
 
+	databaseRuntimeFields(context) {
+		const prefix = context.definition.id.replace(/[^a-z0-9]+/giu, "_").replace(/^_+|_+$/gu, "").toUpperCase();
+		return {
+			encryption: `${prefix}_DB_ENCRYPTION`,
+			key: `${prefix}_DB_KEY`,
+			keyFile: `${prefix}_DB_KEY_FILE`,
+		};
+	}
+
+	async readFleetDatabaseRuntimeKey(context, { allowLegacyDiscovery = false } = {}) {
+		const fields = this.databaseRuntimeFields(context);
+		if (context.server.connection.type === "ssh") {
+			const script = [
+				"const fs=require('node:fs'),os=require('node:os'),path=require('node:path');",
+				`const fields=${JSON.stringify(fields)},botId=${JSON.stringify(context.definition.id)};`,
+				"const text=fs.existsSync('.env')?fs.readFileSync('.env','utf8'):'';const env={};",
+				"for(const line of text.split(/\\r?\\n/u)){const m=line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.*)$/u);if(!m)continue;let v=m[2].trim();try{v=JSON.parse(v)}catch{}env[m[1]]=String(v)}",
+				"let key=String(env[fields.key]||'').trim(),keyFile=String(env[fields.keyFile]||'').trim(),source=key?'direct':'';",
+				"const resolve=p=>p.startsWith('~/')?path.join(os.homedir(),p.slice(2)):path.resolve(p);",
+				"if(!key&&keyFile){keyFile=resolve(keyFile);if(fs.existsSync(keyFile)){key=fs.readFileSync(keyFile,'utf8').trim();source='file'}}",
+				allowLegacyDiscovery ? "if(!key){const p=path.join(os.homedir(),'.config',botId.toLowerCase(),'db.key');if(fs.existsSync(p)){key=fs.readFileSync(p,'utf8').trim();keyFile=p;source='legacy-file'}}" : "",
+				"process.stdout.write(JSON.stringify({key:Buffer.from(key).toString('base64'),keyFilePath:keyFile,source}))",
+			].join("");
+			const result = await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
+				log: false,
+				timeoutMs: 30000,
+			});
+			const parsed = parseJsonText(result.stdout, {});
+			return { key: parsed.key ? Buffer.from(parsed.key, "base64").toString("utf8") : "", keyFilePath: parsed.keyFilePath || "", source: parsed.source || "" };
+		}
+		const env = parseDotEnv(path.join(context.deployment.installPath, ".env"));
+		let key = String(env[fields.key] || "").trim();
+		let keyFilePath = String(env[fields.keyFile] || "").trim();
+		let source = key ? "direct" : "";
+		if (!key && keyFilePath) {
+			keyFilePath = resolveLocalPath(keyFilePath, context.deployment.installPath);
+			if (fileExists(keyFilePath)) {
+				key = fs.readFileSync(keyFilePath, "utf8").trim();
+				source = "file";
+			}
+		}
+		if (!key && allowLegacyDiscovery) {
+			const profileFolder = context.definition.displayName || context.definition.id;
+			const candidates = process.platform === "win32" ?
+				[path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), profileFolder, "db.key")] :
+				[path.join(os.homedir(), ".config", context.definition.id.toLowerCase(), "db.key")];
+			keyFilePath = candidates.find(candidate => fileExists(candidate)) || "";
+			if (keyFilePath) {
+				key = fs.readFileSync(keyFilePath, "utf8").trim();
+				source = "legacy-file";
+			}
+		}
+		return { key, keyFilePath, source };
+	}
+
+	backupDatabaseRuntimeKey(record) {
+		if (!record?.databaseRuntimeKey) {
+			return null;
+		}
+		return {
+			key: this.unprotectSecret(record.databaseRuntimeKey),
+			keyFilePath: record.databaseRuntimeKeyFile || "",
+			source: record.databaseRuntimeKeySource || "direct",
+		};
+	}
+
+	async applyFleetDatabaseRuntimeKey(context, keyInfo) {
+		if (!keyInfo?.key) {
+			throw new Error("The encrypted recovery point does not include a readable database runtime key.");
+		}
+		const fields = this.databaseRuntimeFields(context);
+		const useKeyFile = Boolean(keyInfo.keyFilePath && keyInfo.source !== "direct");
+		const updates = {
+			[fields.encryption]: "encrypted",
+			[fields.key]: useKeyFile ? "" : keyInfo.key,
+			[fields.keyFile]: useKeyFile ? keyInfo.keyFilePath : "",
+		};
+		if (context.server.connection.type === "ssh") {
+			const payload = Buffer.from(JSON.stringify({ key: keyInfo.key, keyFilePath: useKeyFile ? keyInfo.keyFilePath : "", updates })).toString("base64");
+			const script = [
+				"const fs=require('node:fs'),os=require('node:os'),path=require('node:path');",
+				"const data=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8')),file='.env';",
+				"if(data.keyFilePath){const p=data.keyFilePath.startsWith('~/')?path.join(os.homedir(),data.keyFilePath.slice(2)):data.keyFilePath;",
+				"fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,data.key+'\\n',{mode:0o600})}",
+				"const text=fs.existsSync(file)?fs.readFileSync(file,'utf8'):'';",
+				"const pending=new Map(Object.entries(data.updates)),out=[];",
+				"for(const line of text.split(/\\r?\\n/u)){const m=line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=/u);",
+				"if(m&&pending.has(m[1])){out.push(m[1]+'='+JSON.stringify(pending.get(m[1])));pending.delete(m[1])}",
+				"else if(line||out.length)out.push(line)}for(const [k,v] of pending)out.push(k+'='+JSON.stringify(v));",
+				"const tmp=file+'.hachigen-'+process.pid+'.tmp';",
+				"fs.writeFileSync(tmp,out.join('\\n').replace(/\\n*$/u,'')+'\\n',{mode:0o600});fs.renameSync(tmp,file)",
+			].join("");
+			await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(payload)}`, { log: false, timeoutMs: 30000 });
+			return;
+		}
+		if (useKeyFile) {
+			ensureDir(path.dirname(keyInfo.keyFilePath));
+			fs.writeFileSync(keyInfo.keyFilePath, `${keyInfo.key}\n`, { encoding: "utf8", mode: 0o600 });
+		}
+		const envPath = path.join(context.deployment.installPath, ".env");
+		const current = fileExists(envPath) ? fs.readFileSync(envPath, "utf8") : "";
+		const temporaryPath = `${envPath}.hachigen-${process.pid}.tmp`;
+		fs.writeFileSync(temporaryPath, updateDotEnvContent(current, updates), { encoding: "utf8", mode: 0o600 });
+		fs.renameSync(temporaryPath, envPath);
+	}
+
 	async restoreFleetDatabaseBackup(deploymentId, backupId, { allowPlaintextTransition = false } = {}) {
 		if (!this.unprotectSecret) {
 			throw new Error("Operating-system backup-key decryption is unavailable.");
@@ -3967,6 +4083,16 @@ class HachiManager {
 		if (inspection.disablesEncryption && !allowPlaintextTransition) {
 			throw new Error("This restore changes the database from encrypted to plaintext and requires explicit confirmation.");
 		}
+		let restoredRuntimeKey = this.backupDatabaseRuntimeKey(record);
+		if (inspection.backupProtection === "encrypted" && !restoredRuntimeKey) {
+			// Backups made before runtime-key snapshots were introduced can still be
+			// recovered when the bot-owned default key file retained by the plaintext
+			// adapter is available. Verification below prevents accepting a wrong key.
+			restoredRuntimeKey = await this.readFleetDatabaseRuntimeKey(context, { allowLegacyDiscovery: true });
+			if (!restoredRuntimeKey?.key) {
+				throw new Error("This encrypted backup predates database-key snapshots, and its retained runtime key could not be found. The database was not changed.");
+			}
+		}
 		// Do not run retention until the selected restore has completed; a policy of
 		// one backup must not prune the very backup this operation is about to read.
 		const recovery = await this.backupFleetDatabase(deploymentId, { prune: false, reason: "pre-restore" });
@@ -3977,14 +4103,26 @@ class HachiManager {
 			await this.writeFleetDatabaseBackupToDestination(context, record, databaseRelativePath);
 			if (inspection.disablesEncryption) {
 				await this.runFleetPlaintextDatabaseAdapter(context);
+			} else if (inspection.backupProtection === "encrypted") {
+				await this.applyFleetDatabaseRuntimeKey(context, restoredRuntimeKey);
+				const verified = await this.auditFleetDeploymentSecurity(deploymentId);
+				if (!verified.ok) {
+					throw new Error(verified.database?.message || "The restored encrypted database could not be verified with its saved key.");
+				}
 			}
 		} catch (error) {
 			if (recoveryRecord) {
 				await this.writeFleetDatabaseBackupToDestination(context, recoveryRecord, databaseRelativePath).catch(() => null);
+				const recoveryContent = this.readFleetBackupContent(recoveryRecord);
+				if (recoveryContent.subarray(0, 16).equals(SQLITE_HEADER)) {
+					await this.runFleetPlaintextDatabaseAdapter(context).catch(() => null);
+				} else {
+					await this.applyFleetDatabaseRuntimeKey(context, this.backupDatabaseRuntimeKey(recoveryRecord)).catch(() => null);
+				}
 			}
 			throw new Error(`${error.message} The pre-restore database backup was reapplied.`);
 		}
-		this.log(`Encrypted fleet database backup restored for ${context.deployment.name}.`, { area: "fleet-backup", backupId, deploymentId });
+		this.log(`Fleet database backup restored for ${context.deployment.name}.`, { area: "fleet-backup", backupId, deploymentId });
 		return {
 			backupId,
 			deploymentId,
@@ -3993,7 +4131,9 @@ class HachiManager {
 			recoveryBackupId: recovery.backupId,
 			message: inspection.disablesEncryption ?
 				"Plaintext database restored and database encryption disabled. The prior encrypted database and key material were retained for recovery." :
-				"Database restored. The prior database was retained as an encrypted recovery backup.",
+				inspection.backupProtection === "encrypted" ?
+					"Encrypted database and its matching runtime key were restored and verified. The prior database was retained as a recovery backup." :
+					"Database restored. The prior database was retained as a recovery backup.",
 		};
 	}
 

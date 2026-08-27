@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Fixed restoring an encrypted Paldeck or Hachi recovery point after restoring a plaintext database. HachiGen now keeps each new encrypted backup's matching database key protected with the backup record, restores and verifies both together, and can recover older backups when their retained standard key file is still available.
+
 # v1.2.0 - 2026-08-27
 
 - Installed and portable builds now create the shared `backups` folder beside `HachiGen.exe` instead of trying to write inside the packaged application archive.
