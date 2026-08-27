@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const childProcess = require("node:child_process");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
@@ -1404,10 +1405,24 @@ async function validateFleetCredentialAndBackupSecurity() {
 			migratedBackup.databaseProtection === "plaintext" && migratedBackup.displayName === path.basename(legacyBackupPath),
 			"Managed backup listings should preserve a legacy recovery point's name and report its inner database protection.",
 		);
+		const oldSchemaPath = path.join(path.dirname(migratedRecord.backupPath), `database-${crypto.randomUUID()}.hgbak`);
+		fs.renameSync(migratedRecord.backupPath, oldSchemaPath);
+		const renameVault = manager.getFleetBackupVault();
+		renameVault.records[backup.backupId].backupPath = oldSchemaPath;
+		manager.saveFleetBackupVault(renameVault);
+		manager.renameManagedDatabaseBackups();
+		const readableRecord = manager.getFleetBackupVault().records[backup.backupId];
+		assert(
+			/^backup-\d{2}-\d{2}-\d{4}\.hgbak$/u.test(path.basename(readableRecord.backupPath)) &&
+				fs.existsSync(readableRecord.backupPath) && !fs.existsSync(oldSchemaPath),
+			"Old managed HGBK filenames should migrate to the readable purpose-and-date schema without changing backup IDs.",
+		);
+		const sameDayBackup = await manager.backupFleetDatabase("optional-bot");
+		assert(/backup-\d{2}-\d{2}-\d{4}-2\.hgbak$/u.test(path.basename(sameDayBackup.backupPath)), "Same-day backup filenames should receive a readable numeric suffix.");
 		const backupKeyBeforeRotation = manager.getFleetBackupVault().records[backup.backupId].key;
 		const backupRotation = await manager.rotateFleetBackupKeys("optional-bot");
 		assert(
-			backupRotation.rotated === 1 && manager.getFleetBackupVault().records[backup.backupId].key !== backupKeyBeforeRotation,
+			backupRotation.rotated === 2 && manager.getFleetBackupVault().records[backup.backupId].key !== backupKeyBeforeRotation,
 			"Fleet Rotate Backups should replace protected envelope keys without pruning backup records.",
 		);
 		fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), "damaged");

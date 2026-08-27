@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Backup files on disk now use the same readable names shown in HachiGen, such as `pre-encryption-08-21-2026.hgbak`. Multiple matching backups receive `-2`, `-3`, and so on without changing their restore identity. Close buttons now use a clear X icon.
+
 - After **Stop Test** finishes, **Start Test** now becomes available immediately. HachiGen waits for the test process to exit instead of leaving the page on a stale “stopping” snapshot.
 
 - Reset Test Commands now checks that the testing token and client ID belong together and that the test bot can access every configured test server. Instead of Discord's generic `Missing Access` response, HachiGen identifies the incorrect client ID or inaccessible server IDs and explains how to correct them.

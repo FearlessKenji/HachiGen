@@ -2024,6 +2024,7 @@ class HachiManager {
 		this.settings = this.loadSettings();
 		this.fleet = this.loadFleetRegistry();
 		this.migrateLegacyDatabaseBackups();
+		this.renameManagedDatabaseBackups();
 	}
 
 	backupFolderName(value, fallback = "Bot") {
@@ -2042,19 +2043,48 @@ class HachiManager {
 		return path.join(this.backupsRoot, profileName, installationName);
 	}
 
+	fleetBackupReason(record = {}) {
+		const originalName = path.basename(record.legacySource || record.backupPath || "").toLowerCase();
+		return record.reason || ["pre-encryption", "pre-key-rotation", "pre-restore", "pre-pull", "pre-push"]
+			.find(candidate => originalName.includes(candidate)) || "backup";
+	}
+
+	fleetBackupFileStem(reason, createdAt) {
+		const date = new Date(createdAt);
+		const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+		const dateLabel = [
+			String(safeDate.getMonth() + 1).padStart(2, "0"),
+			String(safeDate.getDate()).padStart(2, "0"),
+			safeDate.getFullYear(),
+		].join("-");
+		const safeReason = String(reason || "backup").toLowerCase().replace(/[^a-z0-9-]+/gu, "-").replace(/^-+|-+$/gu, "") || "backup";
+		return `${safeReason}-${dateLabel}`;
+	}
+
+	nextFleetBackupPath(context, reason, createdAt, reservedPaths = new Set()) {
+		const directory = this.getFleetBackupDir(context);
+		const stem = this.fleetBackupFileStem(reason, createdAt);
+		let suffix = 1;
+		let candidate = path.join(directory, `${stem}.hgbak`);
+		while (fileExists(candidate) || reservedPaths.has(path.normalize(candidate).toLowerCase())) {
+			suffix += 1;
+			candidate = path.join(directory, `${stem}-${suffix}.hgbak`);
+		}
+		return candidate;
+	}
+
 	createFleetBackupRecord(context, content, { createdAt = new Date().toISOString(), legacySource = "", reason = "backup" } = {}) {
 		if (!this.protectSecret) {
 			throw new Error("Operating-system backup-key encryption is unavailable.");
 		}
 		const backupId = `backup-${crypto.randomUUID()}`;
-		const fileName = `database-${runtimeArchiveStamp()}-${crypto.randomUUID()}.hgbak`;
-		const backupPath = path.join(this.getFleetBackupDir(context), fileName);
+		const backupPath = this.nextFleetBackupPath(context, reason, createdAt);
 		const key = crypto.randomBytes(32);
 		const iv = crypto.randomBytes(12);
 		const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
 		const encrypted = Buffer.concat([cipher.update(content), cipher.final()]);
 		ensureDir(path.dirname(backupPath));
-		fs.writeFileSync(backupPath, Buffer.concat([Buffer.from("HGBK1"), iv, cipher.getAuthTag(), encrypted]), { mode: 0o600 });
+		fs.writeFileSync(backupPath, Buffer.concat([Buffer.from("HGBK1"), iv, cipher.getAuthTag(), encrypted]), { flag: "wx", mode: 0o600 });
 		try {
 			const vault = this.getFleetBackupVault();
 			vault.records[backupId] = {
@@ -2142,6 +2172,64 @@ class HachiManager {
 				});
 				vault = this.getFleetBackupVault();
 			}
+		}
+	}
+
+	renameManagedDatabaseBackups() {
+		const vault = this.getFleetBackupVault();
+		const moves = [];
+		const reservedPaths = new Set();
+		const records = Object.entries(vault.records)
+			.sort(([, left], [, right]) => String(left.createdAt).localeCompare(String(right.createdAt)));
+		for (const [backupId, record] of records) {
+			const deployment = this.fleet.deployments.find(item => item.id === record.deploymentId);
+			if (!deployment || !fileExists(record.backupPath)) {
+				continue;
+			}
+			const context = this.getFleetDeploymentContext(deployment.id);
+			const canonicalRoot = this.getFleetBackupDir(context);
+			if (!isPathInside(canonicalRoot, record.backupPath)) {
+				continue;
+			}
+			const reason = this.fleetBackupReason(record);
+			const expectedStem = this.fleetBackupFileStem(reason, record.createdAt);
+			const currentStem = path.basename(record.backupPath, path.extname(record.backupPath));
+			if (currentStem === expectedStem || currentStem.startsWith(`${expectedStem}-`) && /^\d+$/u.test(currentStem.slice(expectedStem.length + 1))) {
+				reservedPaths.add(path.normalize(record.backupPath).toLowerCase());
+				record.reason = reason;
+				continue;
+			}
+			const destination = this.nextFleetBackupPath(context, reason, record.createdAt, reservedPaths);
+			reservedPaths.add(path.normalize(destination).toLowerCase());
+			moves.push({ backupId, destination, source: record.backupPath });
+		}
+		if (!moves.length) {
+			return;
+		}
+		try {
+			for (const move of moves) {
+				fs.renameSync(move.source, move.destination);
+				vault.records[move.backupId].backupPath = move.destination;
+				vault.records[move.backupId].reason = this.fleetBackupReason(vault.records[move.backupId]);
+			}
+			this.saveFleetBackupVault(vault);
+		} catch (error) {
+			// Roll file moves back if the vault cannot be committed; a record must
+			// never point at a name that was only partially migrated.
+			let rollbackError = null;
+			for (const move of [...moves].reverse()) {
+				if (fileExists(move.destination) && !fileExists(move.source)) {
+					try {
+						fs.renameSync(move.destination, move.source);
+					} catch (moveError) {
+						rollbackError ||= moveError;
+					}
+				}
+			}
+			if (rollbackError) {
+				throw new Error(`Backup rename failed: ${error.message}. Rollback also failed: ${rollbackError.message}`);
+			}
+			this.event("error", `Managed backup names were left unchanged: ${error.message}`, { area: "fleet-backup" });
 		}
 	}
 
@@ -4131,8 +4219,7 @@ class HachiManager {
 			.map(([backupId, record]) => {
 				let databaseProtection = "unknown";
 				const originalName = path.basename(record.legacySource || record.backupPath);
-				const reason = record.reason || ["pre-encryption", "pre-key-rotation", "pre-restore", "pre-pull", "pre-push"]
-					.find(candidate => originalName.toLowerCase().includes(candidate)) || "backup";
+				const reason = this.fleetBackupReason(record);
 				try {
 					const content = this.readFleetBackupContent(record);
 					databaseProtection = content.subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER) ? "plaintext" : "encrypted";

@@ -4,6 +4,8 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Renamed managed HGBK files to the same purpose-and-date schema shown in the interface, with numeric suffixes for same-day collisions. Startup migration updates vault paths transactionally while preserving internal backup IDs, and all modal Close actions now use an X icon instead of the stop-style square.
+
 - Fixed testing controls remaining stuck in the stopping state. Stop Test now waits for the child process's final exit state, escalates to a forced stop after the graceful timeout, and returns the completed run snapshot so Start Test becomes available immediately.
 
 - Hardened shared test-command reset against Discord `50001 Missing Access`. HachiGen now verifies that the saved client ID belongs to the supplied test token, validates configured guild IDs before deleting anything, identifies inaccessible guilds in actionable errors, and tolerates a guild disappearing between discovery and cleanup.
