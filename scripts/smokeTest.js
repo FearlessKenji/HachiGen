@@ -1402,8 +1402,8 @@ async function validateFleetCredentialAndBackupSecurity() {
 			"Legacy backup migration should verify a canonical copy and retain the rollback-compatible original.",
 		);
 		assert(
-			migratedBackup.databaseProtection === "plaintext" && migratedBackup.displayName === path.basename(legacyBackupPath),
-			"Managed backup listings should preserve a legacy recovery point's name and report its inner database protection.",
+			migratedBackup.databaseProtection === "plaintext" && migratedBackup.displayName === path.basename(migratedRecord.backupPath, ".hgbak"),
+			"Managed backup listings should use the stored filename and report its inner database protection.",
 		);
 		const oldSchemaPath = path.join(path.dirname(migratedRecord.backupPath), `database-${crypto.randomUUID()}.hgbak`);
 		fs.renameSync(migratedRecord.backupPath, oldSchemaPath);

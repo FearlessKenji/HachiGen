@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- HachiGen now displays each backup's actual stored name throughout the interface instead of independently reconstructing a label from its metadata.
+
 - Backup files on disk now use the same readable names shown in HachiGen, such as `pre-encryption-08-21-2026.hgbak`. Multiple matching backups receive `-2`, `-3`, and so on without changing their restore identity. Close buttons now use a clear X icon.
 
 - After **Stop Test** finishes, **Start Test** now becomes available immediately. HachiGen waits for the test process to exit instead of leaving the page on a stale “stopping” snapshot.

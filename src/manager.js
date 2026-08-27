@@ -4218,7 +4218,6 @@ class HachiManager {
 			.filter(([, record]) => record.deploymentId === concreteDeploymentId)
 			.map(([backupId, record]) => {
 				let databaseProtection = "unknown";
-				const originalName = path.basename(record.legacySource || record.backupPath);
 				const reason = this.fleetBackupReason(record);
 				try {
 					const content = this.readFleetBackupContent(record);
@@ -4232,7 +4231,7 @@ class HachiManager {
 					backupPath: record.backupPath,
 					createdAt: record.createdAt,
 					databaseProtection,
-					displayName: originalName,
+					displayName: path.basename(record.backupPath, path.extname(record.backupPath)),
 					encrypted: true,
 					reason,
 					serverId: record.serverId,

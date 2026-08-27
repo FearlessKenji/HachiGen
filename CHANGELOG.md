@@ -4,6 +4,8 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Removed renderer-side backup-name interpretation. Backup lists, summaries, and restore selectors now display the authoritative managed filename from the vault, minus its `.hgbak` extension.
+
 - Renamed managed HGBK files to the same purpose-and-date schema shown in the interface, with numeric suffixes for same-day collisions. Startup migration updates vault paths transactionally while preserving internal backup IDs, and all modal Close actions now use an X icon instead of the stop-style square.
 
 - Fixed testing controls remaining stuck in the stopping state. Stop Test now waits for the child process's final exit state, escalates to a forced stop after the graceful timeout, and returns the completed run snapshot so Start Test becomes available immediately.

@@ -1257,7 +1257,7 @@ function renderExternalDatabaseBackups(backups = []) {
 		const item = document.createElement("li");
 		item.className = "update-list-row";
 		const file = document.createElement("code");
-		file.textContent = backupSimpleName(backup);
+		file.textContent = backup.displayName || backup.backupId;
 		const detail = document.createElement("span");
 		const protection = backup.databaseProtection === "plaintext" ? "Plaintext database" :
 			backup.databaseProtection === "encrypted" ? "Encrypted database" : "Protection unknown";
@@ -2227,16 +2227,6 @@ function formatDateTime(value) {
 	return new Date(value).toLocaleString();
 }
 
-function backupSimpleName(backup = {}) {
-	const date = new Date(backup.createdAt || backup.modifiedAt);
-	const readableDate = Number.isNaN(date.getTime()) ? "unknown-date" : [
-		String(date.getMonth() + 1).padStart(2, "0"),
-		String(date.getDate()).padStart(2, "0"),
-		date.getFullYear(),
-	].join("-");
-	return `${backup.reason || "backup"}-${readableDate}`;
-}
-
 function describeProtectionItem(item) {
 	if (!item) {
 		return "Not checked";
@@ -2388,7 +2378,7 @@ function renderDatabase(database) {
 	setText(
 		"#databaseBackupSummary",
 		latest ?
-			`${pluralize(backups.length, "backup")} available. Latest: ${backupSimpleName(latest)}. ${backupSummary}` :
+			`${pluralize(backups.length, "backup")} available. Latest: ${latest.displayName || latest.file}. ${backupSummary}` :
 			"No database backups found.",
 	);
 
@@ -2399,7 +2389,7 @@ function renderDatabase(database) {
 		item.className = "update-list-row";
 
 		const file = document.createElement("code");
-		file.textContent = backupSimpleName(backup);
+		file.textContent = backup.displayName || backup.file;
 		item.append(file);
 
 		const detail = document.createElement("span");
@@ -3002,7 +2992,7 @@ function showDatabaseBackupTransferModal() {
 					id: "fleetRestoreBackupSelect",
 					label: "Backup",
 					options: backups.map(backup => ({
-						label: `${backupSimpleName(backup)} — ${backup.databaseProtection || "unknown"}`,
+						label: `${backup.displayName || backup.backupId} — ${backup.databaseProtection || "unknown"}`,
 						value: backup.backupId,
 					})),
 				}),
@@ -3061,7 +3051,7 @@ function showDatabaseBackupTransferModal() {
 				id: "fleetRestoreBackupSelect",
 				label: "Backup",
 				options: fleetBackupState.map(backup => ({
-					label: `${backupSimpleName(backup)} — ${backup.databaseProtection || backup.protection?.status || "unknown"}`,
+					label: `${backup.displayName || backup.file || backup.backupId} — ${backup.databaseProtection || backup.protection?.status || "unknown"}`,
 					value: backup.backupId,
 				})),
 			}),
