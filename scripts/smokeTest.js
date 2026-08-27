@@ -1445,10 +1445,22 @@ async function validateFleetCredentialAndBackupSecurity() {
 			!restoredRuntimeEnvironment.OPTIONAL_BOT_DB_KEY_FILE,
 			"Encrypted backup restore should reinstate the selected profile's matching runtime key configuration.",
 		);
+		const productionDatabasePath = path.join(deploymentPath, "data", "bot.sqlite");
+		const productionDatabaseBeforeOverride = fs.readFileSync(productionDatabasePath);
+		fs.writeFileSync(productionDatabasePath, "orphaned-encrypted-database");
+		const overrideBackup = await manager.backupFleetDatabase("optional-bot", {
+			databaseRuntimeKeyOverride: { key: runtimeKey, source: "direct" },
+			reason: "orphaned-encrypted-recovery",
+		});
+		fs.writeFileSync(productionDatabasePath, productionDatabaseBeforeOverride);
+		assert(
+			manager.backupDatabaseRuntimeKey(manager.getFleetBackupVault().records[overrideBackup.backupId]).key === runtimeKey,
+			"A verified retained key should allow an orphaned encrypted database to receive a complete safety backup.",
+		);
 		const backupKeyBeforeRotation = manager.getFleetBackupVault().records[backup.backupId].key;
 		const backupRotation = await manager.rotateFleetBackupKeys("optional-bot");
 		assert(
-			backupRotation.rotated === 3 && manager.getFleetBackupVault().records[backup.backupId].key !== backupKeyBeforeRotation,
+			backupRotation.rotated === 4 && manager.getFleetBackupVault().records[backup.backupId].key !== backupKeyBeforeRotation,
 			"Fleet Rotate Backups should replace protected envelope keys without pruning backup records.",
 		);
 		fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), "damaged");

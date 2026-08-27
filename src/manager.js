@@ -3835,7 +3835,7 @@ class HachiManager {
 		};
 	}
 
-	async backupFleetDatabase(deploymentId, { prune = true, reason = "backup" } = {}) {
+	async backupFleetDatabase(deploymentId, { databaseRuntimeKeyOverride = null, prune = true, reason = "backup" } = {}) {
 		if (!this.protectSecret) {
 			throw new Error("Operating-system backup-key encryption is unavailable.");
 		}
@@ -3868,7 +3868,7 @@ class HachiManager {
 		}
 		let databaseRuntimeKey = null;
 		if (!content.subarray(0, 16).equals(SQLITE_HEADER)) {
-			databaseRuntimeKey = await this.readFleetDatabaseRuntimeKey(context);
+			databaseRuntimeKey = databaseRuntimeKeyOverride || await this.readFleetDatabaseRuntimeKey(context);
 			if (!databaseRuntimeKey?.key) {
 				throw new Error("The database is encrypted, but its runtime key could not be read. HachiGen will not create an incomplete recovery point.");
 			}
@@ -4027,6 +4027,22 @@ class HachiManager {
 		};
 	}
 
+	async verifyFleetDatabaseRuntimeKey(context, keyInfo) {
+		if (!keyInfo?.key || !context.definition.commands?.databaseVerify) {
+			return false;
+		}
+		const fields = this.databaseRuntimeFields(context);
+		const result = await this.runFleetDefinitionCommand(context.deployment.id, "databaseVerify", {
+			env: {
+				[fields.encryption]: "encrypted",
+				[fields.key]: keyInfo.key,
+				[fields.keyFile]: "",
+			},
+			timeoutMs: 120000,
+		});
+		return result.code === 0;
+	}
+
 	async applyFleetDatabaseRuntimeKey(context, keyInfo) {
 		if (!keyInfo?.key) {
 			throw new Error("The encrypted recovery point does not include a readable database runtime key.");
@@ -4093,9 +4109,32 @@ class HachiManager {
 				throw new Error("This encrypted backup predates database-key snapshots, and its retained runtime key could not be found. The database was not changed.");
 			}
 		}
+		let currentRuntimeKey = null;
+		if (inspection.currentProtection === "encrypted") {
+			currentRuntimeKey = await this.readFleetDatabaseRuntimeKey(context);
+			if (!currentRuntimeKey?.key) {
+				const recoveryCandidates = [
+					restoredRuntimeKey,
+					await this.readFleetDatabaseRuntimeKey(context, { allowLegacyDiscovery: true }),
+				].filter(candidate => candidate?.key);
+				for (const candidate of recoveryCandidates) {
+					if (await this.verifyFleetDatabaseRuntimeKey(context, candidate).catch(() => false)) {
+						currentRuntimeKey = candidate;
+						break;
+					}
+				}
+				if (!currentRuntimeKey?.key) {
+					throw new Error("The current database is encrypted without an active key, and none of the retained recovery keys can open it. The database was not changed.");
+				}
+			}
+		}
 		// Do not run retention until the selected restore has completed; a policy of
 		// one backup must not prune the very backup this operation is about to read.
-		const recovery = await this.backupFleetDatabase(deploymentId, { prune: false, reason: "pre-restore" });
+		const recovery = await this.backupFleetDatabase(deploymentId, {
+			databaseRuntimeKeyOverride: currentRuntimeKey,
+			prune: false,
+			reason: "pre-restore",
+		});
 		const recoveryRecord = this.getFleetBackupVault().records[recovery.backupId];
 		const databaseRelativePath = context.definition.paths?.database;
 		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);

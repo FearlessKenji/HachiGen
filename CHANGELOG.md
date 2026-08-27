@@ -5,6 +5,7 @@ Notable changes to HachiGen are documented here.
 ## Unreleased
 
 - Fixed encrypted Fleet backup restoration after a plaintext transition. New encrypted recovery points snapshot their matching bot runtime key under operating-system protection, restore the key and database together, verify keyed access before success, and roll both states back on failure. Legacy Paldeck/Hachi recovery points can use a retained conventional key file when it verifies the restored database.
+- Fixed recovery when an earlier interrupted restore has already left encrypted database bytes without active runtime-key configuration. HachiGen now verifies retained keys without persisting them, uses the verified key to make a complete safety backup, and then restores the selected database and key atomically.
 
 ## v1.2.0 - 2026-08-27
 
