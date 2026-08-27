@@ -590,9 +590,11 @@ function validateRendererAndMenuWiring() {
 	assert(
 		mainSource.includes("render-process-gone") &&
 			mainSource.includes("HACHIGEN_UI_SMOKE_RESULT") &&
+			mainSource.includes('app.setPath("userData"') &&
+			mainSource.includes('path.join(path.dirname(process.execPath), "backups")') &&
 			rendererSource.includes("window.__runHachiGenUiSmoke") &&
-			readSource("scripts", "packagedUiSmoke.js").includes("renderer workflow checks"),
-		"Packaged UI smoke should execute renderer workflow checks and log renderer recovery events.",
+			readSource("scripts", "packagedUiSmoke.js").includes("HACHIGEN_UI_SMOKE_USER_DATA"),
+		"Packaged UI smoke should isolate user data, execute renderer workflow checks, and keep production backups outside app.asar.",
 	);
 	assert(!indexSource.includes("Install Latest") && !rendererSource.includes("Install Latest") && !managerSource.includes("Install Latest"), "HachiGen update UI should not show the old Install Latest action.");
 	assert(managerSource.includes("Updates are available: Version") && managerSource.includes("HachiGen is up to date."), "HachiGen update status copy should stay concise.");

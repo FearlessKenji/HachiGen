@@ -4,6 +4,12 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+# v1.2.0 - 2026-08-27
+
+- Installed and portable builds now create the shared `backups` folder beside `HachiGen.exe` instead of trying to write inside the packaged application archive.
+- Packaged startup testing now uses an isolated temporary profile, does not depend on the test computer's GPU stack, and cannot interfere with your real HachiGen settings or protected keys.
+- Renderer shutdown and recovery logging no longer produce secondary errors if a window closes while a background event is being delivered.
+
 - HachiGen now displays each backup's actual stored name throughout the interface instead of independently reconstructing a label from its metadata.
 
 - Backup files on disk now use the same readable names shown in HachiGen, such as `pre-encryption-08-21-2026.hgbak`. Multiple matching backups receive `-2`, `-3`, and so on without changing their restore identity. Close buttons now use a clear X icon.

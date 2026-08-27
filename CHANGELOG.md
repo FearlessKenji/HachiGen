@@ -4,6 +4,12 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+## v1.2.0 - 2026-08-27
+
+- Fixed packaged backup storage resolving inside `app.asar`. Installed and portable builds now place the shared lowercase `backups` directory beside `HachiGen.exe`, while packaged smoke tests use an isolated temporary profile.
+- Made packaged UI verification independent of host GPU drivers and compositing support, and prevented backend events from racing a renderer frame that has already been disposed.
+- Updated HachiGen package and installer metadata to version `1.2.0`.
+
 - Removed renderer-side backup-name interpretation. Backup lists, summaries, and restore selectors now display the authoritative managed filename from the vault, minus its `.hgbak` extension.
 
 - Renamed managed HGBK files to the same purpose-and-date schema shown in the interface, with numeric suffixes for same-day collisions. Startup migration updates vault paths transactionally while preserving internal backup IDs, and all modal Close actions now use an X icon instead of the stop-style square.

@@ -37,15 +37,36 @@ let manager;
 let clipboardClearTimer = null;
 let windowStateSaveTimer = null;
 const UI_SMOKE_MODE = process.env.HACHIGEN_UI_SMOKE === "1";
+const UI_SMOKE_USER_DATA = process.env.HACHIGEN_UI_SMOKE_USER_DATA || "";
+
+if (UI_SMOKE_MODE && UI_SMOKE_USER_DATA) {
+	// Packaged smoke runs must not contend with or decrypt the real HachiGen
+	// profile. Set the isolated Chromium/Electron profile before taking the
+	// single-instance lock or accessing safeStorage.
+	app.setPath("userData", path.resolve(UI_SMOKE_USER_DATA));
+}
+
+if (UI_SMOKE_MODE) {
+	// Headless release verification should not depend on a host GPU driver.
+	app.disableHardwareAcceleration();
+}
 
 // Forward backend activity to the window when it is available. Backend actions
 // can outlive a particular BrowserWindow, so this checks before sending.
 function sendEvent(event) {
-	if (mainWindow && !mainWindow.isDestroyed()) {
+	if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
 		// This is the opposite direction from ipcMain.handle(): manager.js emits a
 		// live event, main.js sends it to the renderer, and preload.js exposes a
 		// subscription helper as window.hachiGen.onEvent(...).
-		mainWindow.webContents.send("manager:event", event);
+		try {
+			mainWindow.webContents.send("manager:event", event);
+		} catch (error) {
+			// A renderer can be disposed between the guards above and send(). The
+			// recovery logger remains authoritative, so this event can be dropped.
+			if (!/disposed|destroyed/iu.test(error.message || "")) {
+				throw error;
+			}
+		}
 	}
 }
 
@@ -1200,9 +1221,13 @@ if (!singleInstanceLock) {
 		const defaultInstallPath = app.isPackaged ?
 			path.dirname(process.execPath) :
 			resolveDevelopmentInstallPath();
+		const backupsRoot = UI_SMOKE_MODE ?
+			path.join(app.getPath("userData"), "backups") :
+			app.isPackaged ? path.join(path.dirname(process.execPath), "backups") : path.join(__dirname, "backups");
 
 		manager = new HachiManager({
 			managerRoot: __dirname,
+			backupsRoot,
 			defaultInstallPath,
 			userDataPath: app.getPath("userData"),
 			sendEvent,
