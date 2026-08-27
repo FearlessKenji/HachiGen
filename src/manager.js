@@ -1972,7 +1972,7 @@ function shouldShowShellEntryInUi(entry) {
 }
 
 class HachiManager {
-	constructor({ managerRoot, defaultInstallPath, userDataPath, sendEvent, protectSecret, unprotectSecret }) {
+	constructor({ managerRoot, defaultInstallPath, userDataPath, backupsRoot, sendEvent, protectSecret, unprotectSecret }) {
 		// managerRoot is the manager folder in development and the bundled app
 		// location after packaging. defaultInstallPath is passed from main.js so
 		// packaged HachiGen can default to the folder beside HachiGen.exe.
@@ -1987,6 +1987,9 @@ class HachiManager {
 		this.profilesDir = path.join(this.userDataPath, "Profiles");
 		this.botDefinitionsDir = path.join(this.profilesDir, "Bots");
 		this.testingProfilesDir = path.join(this.profilesDir, "Testing");
+		// Tests and embedders may isolate backup writes while production keeps the
+		// user-visible Backups folder at HachiGen's root.
+		this.backupsRoot = backupsRoot || path.join(this.managerRoot, "Backups");
 		this.protectSecret = protectSecret || null;
 		this.unprotectSecret = unprotectSecret || null;
 
@@ -2016,6 +2019,122 @@ class HachiManager {
 		this.migrateLegacyBotProfiles();
 		this.settings = this.loadSettings();
 		this.fleet = this.loadFleetRegistry();
+		this.migrateLegacyDatabaseBackups();
+	}
+
+	backupFolderName(value, fallback = "Bot") {
+		const safeCharacters = [...String(value || "")].map(character =>
+			character.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(character) ? "-" : character,
+		);
+		const cleaned = safeCharacters.join("").trim().replace(/[. ]+$/gu, "");
+		return cleaned || fallback;
+	}
+
+	getFleetBackupDir(context) {
+		const profileName = this.backupFolderName(context.definition.displayName, context.definition.id);
+		const installationName = context.server.connection.type === "ssh" ?
+			`Remote-${this.backupFolderName(context.server.name, context.server.id)}` :
+			"Local";
+		return path.join(this.backupsRoot, profileName, installationName);
+	}
+
+	createFleetBackupRecord(context, content, { createdAt = new Date().toISOString(), legacySource = "" } = {}) {
+		if (!this.protectSecret) {
+			throw new Error("Operating-system backup-key encryption is unavailable.");
+		}
+		const backupId = `backup-${crypto.randomUUID()}`;
+		const fileName = `database-${runtimeArchiveStamp()}-${crypto.randomUUID()}.hgbak`;
+		const backupPath = path.join(this.getFleetBackupDir(context), fileName);
+		const key = crypto.randomBytes(32);
+		const iv = crypto.randomBytes(12);
+		const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+		const encrypted = Buffer.concat([cipher.update(content), cipher.final()]);
+		ensureDir(path.dirname(backupPath));
+		fs.writeFileSync(backupPath, Buffer.concat([Buffer.from("HGBK1"), iv, cipher.getAuthTag(), encrypted]), { mode: 0o600 });
+		try {
+			const vault = this.getFleetBackupVault();
+			vault.records[backupId] = {
+				backupPath,
+				createdAt,
+				deploymentId: context.deployment.id,
+				key: this.protectSecret(key.toString("base64")),
+				legacySource: legacySource || undefined,
+				serverId: context.server.id,
+			};
+			this.saveFleetBackupVault(vault);
+		} catch (error) {
+			// A backup without its protected envelope key is unusable, so remove the
+			// just-created container if the vault commit cannot complete.
+			fs.rmSync(backupPath, { force: true });
+			throw error;
+		}
+		return { backupId, backupPath, bytes: encrypted.length + 33, encrypted: true, ok: true };
+	}
+
+	migrateLegacyDatabaseBackups() {
+		ensureDir(this.backupsRoot);
+		if (!this.protectSecret || !this.unprotectSecret) {
+			return;
+		}
+		let vault = this.getFleetBackupVault();
+		let vaultChanged = false;
+		for (const record of Object.values(vault.records)) {
+			const deployment = this.fleet.deployments.find(item => item.id === record.deploymentId);
+			if (!deployment || !path.isAbsolute(record.backupPath || "") || !fileExists(record.backupPath)) {
+				continue;
+			}
+			const context = this.getFleetDeploymentContext(deployment.id);
+			const canonicalRoot = this.getFleetBackupDir(context);
+			if (isPathInside(canonicalRoot, record.backupPath)) {
+				continue;
+			}
+			let destination = path.join(canonicalRoot, path.basename(record.backupPath));
+			ensureDir(canonicalRoot);
+			if (fileExists(destination) && sha256File(record.backupPath) !== sha256File(destination)) {
+				destination = path.join(canonicalRoot, `${path.parse(record.backupPath).name}-${crypto.randomUUID()}.hgbak`);
+			}
+			if (!fileExists(destination)) {
+				fs.copyFileSync(record.backupPath, destination, fs.constants.COPYFILE_EXCL);
+			}
+			if (sha256File(record.backupPath) !== sha256File(destination)) {
+				throw new Error(`Backup migration verification failed for ${path.basename(record.backupPath)}.`);
+			}
+			record.legacySource ||= record.backupPath;
+			record.backupPath = destination;
+			vaultChanged = true;
+		}
+		if (vaultChanged) {
+			this.saveFleetBackupVault(vault);
+			vault = this.getFleetBackupVault();
+		}
+		const imports = [];
+		const localHachi = this.fleet.deployments.find(item => item.botTypeId === "hachi" && item.serverId === "local");
+		if (localHachi) {
+			imports.push({ deployment: localHachi, directory: path.join(localHachi.installPath, "manager", "backups", "database") });
+		}
+		const localPaldeck = this.fleet.deployments.find(item => item.botTypeId === "paldeck" && item.serverId === "local");
+		if (localPaldeck) {
+			imports.push({ deployment: localPaldeck, directory: path.join(this.managerRoot, "manager", "backups", "paldeck") });
+		}
+		for (const candidate of imports) {
+			if (!fileExists(candidate.directory)) {
+				continue;
+			}
+			const context = this.getFleetDeploymentContext(candidate.deployment.id);
+			for (const entry of fs.readdirSync(candidate.directory, { withFileTypes: true })) {
+				const sourcePath = path.join(candidate.directory, entry.name);
+				if (!entry.isFile() || !/\.sqlite$/iu.test(entry.name) ||
+					Object.values(vault.records).some(record => record.legacySource === sourcePath)) {
+					continue;
+				}
+				const stats = fs.statSync(sourcePath);
+				this.createFleetBackupRecord(context, fs.readFileSync(sourcePath), {
+					createdAt: stats.mtime.toISOString(),
+					legacySource: sourcePath,
+				});
+				vault = this.getFleetBackupVault();
+			}
+		}
 	}
 
 	migrateLegacyBotProfiles() {
@@ -2929,6 +3048,37 @@ class HachiManager {
 
 	async runFleetPlaintextDatabaseAdapter(context) {
 		this.assertFleetCapability(context, "databaseEncryption");
+		if (context.definition.id === "hachi") {
+			const updates = {
+				HACHI_DB_ENCRYPTION: "",
+				HACHI_DB_KEY: "",
+				HACHI_DB_KEY_FILE: "",
+			};
+			if (context.server.connection.type === "ssh") {
+				const script = [
+					"const fs=require('node:fs');",
+					`const updates=${JSON.stringify(updates)};`,
+					"const file='.env',text=fs.existsSync(file)?fs.readFileSync(file,'utf8'):'';",
+					"const pending=new Map(Object.entries(updates)),lines=text.split(/\\r?\\n/u),out=[];",
+					"for(const line of lines){const match=line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=/u);",
+					"if(match&&pending.has(match[1])){out.push(match[1]+'='+JSON.stringify(pending.get(match[1])));",
+					"pending.delete(match[1]);}else if(line||out.length)out.push(line);}",
+					"for(const [key,value] of pending)out.push(key+'='+JSON.stringify(value));",
+					"const temporary=file+'.hachigen-'+process.pid+'.tmp';fs.writeFileSync(temporary,out.join('\\n').replace(/\\n*$/u,'')+'\\n',{mode:0o600});fs.renameSync(temporary,file);",
+				].join("");
+				return this.runFleetRemoteCommand(
+					context.server,
+					`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
+					{ log: false, timeoutMs: 30000 },
+				);
+			}
+			const envPath = path.join(context.deployment.installPath, ".env");
+			const current = fileExists(envPath) ? fs.readFileSync(envPath, "utf8") : "";
+			const temporaryPath = `${envPath}.hachigen-${process.pid}.tmp`;
+			fs.writeFileSync(temporaryPath, updateDotEnvContent(current, updates), { encoding: "utf8", mode: 0o600 });
+			fs.renameSync(temporaryPath, envPath);
+			return { ok: true, message: "Hachi database encryption was disabled for the restored plaintext database." };
+		}
 		if (context.definition.commands?.databasePlaintext) {
 			return this.runFleetDefinitionCommand(context.deployment.id, "databasePlaintext", { timeoutMs: 120000 });
 		}
@@ -3536,55 +3686,33 @@ class HachiManager {
 		if (!databaseRelativePath) {
 			throw new Error("This bot type does not declare a database.");
 		}
-		const backupId = `backup-${crypto.randomUUID()}`;
-		// A restore can create its recovery backup in the same second as the selected
-		// source. The UUID prevents that safety copy from overwriting its own input.
-		const fileName = `database-${runtimeArchiveStamp()}-${crypto.randomUUID()}.hgbak`;
-		const key = crypto.randomBytes(32);
-		const iv = crypto.randomBytes(12);
-		let backupPath;
-		let bytes;
+		let content;
 		if (context.server.connection.type === "ssh") {
-			backupPath = `manager/backups/fleet/${fileName}`;
-			// The remote worker receives its key through stdin, never argv.
-			// eslint-disable-next-line max-len
-			const script = "const fs=require('node:fs'),p=JSON.parse(fs.readFileSync(0,'utf8')),c=require('node:crypto');fs.mkdirSync(require('node:path').dirname(p.out),{recursive:true});const d=fs.readFileSync(p.src),iv=Buffer.from(p.iv,'base64'),k=Buffer.from(p.key,'base64'),x=c.createCipheriv('aes-256-gcm',k,iv),e=Buffer.concat([x.update(d),x.final()]),tag=x.getAuthTag();fs.writeFileSync(p.out,Buffer.concat([Buffer.from('HGBK1'),iv,tag,e]),{mode:384});console.log(JSON.stringify({bytes:e.length+33,path:p.out}))";
+			// Remote database bytes are encoded only for SSH transport, then encrypted
+			// into the same local HGBK store used by every other installation.
+			const script = "const fs=require('node:fs'),p=process.argv[1];if(!fs.existsSync(p))throw Error('Declared database was not found.');process.stdout.write(fs.readFileSync(p).toString('base64'))";
 			const result = await this.runFleetRemoteCommand(
 				context.server,
-				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
-				{ input: JSON.stringify({ src: databaseRelativePath, out: backupPath, key: key.toString("base64"), iv: iv.toString("base64") }), log: false, timeoutMs: 300000 },
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(databaseRelativePath)}`,
+				{ log: false, timeoutMs: 300000 },
 			);
-			const parsed = parseJsonText(result.stdout, null);
-			if (!parsed) {
-				throw new Error("Remote encrypted backup did not return metadata.");
+			content = Buffer.from(String(result.stdout || "").trim(), "base64");
+			if (!content.length) {
+				throw new Error("Remote database backup returned no data.");
 			}
-			bytes = parsed.bytes;
 		} else {
 			const sourcePath = path.join(context.deployment.installPath, databaseRelativePath);
-			backupPath = path.join(context.deployment.installPath, "manager", "backups", "fleet", fileName);
 			if (!isPathInside(context.deployment.installPath, sourcePath) || !fileExists(sourcePath)) {
 				throw new Error("Declared database was not found.");
 			}
-			ensureDir(path.dirname(backupPath));
-			const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-			const encrypted = Buffer.concat([cipher.update(fs.readFileSync(sourcePath)), cipher.final()]);
-			fs.writeFileSync(backupPath, Buffer.concat([Buffer.from("HGBK1"), iv, cipher.getAuthTag(), encrypted]), { mode: 0o600 });
-			bytes = encrypted.length + 33;
+			content = fs.readFileSync(sourcePath);
 		}
-		const vault = this.getFleetBackupVault();
-		vault.records[backupId] = {
-			backupPath,
-			createdAt: new Date().toISOString(),
-			deploymentId: context.deployment.id,
-			key: this.protectSecret(key.toString("base64")),
-			serverId: context.server.id,
-		};
-		this.saveFleetBackupVault(vault);
-		this.log(`Encrypted fleet database backup created for ${context.deployment.name}.`, { area: "fleet-backup", backupId, deploymentId, serverId: context.server.id });
+		const backup = this.createFleetBackupRecord(context, content);
+		this.log(`Encrypted fleet database backup created for ${context.deployment.name}.`, { area: "fleet-backup", backupId: backup.backupId, deploymentId, serverId: context.server.id });
 		if (prune) {
 			await this.pruneFleetBackups(deploymentId);
 		}
-		return { backupId, backupPath, bytes, encrypted: true, ok: true };
+		return backup;
 	}
 
 	async inspectFleetDatabaseRestore(deploymentId, backupId) {
@@ -3598,27 +3726,27 @@ class HachiManager {
 			throw new Error("Backup does not belong to this deployment and server.");
 		}
 		const databaseRelativePath = context.definition.paths?.database;
-		const key = this.unprotectSecret(record.key);
+		const restored = this.readFleetBackupContent(record);
 		let result;
 		if (context.server.connection.type === "ssh") {
-			// Decrypt only in memory and return two headers; inspection never writes a
-			// plaintext temporary copy to the selected remote installation.
-			// eslint-disable-next-line max-len
-			const script = "const fs=require('node:fs'),p=JSON.parse(fs.readFileSync(0,'utf8')),c=require('node:crypto'),b=fs.readFileSync(p.src);if(b.subarray(0,5).toString()!=='HGBK1')throw Error('Invalid backup');const d=c.createDecipheriv('aes-256-gcm',Buffer.from(p.key,'base64'),b.subarray(5,17));d.setAuthTag(b.subarray(17,33));const out=Buffer.concat([d.update(b.subarray(33)),d.final()]),h=Buffer.from('SQLite format 3\0');let current='missing';if(fs.existsSync(p.dest))current=fs.readFileSync(p.dest).subarray(0,16).equals(h)?'plaintext':'encrypted';console.log(JSON.stringify({backup:out.subarray(0,16).equals(h)?'plaintext':'encrypted',current}));";
-			const command = await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
-				input: JSON.stringify({ src: record.backupPath, dest: databaseRelativePath, key }),
+			const script = [
+				"const fs=require('node:fs'),p=process.argv[1],h=Buffer.from('SQLite format 3\\0');",
+				"let current='missing';",
+				"if(fs.existsSync(p))current=fs.readFileSync(p).subarray(0,16).equals(h)?'plaintext':'encrypted';",
+				"console.log(JSON.stringify({current}));",
+			].join("");
+			const command = await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(databaseRelativePath)}`, {
 				log: false,
 				timeoutMs: 300000,
 			});
-			result = parseJsonText(command.stdout, null);
+			const remote = parseJsonText(command.stdout, null);
+			result = remote ?
+				{
+					backup: restored.subarray(0, 16).equals(SQLITE_HEADER) ? "plaintext" : "encrypted",
+					current: remote.current,
+				} :
+				null;
 		} else {
-			const buffer = fs.readFileSync(record.backupPath);
-			if (buffer.subarray(0, 5).toString() !== "HGBK1") {
-				throw new Error("Backup format is invalid.");
-			}
-			const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(key, "base64"), buffer.subarray(5, 17));
-			decipher.setAuthTag(buffer.subarray(17, 33));
-			const restored = Buffer.concat([decipher.update(buffer.subarray(33)), decipher.final()]);
 			const destination = path.join(context.deployment.installPath, databaseRelativePath);
 			const currentHeader = fileExists(destination) ? fs.readFileSync(destination).subarray(0, 16) : null;
 			result = {
@@ -3637,26 +3765,31 @@ class HachiManager {
 		};
 	}
 
-	async writeFleetDatabaseBackupToDestination(context, record, key, databaseRelativePath) {
+	readFleetBackupContent(record) {
+		const buffer = fs.readFileSync(record.backupPath);
+		if (buffer.subarray(0, 5).toString() !== "HGBK1") {
+			throw new Error("Backup format is invalid.");
+		}
+		const key = this.unprotectSecret(record.key);
+		const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(key, "base64"), buffer.subarray(5, 17));
+		decipher.setAuthTag(buffer.subarray(17, 33));
+		return Buffer.concat([decipher.update(buffer.subarray(33)), decipher.final()]);
+	}
+
+	async writeFleetDatabaseBackupToDestination(context, record, databaseRelativePath) {
+		const restored = this.readFleetBackupContent(record);
 		if (context.server.connection.type === "ssh") {
-			// Backup encryption keys cross the SSH boundary through stdin and the
-			// replacement leaves no decrypted temporary file on the remote server.
+			// The decrypted bytes cross the authenticated SSH process through stdin and
+			// are written directly to the destination without a remote backup copy.
 			// eslint-disable-next-line max-len
-			const script = "const fs=require('node:fs'),p=JSON.parse(fs.readFileSync(0,'utf8')),c=require('node:crypto'),b=fs.readFileSync(p.src);if(b.subarray(0,5).toString()!=='HGBK1')throw Error('Invalid backup');const d=c.createDecipheriv('aes-256-gcm',Buffer.from(p.key,'base64'),b.subarray(5,17));d.setAuthTag(b.subarray(17,33));const out=Buffer.concat([d.update(b.subarray(33)),d.final()]);fs.writeFileSync(p.dest,out,{mode:384});for(const s of ['-wal','-shm','-journal'])fs.rmSync(p.dest+s,{force:true});";
-			await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
-				input: JSON.stringify({ src: record.backupPath, dest: databaseRelativePath, key }),
+			const script = "const fs=require('node:fs'),p=process.argv[1],b=Buffer.from(fs.readFileSync(0,'utf8'),'base64');fs.writeFileSync(p,b,{mode:384});for(const s of ['-wal','-shm','-journal'])fs.rmSync(p+s,{force:true});";
+			await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(databaseRelativePath)}`, {
+				input: restored.toString("base64"),
 				log: false,
 				timeoutMs: 300000,
 			});
 			return;
 		}
-		const buffer = fs.readFileSync(record.backupPath);
-		if (buffer.subarray(0, 5).toString() !== "HGBK1") {
-			throw new Error("Backup format is invalid.");
-		}
-		const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(key, "base64"), buffer.subarray(5, 17));
-		decipher.setAuthTag(buffer.subarray(17, 33));
-		const restored = Buffer.concat([decipher.update(buffer.subarray(33)), decipher.final()]);
 		const destination = path.join(context.deployment.installPath, databaseRelativePath);
 		fs.writeFileSync(destination, restored, { mode: 0o600 });
 		removeLocalDatabaseSidecars(destination);
@@ -3685,13 +3818,13 @@ class HachiManager {
 		const databaseRelativePath = context.definition.paths?.database;
 		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
 		try {
-			await this.writeFleetDatabaseBackupToDestination(context, record, this.unprotectSecret(record.key), databaseRelativePath);
+			await this.writeFleetDatabaseBackupToDestination(context, record, databaseRelativePath);
 			if (inspection.disablesEncryption) {
 				await this.runFleetPlaintextDatabaseAdapter(context);
 			}
 		} catch (error) {
 			if (recoveryRecord) {
-				await this.writeFleetDatabaseBackupToDestination(context, recoveryRecord, this.unprotectSecret(recoveryRecord.key), databaseRelativePath).catch(() => null);
+				await this.writeFleetDatabaseBackupToDestination(context, recoveryRecord, databaseRelativePath).catch(() => null);
 			}
 			throw new Error(`${error.message} The pre-restore database backup was reapplied.`);
 		}
@@ -3793,55 +3926,26 @@ class HachiManager {
 			const newKey = crypto.randomBytes(32).toString("base64");
 			const iv = crypto.randomBytes(12);
 			const temporaryPath = `${record.backupPath}.key-rotation-${crypto.randomUUID()}.tmp`;
-			if (context.server.connection.type === "ssh") {
-				// Re-encrypt into a temporary sibling; the vault key changes before the
-				// atomic rename so a failed commit can restore the prior protected key.
-				const script = [
-					"const fs=require('fs'),c=require('crypto'),p=JSON.parse(fs.readFileSync(0,'utf8')),b=fs.readFileSync(p.src);",
-					"if(b.subarray(0,5).toString()!=='HGBK1')throw Error('Invalid backup');",
-					"const d=c.createDecipheriv('aes-256-gcm',Buffer.from(p.oldKey,'base64'),b.subarray(5,17));",
-					"d.setAuthTag(b.subarray(17,33));",
-					"const raw=Buffer.concat([d.update(b.subarray(33)),d.final()]),iv=Buffer.from(p.iv,'base64');",
-					"const x=c.createCipheriv('aes-256-gcm',Buffer.from(p.newKey,'base64'),iv);",
-					"const enc=Buffer.concat([x.update(raw),x.final()]);",
-					"fs.writeFileSync(p.dest,Buffer.concat([Buffer.from('HGBK1'),iv,x.getAuthTag(),enc]),{mode:384});",
-				].join("");
-				await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
-					input: JSON.stringify({ src: record.backupPath, dest: temporaryPath, oldKey, newKey, iv: iv.toString("base64") }),
-					log: false,
-					timeoutMs: 300000,
-				});
-			} else {
-				const source = fs.readFileSync(record.backupPath);
-				if (source.subarray(0, 5).toString() !== "HGBK1") {
-					throw new Error("Backup format is invalid.");
-				}
-				const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(oldKey, "base64"), source.subarray(5, 17));
-				decipher.setAuthTag(source.subarray(17, 33));
-				const raw = Buffer.concat([decipher.update(source.subarray(33)), decipher.final()]);
-				const cipher = crypto.createCipheriv("aes-256-gcm", Buffer.from(newKey, "base64"), iv);
-				const encrypted = Buffer.concat([cipher.update(raw), cipher.final()]);
-				fs.writeFileSync(temporaryPath, Buffer.concat([Buffer.from("HGBK1"), iv, cipher.getAuthTag(), encrypted]), { mode: 0o600 });
+			const source = fs.readFileSync(record.backupPath);
+			if (source.subarray(0, 5).toString() !== "HGBK1") {
+				throw new Error("Backup format is invalid.");
 			}
+			const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(oldKey, "base64"), source.subarray(5, 17));
+			decipher.setAuthTag(source.subarray(17, 33));
+			const raw = Buffer.concat([decipher.update(source.subarray(33)), decipher.final()]);
+			const cipher = crypto.createCipheriv("aes-256-gcm", Buffer.from(newKey, "base64"), iv);
+			const encrypted = Buffer.concat([cipher.update(raw), cipher.final()]);
+			fs.writeFileSync(temporaryPath, Buffer.concat([Buffer.from("HGBK1"), iv, cipher.getAuthTag(), encrypted]), { mode: 0o600 });
 			record.key = this.protectSecret(newKey);
 			try {
 				this.saveFleetBackupVault(vault);
-				if (context.server.connection.type === "ssh") {
-					const commitCommand = `cd ${quoteRemotePath(context.deployment.installPath)} && mv ${quotePosix(temporaryPath)} ${quotePosix(record.backupPath)}`;
-					await this.runFleetRemoteCommand(context.server, commitCommand, { log: false, timeoutMs: 30000 });
-				} else {
-					fs.copyFileSync(temporaryPath, record.backupPath);
-					fs.rmSync(temporaryPath, { force: true });
-				}
+				fs.copyFileSync(temporaryPath, record.backupPath);
+				fs.rmSync(temporaryPath, { force: true });
 				rotated += 1;
 			} catch (error) {
 				record.key = oldProtectedKey;
 				this.saveFleetBackupVault(vault);
-				if (context.server.connection.type === "ssh") {
-					await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && rm -f ${quotePosix(temporaryPath)}`, { allowFailure: true, log: false, timeoutMs: 30000 });
-				} else {
-					fs.rmSync(temporaryPath, { force: true });
-				}
+				fs.rmSync(temporaryPath, { force: true });
 				throw error;
 			}
 		}
@@ -3968,21 +4072,12 @@ class HachiManager {
 		if (!expired.length) {
 			return { deploymentId, deleted: 0, kept: backups.length, ok: true };
 		}
-		if (context.server.connection.type === "ssh") {
-			// eslint-disable-next-line max-len
-			const script = "const fs=require('node:fs'),p=JSON.parse(fs.readFileSync(0,'utf8'));for(const f of p.files){const n=f.replace(/\\\\/g,'/');if(!n.startsWith('manager/backups/fleet/')||n.includes('..'))throw Error('Unsafe backup path');fs.rmSync(n,{force:true})}";
-			await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
-				input: JSON.stringify({ files: expired.map(item => item.backupPath) }),
-				log: false,
-			});
-		} else {
-			const backupRoot = path.join(context.deployment.installPath, "manager", "backups", "fleet");
-			for (const backup of expired) {
-				if (!isPathInside(backupRoot, backup.backupPath)) {
-					throw new Error("Refused to prune a backup outside the deployment backup directory.");
-				}
-				fs.rmSync(backup.backupPath, { force: true });
+		const backupRoot = this.getFleetBackupDir(context);
+		for (const backup of expired) {
+			if (!isPathInside(backupRoot, backup.backupPath)) {
+				throw new Error("Refused to prune a backup outside the selected HachiGen backup folder.");
 			}
+			fs.rmSync(backup.backupPath, { force: true });
 		}
 		const vault = this.getFleetBackupVault();
 		for (const backup of expired) {
@@ -4971,10 +5066,7 @@ class HachiManager {
 	}
 
 	getDatabaseBackupDir() {
-		// Database backups live inside the selected install folder so they stay
-		// with the Hachi instance they protect, while .gitignore keeps them local.
-		// Example: <Hachi>/manager/backups/database/database-2026-06-21.sqlite
-		return path.join(this.getInstallPath(), "manager", "backups", "database");
+		return this.getFleetBackupDir(this.getFleetDeploymentContext("hachi"));
 	}
 
 	getRuntimeExportsDir() {
@@ -5001,41 +5093,29 @@ class HachiManager {
 	}
 
 	getDatabaseBackups() {
-		// Return backup metadata for the Database tab without mutating files.
-		// Sorting newest-first makes the most likely restore target appear first.
-		const backupDir = this.getDatabaseBackupDir();
-
-		if (!fileExists(backupDir)) {
-			return [];
-		}
-
-		const dbEncryption = loadDatabaseEncryptionModule(this.getInstallPath());
-		const currentKey = this.readLocalDatabaseProtectionKeyIfAvailable();
-
-		return fs.readdirSync(backupDir)
-			.filter(file => /\.sqlite$/i.test(file))
-			.map(file => {
-				const fullPath = path.join(backupDir, file);
-				const stats = fs.statSync(fullPath);
-				const protection = dbEncryption?.describeDatabaseBackup ?
-					dbEncryption.describeDatabaseBackup({
-						backupPath: fullPath,
-						currentKey,
-						root: this.getInstallPath(),
-						verifyWithCurrentKey: false,
-					}) :
-					null;
-
-				return {
-					file,
-					fullPath,
-					modifiedAt: stats.mtime.toISOString(),
-					protection,
-					size: stats.size,
-					sizeLabel: formatFileSize(stats.size),
-				};
-			})
-			.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+		return this.listFleetBackups("hachi").map(backup => {
+			const record = this.getFleetBackupVault().records[backup.backupId];
+			let content = Buffer.alloc(0);
+			try {
+				content = this.readFleetBackupContent(record);
+			} catch {
+				content = Buffer.alloc(0);
+			}
+			const plaintext = content.subarray(0, 16).equals(SQLITE_HEADER);
+			return {
+				...backup,
+				file: path.basename(backup.backupPath),
+				fullPath: backup.backupPath,
+				modifiedAt: backup.createdAt,
+				protection: {
+					detail: plaintext ? "Backup contains a plain SQLite database." : "Backup contains an encrypted database.",
+					label: plaintext ? "Plain Backup" : "Encrypted",
+					status: plaintext ? "plaintext" : "encrypted",
+				},
+				size: content.length,
+				sizeLabel: formatFileSize(content.length),
+			};
+		});
 	}
 
 	getLocalDatabaseKeyLocation() {
@@ -6158,6 +6238,22 @@ try {
 		};
 	}
 
+	async removeNativeTransientDatabaseBackup(backupPath) {
+		if (!backupPath) {
+			return;
+		}
+		if (this.getRuntimeTarget() === "remote") {
+			const script = "const fs=require('node:fs');for(const file of [process.argv[1],process.argv[1]+'.meta.json'])fs.rmSync(file,{force:true});";
+			await this.runRemoteHachiCommand(`node -e ${quotePosix(script)} ${quotePosix(backupPath)}`, { log: false, timeoutMs: 30000 });
+			return;
+		}
+		if (!isPathInside(this.getInstallPath(), backupPath)) {
+			throw new Error("Refusing to remove a transient database backup outside Hachi's installation.");
+		}
+		fs.rmSync(backupPath, { force: true });
+		fs.rmSync(`${backupPath}.meta.json`, { force: true });
+	}
+
 	databaseEncryptionConversionScript(backupFileName) {
 		return `
 const fs = require("node:fs");
@@ -6419,7 +6515,10 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 		}
 
 		this.logDatabase("checkpointing database before conversion.");
-		await this.checkpointLocalDatabase();
+		await this.checkpointDatabase();
+		// Keep the durable recovery point in HachiGen's shared backup vault. The
+		// bot-side script still uses a short-lived raw copy for atomic rollback.
+		const recovery = await this.backupFleetDatabase("hachi", { prune: false });
 
 		const script = this.databaseEncryptionConversionScript(backupFileName);
 		this.logDatabase(`creating encrypted database and recovery backup ${backupFileName}.`);
@@ -6438,6 +6537,7 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 		if (!result.ok) {
 			throw new Error(result.error || "Database encryption conversion failed.");
 		}
+		await this.removeNativeTransientDatabaseBackup(result.backupPath);
 
 		this.setDatabaseCipherTestState({
 			checkedAt: new Date().toISOString(),
@@ -6456,6 +6556,9 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 
 		return {
 			...result,
+			backupId: recovery.backupId,
+			backupPath: recovery.backupPath,
+			message: "Database encrypted. The plaintext recovery point is stored in HachiGen's shared Backups folder.",
 			database: await this.getDatabaseState(),
 		};
 	}
@@ -6728,6 +6831,7 @@ async function verifyRuntimeOpen(newKey, keyFilePath) {
 
 		this.logDatabase(`starting key rotation${rotateBackups ? " with backup rotation" : ""}.`);
 		this.logDatabase(`planned safety backup: ${backupFileName}.`);
+		const recovery = await this.backupFleetDatabase("hachi", { prune: false });
 		const script = this.databaseKeyRotationScript(backupFileName, { rotateBackups });
 		const result = this.getRuntimeTarget() === "remote" ?
 			await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
@@ -6744,6 +6848,7 @@ async function verifyRuntimeOpen(newKey, keyFilePath) {
 		if (!result.ok) {
 			throw new Error(result.error || "Database key rotation failed.");
 		}
+		await this.removeNativeTransientDatabaseBackup(result.backupPath);
 
 		this.setDatabaseCipherTestState({
 			checkedAt: new Date().toISOString(),
@@ -6760,6 +6865,8 @@ async function verifyRuntimeOpen(newKey, keyFilePath) {
 
 		return {
 			...result,
+			backupId: recovery.backupId,
+			backupPath: recovery.backupPath,
 			database: await this.getDatabaseState(),
 		};
 	}
@@ -6998,16 +7105,13 @@ process.stdout.write(JSON.stringify({
 			log: false,
 			timeoutMs: 20000,
 		});
-		const backups = (state.backups || []).map(backup => ({
-			...backup,
-			sizeLabel: formatFileSize(backup.size),
-		}));
+		const backups = this.getDatabaseBackups();
 		const exists = Boolean(state.database);
 		const audit = await this.auditDatabase({ quiet: true });
 
 		return {
 			audit,
-			backupDir: state.backupDir || "manager/backups/database",
+			backupDir: this.getDatabaseBackupDir(),
 			backups,
 			exists,
 			latestBackup: backups[0] || null,
@@ -7244,156 +7348,31 @@ process.stdout.write(JSON.stringify({
 	}
 
 	async backupDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false } = {}) {
-		if (this.getRuntimeTarget() === "remote") {
-			return this.backupRemoteDatabase({ fileName, overwrite });
-		}
-
-		return this.backupLocalDatabase({ fileName, overwrite });
+		void fileName;
+		void overwrite;
+		await this.checkpointDatabase();
+		return this.backupFleetDatabase("hachi");
 	}
 
 	async backupLocalDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false, reason = "manual" } = {}) {
-		this.logDatabase(`${overwrite ? "overwriting" : "creating"} backup ${fileName}.`);
-		// Copy the current database into the dated backup folder. Manual backups
-		// use a date-only filename so HachiGen can ask before replacing today's.
-		// Automatic safety backups pass unique timestamped filenames.
+		void fileName;
+		void overwrite;
 		const paths = this.getPaths();
-
 		if (!fileExists(paths.database)) {
 			throw new Error("No Hachi database exists to back up.");
 		}
-
-		const backupDir = this.getDatabaseBackupDir();
-		const backupPath = path.join(backupDir, fileName);
-
-		ensureDir(backupDir);
-
-		if (fileExists(backupPath) && !overwrite) {
-			return {
-				backupPath,
-				fileName,
-				needsOverwrite: true,
-				ok: false,
-				message: `${fileName} already exists.`,
-			};
-		}
-
-		await this.checkpointDatabase();
-		fs.copyFileSync(paths.database, backupPath);
-		const dbEncryption = loadDatabaseEncryptionModule(paths.root);
-		let protection = null;
-
-		if (dbEncryption?.writeDatabaseBackupMetadata) {
-			try {
-				const key = this.readLocalDatabaseProtectionKeyIfAvailable();
-				const metadata = dbEncryption.writeDatabaseBackupMetadata({
-					backupPath,
-					key,
-					reason,
-					root: paths.root,
-					source: "local",
-				});
-				protection = dbEncryption.describeDatabaseBackup({
-					backupPath,
-					currentKey: key,
-					root: paths.root,
-					verifyWithCurrentKey: false,
-				});
-				protection.metadata = metadata;
-			} catch (error) {
-				this.logDatabase(`backup metadata skipped: ${error.message || error}`);
-			}
-		}
-		this.logDatabase(`backup created: ${displayPath(backupPath, paths.root)}.`, {
-			fileName,
-			protection: protection?.label || "",
-		});
-
-		return {
-			backupPath,
-			fileName,
-			ok: true,
-			protection,
-			message: `Database backup created: ${fileName}`,
-		};
+		await this.checkpointLocalDatabase();
+		const context = this.getFleetDeploymentContext("hachi");
+		const backup = this.createFleetBackupRecord(context, fs.readFileSync(paths.database));
+		this.logDatabase(`Hachi ${reason} backup created in the root Backups folder.`);
+		return { ...backup, fileName: path.basename(backup.backupPath), message: "Hachi database backup created." };
 	}
 
 	async backupRemoteDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false } = {}) {
-		const safeFileName = path.basename(fileName);
-		this.logDatabase(`${overwrite ? "overwriting" : "creating"} remote backup ${safeFileName}.`);
-		const script = `
-const fs = require("node:fs");
-const path = require("node:path");
-const databasePath = "database/database.sqlite";
-const backupDir = "manager/backups/database";
-const fileName = ${JSON.stringify(safeFileName)};
-const overwrite = ${overwrite ? "true" : "false"};
-const backupPath = path.posix.join(backupDir, fileName);
-let dbEncryption = null;
-let currentKey = "";
-try {
-	dbEncryption = require("./database/dbEncryption.js");
-	currentKey = dbEncryption.readDatabaseKeyFromEnvFile(path.resolve(".env"), process.env, process.cwd()).key || "";
-} catch {
-	dbEncryption = null;
-}
-if (!fs.existsSync(databasePath)) {
-	process.stdout.write(JSON.stringify({ ok: false, error: "No remote Hachi database exists to back up." }));
-	process.exit(0);
-}
-fs.mkdirSync(backupDir, { recursive: true });
-if (fs.existsSync(backupPath) && !overwrite) {
-	process.stdout.write(JSON.stringify({
-		backupPath,
-		fileName,
-		needsOverwrite: true,
-		ok: false,
-		message: fileName + " already exists.",
-	}));
-	process.exit(0);
-}
-fs.copyFileSync(databasePath, backupPath);
-let protection = null;
-if (dbEncryption && dbEncryption.writeDatabaseBackupMetadata) {
-	try {
-		const metadata = dbEncryption.writeDatabaseBackupMetadata({
-			backupPath,
-			key: currentKey,
-			reason: "manual",
-			root: process.cwd(),
-			source: "remote",
-		});
-		protection = dbEncryption.describeDatabaseBackup({ backupPath, currentKey, root: process.cwd() });
-		protection.metadata = metadata;
-	} catch {
-		protection = null;
-	}
-}
-process.stdout.write(JSON.stringify({
-	backupPath,
-	fileName,
-	ok: true,
-	protection,
-	message: "Remote database backup created: " + fileName,
-}));
-`;
-
+		void fileName;
+		void overwrite;
 		await this.checkpointRemoteDatabase();
-		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
-			fallbackMessage: "Remote database backup did not return valid JSON.",
-			timeoutMs: 300000,
-		});
-
-		if (result.error) {
-			throw new Error(result.error);
-		}
-
-		if (result.ok) {
-			this.logDatabase(`remote backup created: ${result.fileName || safeFileName}.`, {
-				protection: result.protection?.label || "",
-			});
-		}
-
-		return result;
+		return this.backupFleetDatabase("hachi");
 	}
 
 	async readRemoteDatabaseFile() {

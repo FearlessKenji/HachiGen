@@ -883,8 +883,11 @@ async function validateDatabaseTransferOperations() {
 		fs.writeFileSync(`${databasePath}-wal`, "stale-wal", "utf8");
 
 		const manager = new HachiManager({
+			backupsRoot: path.join(tempDir, "Backups"),
 			defaultInstallPath: root,
 			managerRoot: projectRoot,
+			protectSecret: value => Buffer.from(String(value)).toString("base64"),
+			unprotectSecret: value => Buffer.from(String(value), "base64").toString("utf8"),
 			userDataPath: path.join(tempDir, "userData"),
 		});
 		manager.checkpointLocalDatabase = async () => undefined;
@@ -912,13 +915,13 @@ async function validateDatabaseTransferOperations() {
 		};
 
 		const pulled = await manager.pullRemoteDatabase();
-		const backupFiles = fs.readdirSync(manager.getDatabaseBackupDir()).filter(file => file.startsWith("database-pre-pull-"));
+		const backups = manager.listFleetBackups("hachi");
 
 		assert(pulled.ok === true, "Pull database operation did not report success.");
 		assert(fs.readFileSync(databasePath, "utf8") === "remote-db", "Pull database did not replace the local database.");
 		assert(!fs.existsSync(`${databasePath}-wal`), "Pull database should remove stale local WAL sidecars.");
-		assert(backupFiles.length === 1, "Pull database should create one local safety backup.");
-		assert(fs.readFileSync(path.join(manager.getDatabaseBackupDir(), backupFiles[0]), "utf8") === "local-before", "Pull database safety backup should contain the replaced database.");
+		assert(backups.length === 1, "Pull database should create one local safety backup.");
+		assert(manager.readFleetBackupContent(manager.getFleetBackupVault().records[backups[0].backupId]).toString("utf8") === "local-before", "Pull database safety backup should contain the replaced database.");
 		assert(pulled.transform === "rekeyed", "Pull database should report key-aware transfer preparation.");
 		assert(localCipherTest?.ok === true, "Pull database should record destination key verification.");
 
@@ -1245,6 +1248,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 	let manager = null;
 	try {
 		manager = new HachiManager({
+			backupsRoot: path.join(tempDir, "Backups"),
 			defaultInstallPath: tempDir,
 			managerRoot: projectRoot,
 			userDataPath,
@@ -1375,6 +1379,26 @@ async function validateFleetCredentialAndBackupSecurity() {
 		assert(audit.database.status === "noncompliant", "Plain SQLite database should be reported as noncompliant.");
 		const backup = await manager.backupFleetDatabase("optional-bot");
 		assert(fs.readFileSync(backup.backupPath).subarray(0, 5).toString() === "HGBK1", "Fleet database backup should use encrypted HGBK1 format.");
+		assert(
+			backup.backupPath.startsWith(path.join(tempDir, "Backups", "Optional Bot", "Local")) &&
+				!backup.backupPath.startsWith(deploymentPath),
+			"Managed backups should use the root profile folder instead of modifying a bot repository.",
+		);
+		const legacyBackupPath = path.join(deploymentPath, "manager", "backups", "fleet", path.basename(backup.backupPath));
+		fs.mkdirSync(path.dirname(legacyBackupPath), { recursive: true });
+		fs.copyFileSync(backup.backupPath, legacyBackupPath);
+		const migrationVault = manager.getFleetBackupVault();
+		migrationVault.records[backup.backupId].backupPath = legacyBackupPath;
+		manager.saveFleetBackupVault(migrationVault);
+		fs.rmSync(backup.backupPath);
+		manager.migrateLegacyDatabaseBackups();
+		const migratedRecord = manager.getFleetBackupVault().records[backup.backupId];
+		assert(
+			migratedRecord.backupPath.startsWith(path.join(tempDir, "Backups", "Optional Bot", "Local")) &&
+				fs.existsSync(migratedRecord.backupPath) && fs.existsSync(legacyBackupPath) &&
+				fs.readFileSync(migratedRecord.backupPath).equals(fs.readFileSync(legacyBackupPath)),
+			"Legacy backup migration should verify a canonical copy and retain the rollback-compatible original.",
+		);
 		const backupKeyBeforeRotation = manager.getFleetBackupVault().records[backup.backupId].key;
 		const backupRotation = await manager.rotateFleetBackupKeys("optional-bot");
 		assert(

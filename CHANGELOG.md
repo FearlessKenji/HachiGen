@@ -4,6 +4,10 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Unified Hachi and additional-bot database backups under `Backups/<Bot>/<Installation>/` at the HachiGen root. Local and remote installations now use the same OS-protected HGBK vault, retention, restore, and envelope-key rotation pathways without writing new managed backups into bot repositories.
+- Added rollback-safe legacy backup migration. Registered HGBK records and older Hachi/Paldeck SQLite backups are copied into the canonical profile folder, checksum-verified or encrypted into HGBK, and left at their original locations so an older build can still be restored.
+- Routed Hachi backup, restore, pull/push safety copies, encryption recovery, and key-rotation recovery through the shared backup system. Plaintext restores now update Hachi's runtime encryption mode after explicit confirmation, while transient bot-side rollback files are removed after successful encryption operations.
+
 - Replaced the raw SQLite `file is not a database` error with an explicit Review & Reapprove instruction when an encrypted additional-bot database cannot use its changed repository-owned viewer adapter.
 
 - Fixed Fleet and Hachi runtime status parsing when PM2 prints a `[PM2]` startup banner before its JSON process list.

@@ -2342,6 +2342,9 @@ function renderDatabase(database) {
 	// This function only paints the current known state; it never touches files.
 	const exists = Boolean(database?.exists);
 	const backups = database?.backups || [];
+	if (selectedBotId === HACHI_BOT_ID) {
+		fleetBackupState = backups;
+	}
 	const audit = database?.audit;
 	const sourcePrefix = database?.source === "remote" ? "Remote " : "";
 	const keyReady = ["key-ready", "direct-key"].includes(database?.protection?.status);
@@ -3012,7 +3015,7 @@ function showDatabaseBackupTransferModal() {
 			},
 			{
 				action: "database-transfer-restore",
-				disabled: activeRemote,
+				disabled: !fleetBackupState.length,
 				label: "Restore Backup",
 				variant: "warning",
 			},
@@ -3029,55 +3032,38 @@ function showDatabaseBackupTransferModal() {
 				variant: "warning",
 			},
 		],
-		content: [summary, details],
+		content: [
+			summary,
+			details,
+			createModalSelect({
+				id: "fleetRestoreBackupSelect",
+				label: "Backup",
+				options: fleetBackupState.map(backup => ({
+					label: `${formatDateTime(backup.createdAt || backup.modifiedAt)} — ${backup.backupId}`,
+					value: backup.backupId,
+				})),
+			}),
+		],
 		meta: remoteConfigured ? `Remote: ${databaseTransferRemoteLabel()}` : "Remote profile is not configured",
 		title: "Backup / Transfer Database",
 	});
 }
 
 function runDatabaseBackupFlow() {
-	if (selectedBotId !== HACHI_BOT_ID) {
-		runAction("Backup database", async () => {
-			const result = await api.backupFleetDatabase(selectedBotId);
-			fleetBackupState = await api.listFleetBackups(selectedBotId);
+	runAction("Backup database", async () => {
+		const result = await api.backupFleetDatabase(selectedBotId);
+		fleetBackupState = await api.listFleetBackups(selectedBotId);
+		if (selectedBotId === HACHI_BOT_ID) {
+			await refreshState();
+		} else {
 			renderExternalDatabaseBackups(fleetBackupState);
-			return result;
-		});
-		return;
-	}
-	// Make a dated copy of database/database.sqlite in manager/backups.
-	// If today's backup already exists, ask with the themed confirmation modal.
-	runAction("Backup database", () => api.backupDatabase(), { toast: false })
-		.then(async result => {
-			if (!result) {
-				return;
-			}
-
-			if (result.needsOverwrite) {
-				const confirmed = await showConfirmModal({
-					confirmText: "Overwrite",
-					details: ["The existing backup file will be replaced.", "Manual restore backups are not affected."],
-					meta: "Database backup already exists",
-					summary: `${result.fileName} already exists. Overwrite today's database backup?`,
-					title: "Overwrite database backup?",
-					variant: "warning",
-				});
-
-				if (!confirmed) {
-					toast("Database backup canceled.");
-					return;
-				}
-
-				await runAction("Overwrite database backup", () => api.backupDatabase({ overwrite: true }));
-				return;
-			}
-
-			toast(result.message || "Database backup created.");
-		});
+		}
+		return result;
+	});
 }
 
 function runDatabaseRestoreFlow(requestedBackupId = "") {
-	if (selectedBotId !== HACHI_BOT_ID) {
+	if (requestedBackupId || selectedBotId !== HACHI_BOT_ID) {
 		const selectedBackup = fleetBackupState?.find(backup => backup.backupId === requestedBackupId) || fleetBackupState?.[0];
 		if (!selectedBackup) {
 			toast("No backup is available to restore.", "error", { label: "Restore database" });
@@ -3843,7 +3829,7 @@ function renderFleetSecurityCapabilities() {
 		setDisabled("#databaseKeyActionButton", !capabilities?.databaseEncryption || (!testingSource && productionEncrypted && !productionCanRotate));
 	} else {
 		$("#databaseKeyActionButton").dataset.action = "generate-database-key";
-		$("#rotateDatabaseBackupsButton").dataset.action = "rotate-database-backups";
+		$("#rotateDatabaseBackupsButton").dataset.action = "rotate-fleet-backups";
 		$("#verifyDatabaseProtectionButton").dataset.action = "verify-database-protection";
 	}
 	setDisabled("#fleetPruneLogsButton", !capabilities?.logs);
@@ -5347,17 +5333,11 @@ function handleAction(event) {
 		}
 
 		showConfirmModal({
-			checkbox: {
-				checked: false,
-				description: "Rekey encrypted backups that use the current key and encrypt plaintext backups while HachiGen still has both keys.",
-				id: "rotateDatabaseBackupsWithKey",
-				label: "Also rotate existing backups",
-			},
 			confirmText: "Rotate Key",
 			details: [
 				"HachiGen will create a safety backup before changing the key.",
 				"The encrypted database will be rekeyed and verified before the key file is replaced.",
-				"Backups that require an even older key will be skipped and reported.",
+				"Managed backup encryption keys are rotated separately with Rotate Backups.",
 				"Stop Hachi before rotating the key so the database is not in use.",
 			],
 			meta: "Database key rotation",
@@ -5370,7 +5350,7 @@ function handleAction(event) {
 				return;
 			}
 
-			runAction("Rotate database key", () => api.rotateDatabaseKey({ rotateBackups: result.checked }))
+			runAction("Rotate database key", () => api.rotateDatabaseKey({ rotateBackups: false }))
 				.then(actionResult => {
 					if (actionResult?.ok) {
 						refreshCurrentDatabaseViewer();
