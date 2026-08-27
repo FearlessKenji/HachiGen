@@ -1363,7 +1363,7 @@ async function validateFleetCredentialAndBackupSecurity() {
 				fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase),
 			"Testing should store its database in the identity profile without modifying production data.",
 		);
-		manager.stopTestingBot("optional-bot");
+		await manager.stopTestingBot("optional-bot");
 		fs.rmSync(testingRun.databasePath, { force: true });
 		const { DatabaseSync } = require("node:sqlite");
 		const isolatedDatabase = new DatabaseSync(testingRun.databasePath);

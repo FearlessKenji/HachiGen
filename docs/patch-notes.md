@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- After **Stop Test** finishes, **Start Test** now becomes available immediately. HachiGen waits for the test process to exit instead of leaving the page on a stale “stopping” snapshot.
+
 - Reset Test Commands now checks that the testing token and client ID belong together and that the test bot can access every configured test server. Instead of Discord's generic `Missing Access` response, HachiGen identifies the incorrect client ID or inaccessible server IDs and explains how to correct them.
 
 - The shared folder is now consistently named lowercase `backups`. The old local `manager` backup folder is removed once its Paldeck recovery point has been safely migrated.

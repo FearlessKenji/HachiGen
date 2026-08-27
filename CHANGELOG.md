@@ -4,6 +4,8 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Fixed testing controls remaining stuck in the stopping state. Stop Test now waits for the child process's final exit state, escalates to a forced stop after the graceful timeout, and returns the completed run snapshot so Start Test becomes available immediately.
+
 - Hardened shared test-command reset against Discord `50001 Missing Access`. HachiGen now verifies that the saved client ID belongs to the supplied test token, validates configured guild IDs before deleting anything, identifies inaccessible guilds in actionable errors, and tolerates a guild disappearing between discovery and cleanup.
 
 - Standardized the root backup directory as lowercase `backups` and removed the obsolete local `manager/backups/paldeck` source after its migrated HGBK container and vault registration were validated.

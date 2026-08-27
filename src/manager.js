@@ -2631,16 +2631,41 @@ class HachiManager {
 		return { message: "Testing process started without changing bot credential files.", runs: this.getTestingRunState() };
 	}
 
-	stopTestingBot(deploymentId) {
+	async stopTestingBot(deploymentId) {
 		const concreteDeploymentId = this.getLocalTestingDeploymentContext(deploymentId).deployment.id;
 		const runState = this.testingRuns.get(concreteDeploymentId);
 		if (!runState || runState.status !== "running") {
 			throw new Error("This bot does not have a running testing process.");
 		}
 		runState.status = "stopping";
+		const waitForExit = timeoutMs => new Promise(resolve => {
+			if (runState.child.exitCode !== null || runState.status === "exited") {
+				resolve(true);
+				return;
+			}
+			const timeout = setTimeout(() => {
+				runState.child.off("exit", onExit);
+				resolve(false);
+			}, timeoutMs);
+			const onExit = () => {
+				clearTimeout(timeout);
+				resolve(true);
+			};
+			runState.child.once("exit", onExit);
+		});
 		runState.child.kill("SIGTERM");
 		this.log(`Testing process stop requested.`, { area: "testing", deploymentId: concreteDeploymentId });
-		return { message: "Testing process is stopping.", runs: this.getTestingRunState() };
+		let exited = await waitForExit(10000);
+		if (!exited) {
+			// Test processes should never remain detached after Stop. Escalate only
+			// after a generous graceful-shutdown window and still wait for final state.
+			runState.child.kill("SIGKILL");
+			exited = await waitForExit(3000);
+		}
+		if (!exited) {
+			throw new Error("The testing process did not exit after a forced stop.");
+		}
+		return { message: "Testing process stopped.", runs: this.getTestingRunState() };
 	}
 
 	stopAllTestingBots() {
