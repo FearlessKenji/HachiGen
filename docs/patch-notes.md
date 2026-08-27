@@ -4,6 +4,8 @@ These notes are written for people running the HachiGen desktop manager. For the
 
 # Unreleased
 
+- Pre-encryption recovery points now keep their recognizable filename and are labeled **Plaintext database** in Backups. The `.hgbak` file itself remains encrypted by HachiGen; the label describes the database that will be restored.
+
 - Hachi and additional bots now keep database backups in one obvious place: `HachiGen/Backups/<Bot>/Local` or `HachiGen/Backups/<Bot>/Remote-<Server>`. The same encrypted backup format, restore picker, retention policy, and **Rotate Backups** action apply to every bot.
 - Existing Hachi and Paldeck backups are safely imported on startup. HachiGen copies and verifies them before using the new location and retains the originals for rollback compatibility.
 - Hachi's backup and transfer tools now use the same managed backup list as other bots. Restoring a plaintext Hachi backup can disable database encryption after confirmation without deleting the retained key material.

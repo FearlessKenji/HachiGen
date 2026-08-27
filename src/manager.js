@@ -4060,7 +4060,25 @@ class HachiManager {
 		const concreteDeploymentId = this.getFleetDeploymentContext(deploymentId).deployment.id;
 		return Object.entries(this.getFleetBackupVault().records)
 			.filter(([, record]) => record.deploymentId === concreteDeploymentId)
-			.map(([backupId, record]) => ({ backupId, backupPath: record.backupPath, createdAt: record.createdAt, serverId: record.serverId, encrypted: true }))
+			.map(([backupId, record]) => {
+				let databaseProtection = "unknown";
+				try {
+					const content = this.readFleetBackupContent(record);
+					databaseProtection = content.subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER) ? "plaintext" : "encrypted";
+				} catch {
+					// Keep damaged or unavailable records visible so the user can diagnose
+					// them instead of silently losing a restore point from the list.
+				}
+				return {
+					backupId,
+					backupPath: record.backupPath,
+					createdAt: record.createdAt,
+					databaseProtection,
+					displayName: path.basename(record.legacySource || record.backupPath),
+					encrypted: true,
+					serverId: record.serverId,
+				};
+			})
 			.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
 	}
 

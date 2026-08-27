@@ -1393,11 +1393,16 @@ async function validateFleetCredentialAndBackupSecurity() {
 		fs.rmSync(backup.backupPath);
 		manager.migrateLegacyDatabaseBackups();
 		const migratedRecord = manager.getFleetBackupVault().records[backup.backupId];
+		const migratedBackup = manager.listFleetBackups("optional-bot").find(item => item.backupId === backup.backupId);
 		assert(
 			migratedRecord.backupPath.startsWith(path.join(tempDir, "Backups", "Optional Bot", "Local")) &&
 				fs.existsSync(migratedRecord.backupPath) && fs.existsSync(legacyBackupPath) &&
 				fs.readFileSync(migratedRecord.backupPath).equals(fs.readFileSync(legacyBackupPath)),
 			"Legacy backup migration should verify a canonical copy and retain the rollback-compatible original.",
+		);
+		assert(
+			migratedBackup.databaseProtection === "plaintext" && migratedBackup.displayName === path.basename(legacyBackupPath),
+			"Managed backup listings should preserve a legacy recovery point's name and report its inner database protection.",
 		);
 		const backupKeyBeforeRotation = manager.getFleetBackupVault().records[backup.backupId].key;
 		const backupRotation = await manager.rotateFleetBackupKeys("optional-bot");

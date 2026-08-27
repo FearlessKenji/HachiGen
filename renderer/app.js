@@ -1242,14 +1242,22 @@ function renderTestingDatabaseState(view) {
 
 function renderExternalDatabaseBackups(backups = []) {
 	fleetBackupState = backups;
-	setText("#databaseBackupSummary", backups.length ? `${pluralize(backups.length, "encrypted backup")} available.` : "No encrypted backups found.");
+	const plaintextCount = backups.filter(backup => backup.databaseProtection === "plaintext").length;
+	const encryptedCount = backups.filter(backup => backup.databaseProtection === "encrypted").length;
+	const protectionSummary = [
+		encryptedCount ? pluralize(encryptedCount, "encrypted database backup") : "",
+		plaintextCount ? pluralize(plaintextCount, "plaintext database backup") : "",
+	].filter(Boolean).join(", ");
+	setText("#databaseBackupSummary", backups.length ? `${protectionSummary || pluralize(backups.length, "managed backup")} available.` : "No backups found.");
 	renderSimpleList("#databaseBackupList", backups, "No backups yet.", backup => {
 		const item = document.createElement("li");
 		item.className = "update-list-row";
 		const file = document.createElement("code");
-		file.textContent = backup.backupId;
+		file.textContent = backup.displayName || backup.backupId;
 		const detail = document.createElement("span");
-		detail.textContent = `${formatDateTime(backup.createdAt)} | Encrypted`;
+		const protection = backup.databaseProtection === "plaintext" ? "Plaintext database" :
+			backup.databaseProtection === "encrypted" ? "Encrypted database" : "Protection unknown";
+		detail.textContent = `${formatDateTime(backup.createdAt)} | ${protection}`;
 		item.append(file, detail);
 		return item;
 	});
@@ -3039,7 +3047,7 @@ function showDatabaseBackupTransferModal() {
 				id: "fleetRestoreBackupSelect",
 				label: "Backup",
 				options: fleetBackupState.map(backup => ({
-					label: `${formatDateTime(backup.createdAt || backup.modifiedAt)} — ${backup.backupId}`,
+					label: `${formatDateTime(backup.createdAt || backup.modifiedAt)} — ${backup.displayName || backup.backupId} — ${backup.databaseProtection || backup.protection?.status || "unknown"}`,
 					value: backup.backupId,
 				})),
 			}),
