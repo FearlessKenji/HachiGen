@@ -4,6 +4,8 @@ Notable changes to HachiGen are documented here.
 
 ## Unreleased
 
+- Simplified managed backup names throughout Database and restore selection to a purpose-and-date format such as `pre-encryption-08-21-2026`; opaque backup IDs and HGBK filenames remain internal.
+
 - Fixed migrated pre-encryption backups appearing indistinguishable from encrypted database restore points. Backup listings now inspect the database inside the encrypted HGBK container and preserve the original legacy filename for display.
 
 - Unified Hachi and additional-bot database backups under `Backups/<Bot>/<Installation>/` at the HachiGen root. Local and remote installations now use the same OS-protected HGBK vault, retention, restore, and envelope-key rotation pathways without writing new managed backups into bot repositories.

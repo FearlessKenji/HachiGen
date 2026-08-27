@@ -2038,7 +2038,7 @@ class HachiManager {
 		return path.join(this.backupsRoot, profileName, installationName);
 	}
 
-	createFleetBackupRecord(context, content, { createdAt = new Date().toISOString(), legacySource = "" } = {}) {
+	createFleetBackupRecord(context, content, { createdAt = new Date().toISOString(), legacySource = "", reason = "backup" } = {}) {
 		if (!this.protectSecret) {
 			throw new Error("Operating-system backup-key encryption is unavailable.");
 		}
@@ -2059,6 +2059,7 @@ class HachiManager {
 				deploymentId: context.deployment.id,
 				key: this.protectSecret(key.toString("base64")),
 				legacySource: legacySource || undefined,
+				reason,
 				serverId: context.server.id,
 			};
 			this.saveFleetBackupVault(vault);
@@ -2128,9 +2129,12 @@ class HachiManager {
 					continue;
 				}
 				const stats = fs.statSync(sourcePath);
+				const legacyReason = ["pre-encryption", "pre-key-rotation", "pre-pull", "pre-push"]
+					.find(reason => entry.name.toLowerCase().includes(reason)) || "backup";
 				this.createFleetBackupRecord(context, fs.readFileSync(sourcePath), {
 					createdAt: stats.mtime.toISOString(),
 					legacySource: sourcePath,
+					reason: legacyReason,
 				});
 				vault = this.getFleetBackupVault();
 			}
@@ -3676,7 +3680,7 @@ class HachiManager {
 		};
 	}
 
-	async backupFleetDatabase(deploymentId, { prune = true } = {}) {
+	async backupFleetDatabase(deploymentId, { prune = true, reason = "backup" } = {}) {
 		if (!this.protectSecret) {
 			throw new Error("Operating-system backup-key encryption is unavailable.");
 		}
@@ -3707,7 +3711,7 @@ class HachiManager {
 			}
 			content = fs.readFileSync(sourcePath);
 		}
-		const backup = this.createFleetBackupRecord(context, content);
+		const backup = this.createFleetBackupRecord(context, content, { reason });
 		this.log(`Encrypted fleet database backup created for ${context.deployment.name}.`, { area: "fleet-backup", backupId: backup.backupId, deploymentId, serverId: context.server.id });
 		if (prune) {
 			await this.pruneFleetBackups(deploymentId);
@@ -3813,7 +3817,7 @@ class HachiManager {
 		}
 		// Do not run retention until the selected restore has completed; a policy of
 		// one backup must not prune the very backup this operation is about to read.
-		const recovery = await this.backupFleetDatabase(deploymentId, { prune: false });
+		const recovery = await this.backupFleetDatabase(deploymentId, { prune: false, reason: "pre-restore" });
 		const recoveryRecord = this.getFleetBackupVault().records[recovery.backupId];
 		const databaseRelativePath = context.definition.paths?.database;
 		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
@@ -3851,7 +3855,7 @@ class HachiManager {
 			throw new Error("External bot definition must declare databaseEncrypt and databaseVerify commands.");
 		}
 		await this.verifyFleetDatabaseEncryptionPrerequisites(context);
-		const recovery = await this.backupFleetDatabase(deploymentId);
+		const recovery = await this.backupFleetDatabase(deploymentId, { reason: "pre-encryption" });
 		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
 		try {
 			await this.runFleetDefinitionCommand(deploymentId, "databaseEncrypt", { timeoutMs: 600000 });
@@ -4062,6 +4066,9 @@ class HachiManager {
 			.filter(([, record]) => record.deploymentId === concreteDeploymentId)
 			.map(([backupId, record]) => {
 				let databaseProtection = "unknown";
+				const originalName = path.basename(record.legacySource || record.backupPath);
+				const reason = record.reason || ["pre-encryption", "pre-key-rotation", "pre-restore", "pre-pull", "pre-push"]
+					.find(candidate => originalName.toLowerCase().includes(candidate)) || "backup";
 				try {
 					const content = this.readFleetBackupContent(record);
 					databaseProtection = content.subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER) ? "plaintext" : "encrypted";
@@ -4074,8 +4081,9 @@ class HachiManager {
 					backupPath: record.backupPath,
 					createdAt: record.createdAt,
 					databaseProtection,
-					displayName: path.basename(record.legacySource || record.backupPath),
+					displayName: originalName,
 					encrypted: true,
+					reason,
 					serverId: record.serverId,
 				};
 			})
@@ -6536,7 +6544,7 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 		await this.checkpointDatabase();
 		// Keep the durable recovery point in HachiGen's shared backup vault. The
 		// bot-side script still uses a short-lived raw copy for atomic rollback.
-		const recovery = await this.backupFleetDatabase("hachi", { prune: false });
+		const recovery = await this.backupFleetDatabase("hachi", { prune: false, reason: "pre-encryption" });
 
 		const script = this.databaseEncryptionConversionScript(backupFileName);
 		this.logDatabase(`creating encrypted database and recovery backup ${backupFileName}.`);
@@ -6849,7 +6857,7 @@ async function verifyRuntimeOpen(newKey, keyFilePath) {
 
 		this.logDatabase(`starting key rotation${rotateBackups ? " with backup rotation" : ""}.`);
 		this.logDatabase(`planned safety backup: ${backupFileName}.`);
-		const recovery = await this.backupFleetDatabase("hachi", { prune: false });
+		const recovery = await this.backupFleetDatabase("hachi", { prune: false, reason: "pre-key-rotation" });
 		const script = this.databaseKeyRotationScript(backupFileName, { rotateBackups });
 		const result = this.getRuntimeTarget() === "remote" ?
 			await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
@@ -7381,7 +7389,7 @@ process.stdout.write(JSON.stringify({
 		}
 		await this.checkpointLocalDatabase();
 		const context = this.getFleetDeploymentContext("hachi");
-		const backup = this.createFleetBackupRecord(context, fs.readFileSync(paths.database));
+		const backup = this.createFleetBackupRecord(context, fs.readFileSync(paths.database), { reason });
 		this.logDatabase(`Hachi ${reason} backup created in the root Backups folder.`);
 		return { ...backup, fileName: path.basename(backup.backupPath), message: "Hachi database backup created." };
 	}

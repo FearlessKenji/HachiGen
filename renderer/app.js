@@ -1253,7 +1253,7 @@ function renderExternalDatabaseBackups(backups = []) {
 		const item = document.createElement("li");
 		item.className = "update-list-row";
 		const file = document.createElement("code");
-		file.textContent = backup.displayName || backup.backupId;
+		file.textContent = backupSimpleName(backup);
 		const detail = document.createElement("span");
 		const protection = backup.databaseProtection === "plaintext" ? "Plaintext database" :
 			backup.databaseProtection === "encrypted" ? "Encrypted database" : "Protection unknown";
@@ -2223,6 +2223,16 @@ function formatDateTime(value) {
 	return new Date(value).toLocaleString();
 }
 
+function backupSimpleName(backup = {}) {
+	const date = new Date(backup.createdAt || backup.modifiedAt);
+	const readableDate = Number.isNaN(date.getTime()) ? "unknown-date" : [
+		String(date.getMonth() + 1).padStart(2, "0"),
+		String(date.getDate()).padStart(2, "0"),
+		date.getFullYear(),
+	].join("-");
+	return `${backup.reason || "backup"}-${readableDate}`;
+}
+
 function describeProtectionItem(item) {
 	if (!item) {
 		return "Not checked";
@@ -2374,7 +2384,7 @@ function renderDatabase(database) {
 	setText(
 		"#databaseBackupSummary",
 		latest ?
-			`${pluralize(backups.length, "backup")} available. Latest: ${latest.file}. ${backupSummary}` :
+			`${pluralize(backups.length, "backup")} available. Latest: ${backupSimpleName(latest)}. ${backupSummary}` :
 			"No database backups found.",
 	);
 
@@ -2385,7 +2395,7 @@ function renderDatabase(database) {
 		item.className = "update-list-row";
 
 		const file = document.createElement("code");
-		file.textContent = backup.file;
+		file.textContent = backupSimpleName(backup);
 		item.append(file);
 
 		const detail = document.createElement("span");
@@ -3047,7 +3057,7 @@ function showDatabaseBackupTransferModal() {
 				id: "fleetRestoreBackupSelect",
 				label: "Backup",
 				options: fleetBackupState.map(backup => ({
-					label: `${formatDateTime(backup.createdAt || backup.modifiedAt)} — ${backup.displayName || backup.backupId} — ${backup.databaseProtection || backup.protection?.status || "unknown"}`,
+					label: `${backupSimpleName(backup)} — ${backup.databaseProtection || backup.protection?.status || "unknown"}`,
 					value: backup.backupId,
 				})),
 			}),
