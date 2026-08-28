@@ -1662,6 +1662,9 @@ h2 {
 	position: fixed;
 	right: 22px;
 	bottom: 22px;
+	/* Toasts communicate operation results and must stay above sticky table
+	 * headers, cards, and modal layers regardless of their stacking contexts. */
+	z-index: 100;
 	display: grid;
 	gap: 10px;
 	width: 320px;

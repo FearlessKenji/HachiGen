@@ -245,6 +245,7 @@ function validateRendererAndMenuWiring() {
 	const mainSource = readSource("main.js");
 	const preloadSource = readSource("preload.js");
 	const rendererSource = readSource("renderer", "app.js");
+	const styleSource = readSource("renderer", "styles.css");
 	const indexSource = readSource("renderer", "index.html");
 	const stylesSource = readSource("renderer", "styles.css");
 	const managerSource = readSource("src", "manager.js");
@@ -261,6 +262,10 @@ function validateRendererAndMenuWiring() {
 		mainSource.includes("label: \"Restore Runtime Archive...\"") &&
 		mainSource.includes("label: \"Check for Updates\""),
 		"Application menu is missing log export, diagnostics export, runtime archive, or update check actions.",
+	);
+	assert(
+		/\.toast-region\s*\{[^}]*z-index:\s*100;/su.test(styleSource),
+		"Toast notifications should remain above sticky database headers and modal layers.",
 	);
 	assert(!mainSource.includes("label: \"Edit\"") && !mainSource.includes("toggleDevTools") && !mainSource.includes("resetZoom"), "Application menu should not expose Edit, DevTools, or zoom controls.");
 	assert(preloadSource.includes("checkVersionUpdates") && rendererSource.includes("api.checkVersionUpdates()"), "Version update menu action is not wired through preload and renderer.");
