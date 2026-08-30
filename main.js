@@ -14,6 +14,7 @@ const {
 	dialog,
 	Menu,
 	screen,
+	safeStorage,
 	shell,
 } = require("electron");
 const { HachiManager } = require("./src/manager.js");
@@ -36,15 +37,36 @@ let manager;
 let clipboardClearTimer = null;
 let windowStateSaveTimer = null;
 const UI_SMOKE_MODE = process.env.HACHIGEN_UI_SMOKE === "1";
+const UI_SMOKE_USER_DATA = process.env.HACHIGEN_UI_SMOKE_USER_DATA || "";
+
+if (UI_SMOKE_MODE && UI_SMOKE_USER_DATA) {
+	// Packaged smoke runs must not contend with or decrypt the real HachiGen
+	// profile. Set the isolated Chromium/Electron profile before taking the
+	// single-instance lock or accessing safeStorage.
+	app.setPath("userData", path.resolve(UI_SMOKE_USER_DATA));
+}
+
+if (UI_SMOKE_MODE) {
+	// Headless release verification should not depend on a host GPU driver.
+	app.disableHardwareAcceleration();
+}
 
 // Forward backend activity to the window when it is available. Backend actions
 // can outlive a particular BrowserWindow, so this checks before sending.
 function sendEvent(event) {
-	if (mainWindow && !mainWindow.isDestroyed()) {
+	if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
 		// This is the opposite direction from ipcMain.handle(): manager.js emits a
 		// live event, main.js sends it to the renderer, and preload.js exposes a
 		// subscription helper as window.hachiGen.onEvent(...).
-		mainWindow.webContents.send("manager:event", event);
+		try {
+			mainWindow.webContents.send("manager:event", event);
+		} catch (error) {
+			// A renderer can be disposed between the guards above and send(). The
+			// recovery logger remains authoritative, so this event can be dropped.
+			if (!/disposed|destroyed/iu.test(error.message || "")) {
+				throw error;
+			}
+		}
 	}
 }
 
@@ -170,7 +192,24 @@ async function exportHachiGenLogs() {
 	manager.log(`HachiGen logs exported to ${result.filePath}.`);
 }
 
-async function copyDiagnosticInfo() {
+async function copyDiagnosticInfo(deploymentId = "") {
+	if (deploymentId && manager) {
+		const overview = await manager.getFleetDeploymentOverview(deploymentId);
+		const lines = [
+			`HachiGen: ${managerPackage.version}`,
+			`Bot: ${overview.deployment?.name || deploymentId}`,
+			`Runtime target: ${overview.server?.type === "ssh" ? "remote" : "local"}`,
+			`Install path: ${overview.deployment?.installPath || "unknown"}`,
+			`Branch: ${overview.repository?.branch || "unknown"}`,
+			`Update target: ${overview.repository?.targetBranch || "unknown"}`,
+			`Project found: ${overview.health?.installFound === undefined ? "unknown" : overview.health.installFound}`,
+			`PM2: ${overview.health?.runtime?.status || "unknown"}`,
+			`Database: ${overview.security?.database?.status || "unknown"}`,
+		].join("\n");
+		clipboard.writeText(lines);
+		manager.log(`Diagnostic info copied for ${overview.deployment?.name || deploymentId}.`, { area: "fleet", deploymentId });
+		return { ok: true, message: "Diagnostic info copied to clipboard." };
+	}
 	const diagnostics = manager ? await manager.getDiagnostics().catch(() => null) : null;
 	const lines = [
 		`HachiGen: ${diagnostics?.app?.hachiGenVersion || managerPackage.version}`,
@@ -790,10 +829,25 @@ function createWindow() {
 
 	mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
 
-	mainWindow.webContents.once("did-finish-load", () => {
+	mainWindow.webContents.once("did-finish-load", async () => {
 		if (UI_SMOKE_MODE) {
-			manager?.log("Packaged UI smoke mode loaded the renderer.");
-			setTimeout(() => app.exit(0), 150);
+			try {
+				// Validate the built renderer workflows, not only window creation.
+				const result = await mainWindow.webContents.executeJavaScript("window.__runHachiGenUiSmoke()", true);
+				if (!result?.ok) {
+					throw new Error(result?.failures?.join("; ") || "Renderer smoke checks failed.");
+				}
+				manager?.log(`Packaged UI smoke passed ${result.checks} renderer checks.`);
+				if (process.env.HACHIGEN_UI_SMOKE_RESULT) {
+					fs.writeFileSync(process.env.HACHIGEN_UI_SMOKE_RESULT, JSON.stringify(result), "utf8");
+				}
+				app.exit(0);
+			} catch (error) {
+				if (process.env.HACHIGEN_UI_SMOKE_RESULT) {
+					fs.writeFileSync(process.env.HACHIGEN_UI_SMOKE_RESULT, JSON.stringify({ ok: false, failures: [error.message] }), "utf8");
+				}
+				app.exit(1);
+			}
 			return;
 		}
 
@@ -893,6 +947,70 @@ function registerIpc() {
 	// State and install-path channels. These read or update the Hachi install
 	// folder that every later operation uses as its root.
 	ipcMain.handle("manager:get-state", () => manager.getState());
+	ipcMain.handle("manager:get-startup-state", () => manager.getStartupState());
+	ipcMain.handle("manager:get-fleet", () => manager.getFleetState());
+	ipcMain.handle("manager:add-fleet-server", (_event, values) => manager.addFleetServer(values));
+	ipcMain.handle("manager:update-fleet-server", (_event, serverId, values) => manager.updateFleetServer(serverId, values));
+	ipcMain.handle("manager:remove-fleet-server", (_event, serverId) => manager.removeFleetServer(serverId));
+	ipcMain.handle("manager:add-fleet-deployment", (_event, values) => manager.addFleetDeployment(values));
+	ipcMain.handle("manager:set-active-fleet-deployment", (_event, deploymentId) => manager.setActiveFleetDeployment(deploymentId));
+	ipcMain.handle("manager:reapprove-fleet-deployment", (_event, deploymentId) => manager.reapproveFleetDeployment(deploymentId));
+	ipcMain.handle("manager:remove-fleet-deployment", (_event, deploymentId) => manager.removeFleetDeployment(deploymentId));
+	ipcMain.handle("manager:install-external-bot-definition", (_event, jsonText) => manager.installExternalBotDefinition(jsonText));
+	ipcMain.handle("manager:preview-external-bot-definition", (_event, jsonText) => manager.previewExternalBotDefinition(jsonText));
+	ipcMain.handle("manager:remove-external-bot-definition", (_event, botTypeId) => manager.removeExternalBotDefinition(botTypeId));
+	ipcMain.handle("manager:get-fleet-deployment-status", (_event, deploymentId) => manager.getFleetDeploymentStatus(deploymentId));
+	ipcMain.handle("manager:control-fleet-deployment", (_event, deploymentId, action) => manager.controlFleetDeployment(deploymentId, action));
+	ipcMain.handle("manager:get-fleet-deployment-logs", (_event, deploymentId, lines) => manager.getFleetDeploymentLogs(deploymentId, lines));
+	ipcMain.handle("manager:check-fleet-deployment-health", (_event, deploymentId) => manager.checkFleetDeploymentHealth(deploymentId));
+	ipcMain.handle("manager:get-fleet-deployment-overview", (_event, deploymentId) => manager.getFleetDeploymentOverview(deploymentId));
+	ipcMain.handle("manager:get-fleet-deployment-configuration", (_event, deploymentId) => manager.getFleetDeploymentConfiguration(deploymentId));
+	ipcMain.handle("manager:save-fleet-deployment-configuration", (_event, deploymentId, values) => manager.saveFleetDeploymentConfiguration(deploymentId, values));
+	ipcMain.handle("manager:copy-fleet-configuration-secret", (_event, deploymentId, relativePath, key) => {
+		const secret = manager.readFleetConfigurationSecretForCopy(deploymentId, relativePath, key);
+		clipboard.writeText(secret.value);
+		scheduleClipboardClear(secret.value, secret.ttlMs);
+		manager.log(`Sensitive configuration field ${secret.field} copied for ${Math.round(secret.ttlMs / 1000)} seconds.`, { area: "fleet", deploymentId });
+		return { field: secret.field, message: `${secret.field} copied. Clipboard clears in ${Math.round(secret.ttlMs / 1000)} seconds if unchanged.`, ok: true, ttlMs: secret.ttlMs };
+	});
+	ipcMain.handle("manager:save-fleet-deployment-credentials", (_event, deploymentId, values) => manager.saveFleetDeploymentCredentials(deploymentId, values));
+	ipcMain.handle("manager:run-fleet-definition-command", (_event, deploymentId, commandName) => manager.runFleetDefinitionCommand(deploymentId, commandName));
+	ipcMain.handle("manager:audit-fleet-deployment-security", (_event, deploymentId) => manager.auditFleetDeploymentSecurity(deploymentId));
+	ipcMain.handle("manager:backup-fleet-database", (_event, deploymentId) => manager.backupFleetDatabase(deploymentId));
+	ipcMain.handle("manager:inspect-fleet-database-restore", (_event, deploymentId, backupId) => manager.inspectFleetDatabaseRestore(deploymentId, backupId));
+	ipcMain.handle("manager:restore-fleet-database-backup", (_event, deploymentId, backupId, options) => manager.restoreFleetDatabaseBackup(deploymentId, backupId, options));
+	ipcMain.handle("manager:encrypt-fleet-database", (_event, deploymentId) => manager.encryptFleetDatabase(deploymentId));
+	ipcMain.handle("manager:rotate-fleet-database-key", (_event, deploymentId) => manager.rotateFleetDatabaseKey(deploymentId));
+	ipcMain.handle("manager:rotate-fleet-backup-keys", (_event, deploymentId) => manager.rotateFleetBackupKeys(deploymentId));
+	ipcMain.handle("manager:get-fleet-repository-status", (_event, deploymentId, options) => manager.getFleetRepositoryStatus(deploymentId, options));
+	ipcMain.handle("manager:update-fleet-deployment", (_event, deploymentId) => manager.updateFleetDeployment(deploymentId));
+	ipcMain.handle("manager:deploy-fleet-discord-commands", (_event, deploymentId) => manager.deployFleetDiscordCommands(deploymentId));
+	ipcMain.handle("manager:set-fleet-deployment-policies", (_event, deploymentId, values) => manager.setFleetDeploymentPolicies(deploymentId, values));
+	ipcMain.handle("manager:list-fleet-backups", (_event, deploymentId) => manager.listFleetBackups(deploymentId));
+	ipcMain.handle("manager:prune-fleet-backups", (_event, deploymentId) => manager.pruneFleetBackups(deploymentId));
+	ipcMain.handle("manager:prune-fleet-logs", (_event, deploymentId) => manager.pruneFleetLogs(deploymentId));
+	ipcMain.handle("manager:choose-fleet-bot-folder", async () => {
+		const result = await dialog.showOpenDialog(mainWindow, {
+			properties: ["openDirectory"],
+			title: "Choose bot folder",
+		});
+		return result.canceled || !result.filePaths.length ? { canceled: true, path: "" } : { canceled: false, path: result.filePaths[0] };
+	});
+	ipcMain.handle("manager:inspect-fleet-bot-candidate", (_event, values) => manager.inspectFleetBotCandidate(values));
+	ipcMain.handle("manager:get-testing-profiles", () => manager.getTestingProfiles());
+	ipcMain.handle("manager:get-testing-runs", () => manager.getTestingRunState());
+	ipcMain.handle("manager:save-testing-profile", (_event, values) => manager.saveTestingProfile(values));
+	ipcMain.handle("manager:delete-testing-profile", (_event, profileId) => manager.deleteTestingProfile(profileId));
+	ipcMain.handle("manager:start-testing-bot", (_event, deploymentId, profileId) => manager.startTestingBot(deploymentId, profileId));
+	ipcMain.handle("manager:stop-testing-bot", (_event, deploymentId) => manager.stopTestingBot(deploymentId));
+	ipcMain.handle("manager:reset-testing-commands", (_event, deploymentId, profileId) => manager.resetTestingCommands(deploymentId, profileId));
+	ipcMain.handle("manager:copy-testing-secret", (_event, profileId, field) => {
+		const secret = manager.readTestingSecretForCopy(profileId, field);
+		clipboard.writeText(secret.value);
+		scheduleClipboardClear(secret.value, secret.ttlMs);
+		manager.log(`Testing identity ${secret.profileId}: ${secret.field} copied to clipboard for ${Math.round(secret.ttlMs / 1000)} seconds.`, { area: "testing", profileId: secret.profileId });
+		return { field: secret.field, message: `${secret.field} copied. Clipboard clears in ${Math.round(secret.ttlMs / 1000)} seconds if unchanged.`, ok: true, ttlMs: secret.ttlMs };
+	});
 	ipcMain.handle("manager:get-diagnostics", () => manager.getDiagnostics());
 	ipcMain.handle("manager:get-about-info", () => manager.getAboutInfo());
 
@@ -963,6 +1081,7 @@ function registerIpc() {
 	ipcMain.handle("manager:save-remote-settings", (_event, values) => manager.saveRemoteSettings(values));
 	ipcMain.handle("manager:set-runtime-target", (_event, target) => manager.setRuntimeTarget(target));
 	ipcMain.handle("manager:test-remote-connection", () => manager.testRemoteConnection());
+	ipcMain.handle("manager:test-fleet-remote-connection", (_event, values) => manager.testFleetRemoteConnection(values));
 
 	// Update/runtime channels. These cover Git update checks, stashes, command
 	// deployment, PM2 process control, and log/status reads.
@@ -988,13 +1107,16 @@ function registerIpc() {
 	ipcMain.handle("manager:get-logs", () => manager.getLogs());
 	ipcMain.handle("manager:get-pm2-status", () => manager.getPm2Status());
 	ipcMain.handle("manager:record-renderer-event", (_event, payload) => manager.recordRendererEvent(payload));
-	ipcMain.handle("manager:copy-diagnostic-info", () => copyDiagnosticInfo());
+	ipcMain.handle("manager:copy-diagnostic-info", (_event, deploymentId) => copyDiagnosticInfo(deploymentId));
 	ipcMain.handle("manager:export-support-bundle", () => exportSupportBundle());
 	ipcMain.handle("manager:open-hachigen-log-folder", () => openHachiGenLogFolder());
 
 	// Database viewer and maintenance channels. The renderer controls what the
 	// user sees and confirms; HachiManager owns actual file/database mutations.
 	ipcMain.handle("manager:read-database-table", (_event, tableName, sort) => manager.readDatabaseTable(tableName, sort));
+	ipcMain.handle("manager:read-fleet-database-table", (_event, deploymentId, tableName, sort) => manager.readFleetDatabaseTable(deploymentId, tableName, sort));
+	ipcMain.handle("manager:read-testing-database-table", (_event, botTypeId, profileId, tableName, sort) => manager.readTestingDatabaseTable(botTypeId, profileId, tableName, sort));
+	ipcMain.handle("manager:protect-testing-database", (_event, botTypeId, profileId) => manager.protectTestingDatabase(botTypeId, profileId));
 	ipcMain.handle("manager:migrate-database", () => manager.migrateDatabase({ force: false }));
 	ipcMain.handle("manager:force-migrate-database", () => manager.migrateDatabase({ force: true }));
 	ipcMain.handle("manager:review-database-sanitation", () => manager.reviewDatabaseSanitation());
@@ -1045,9 +1167,9 @@ function registerIpc() {
 		rotateBackups: Boolean(options.rotateBackups),
 	}));
 	ipcMain.handle("manager:rotate-database-backups", () => manager.rotateDatabaseBackups());
-	ipcMain.handle("manager:export-database-key-backup", async () => {
+	ipcMain.handle("manager:export-database-key-backup", async (_event, deploymentId = "") => {
 		const result = await dialog.showSaveDialog(mainWindow, {
-			defaultPath: "hachi-db-key-backup.key",
+			defaultPath: deploymentId ? "bot-db-key-backup.key" : "hachi-db-key-backup.key",
 			filters: [
 				{ name: "Key backup", extensions: ["key", "txt"] },
 				{ name: "All files", extensions: ["*"] },
@@ -1059,7 +1181,7 @@ function registerIpc() {
 			return { ok: false, message: "Database key backup export canceled." };
 		}
 
-		return manager.exportDatabaseKeyBackup(result.filePath);
+		return deploymentId ? manager.exportFleetDatabaseKeyBackup(deploymentId, result.filePath) : manager.exportDatabaseKeyBackup(result.filePath);
 	});
 
 	// OS integration channel. shell.openPath has to stay in the main process
@@ -1069,6 +1191,18 @@ function registerIpc() {
 		// shell.openPath returns an empty string when it succeeds.
 		const result = await shell.openPath(installPath);
 		return { ok: result === "", message: result || "Opened install folder." };
+	});
+	ipcMain.handle("manager:open-fleet-deployment-folder", async (_event, deploymentId) => {
+		// Never accept a renderer-supplied path. Resolve the deployment from the
+		// validated registry and allow Explorer only for local installations.
+		const fleet = manager.getFleetState();
+		const deployment = fleet.deployments.find(item => item.id === deploymentId);
+		const server = fleet.servers.find(item => item.id === deployment?.serverId);
+		if (!deployment || server?.connection?.type !== "local") {
+			throw new Error("Only a selected local bot folder can be opened.");
+		}
+		const result = await shell.openPath(path.resolve(deployment.installPath));
+		return { ok: result === "", message: result || "Opened bot folder." };
 	});
 }
 
@@ -1087,14 +1221,31 @@ if (!singleInstanceLock) {
 		const defaultInstallPath = app.isPackaged ?
 			path.dirname(process.execPath) :
 			resolveDevelopmentInstallPath();
+		const backupsRoot = UI_SMOKE_MODE ?
+			path.join(app.getPath("userData"), "backups") :
+			app.isPackaged ? path.join(path.dirname(process.execPath), "backups") : path.join(__dirname, "backups");
 
 		manager = new HachiManager({
 			managerRoot: __dirname,
+			backupsRoot,
 			defaultInstallPath,
 			userDataPath: app.getPath("userData"),
 			sendEvent,
+			protectSecret: value => {
+				if (!safeStorage.isEncryptionAvailable()) {
+					throw new Error("Operating-system backup-key encryption is unavailable.");
+				}
+				return safeStorage.encryptString(String(value)).toString("base64");
+			},
+			unprotectSecret: value => {
+				if (!safeStorage.isEncryptionAvailable()) {
+					throw new Error("Operating-system backup-key decryption is unavailable.");
+				}
+				return safeStorage.decryptString(Buffer.from(String(value), "base64"));
+			},
 		});
 		manager.startLogCleanup({ runImmediately: true });
+		manager.startFleetMaintenance();
 		manager.initCrashHandlers();
 
 		app.on("child-process-gone", (_event, details) => {
@@ -1118,7 +1269,9 @@ app.on("before-quit", () => {
 	saveMainWindowState();
 
 	if (manager) {
+		manager.stopAllTestingBots();
 		manager.stopLogCleanup();
+		manager.stopFleetMaintenance();
 	}
 });
 

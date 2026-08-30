@@ -3,8 +3,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const childProcess = require("node:child_process");
 const https = require("node:https");
 const zlib = require("node:zlib");
+const YAML = require("yaml");
 const { Buffer } = require("node:buffer");
 const { URL } = require("node:url");
 const {
@@ -13,6 +15,23 @@ const {
 	redactHachiGenLogText,
 } = require("./hachigenLogger.js");
 const { commandExists, run } = require("./shell.js");
+const {
+	flattenConfigValues,
+	formatEnvValue,
+	isSensitiveConfigKey,
+	parseDotEnv,
+	parseDotEnvContent,
+	setConfigValue,
+	updateDotEnvContent,
+} = require("./configuration.js");
+const {
+	loadBotDefinitions,
+	normalizeDeployment,
+	normalizeFleetRegistry,
+	normalizeServer,
+	validateExternalBotDefinition,
+	writeFleetRegistry,
+} = require("./botRegistry.js");
 
 // This file contains HachiGen's backend coordinator.
 // The renderer never edits files or runs commands directly; it asks this class
@@ -32,6 +51,46 @@ const DEFAULT_SSH_PORT = 22;
 const DIAGNOSTIC_RUNTIME_LOG_LIMIT = 5;
 const DIAGNOSTIC_RUNTIME_LOG_MAX_BYTES = 256 * 1024;
 const DIAGNOSTIC_PM2_LOG_LINES = 240;
+const DISCORD_API_BASE = "https://discord.com/api/v10";
+
+function discordApiRequest(method, route, token, body = null) {
+	// Test-command cleanup talks directly to Discord so it can bulk-overwrite
+	// only the selected test application's commands without invoking bot code.
+	return new Promise((resolve, reject) => {
+		const payload = body === null ? null : Buffer.from(JSON.stringify(body));
+		const request = https.request(`${DISCORD_API_BASE}${route}`, {
+			headers: {
+				Accept: "application/json",
+				Authorization: `Bot ${token}`,
+				...(payload ? { "Content-Length": payload.length, "Content-Type": "application/json" } : {}),
+				"User-Agent": "HachiGen Test Command Manager",
+			},
+			method,
+		}, response => {
+			const chunks = [];
+			response.on("data", chunk => chunks.push(Buffer.from(chunk)));
+			response.on("end", () => {
+				const text = Buffer.concat(chunks).toString("utf8");
+				if ((response.statusCode || 0) < 200 || (response.statusCode || 0) >= 300) {
+					const details = parseJsonText(text, null);
+					const error = new Error(`Discord API returned HTTP ${response.statusCode}: ${details?.message || text.slice(0, 240)}`);
+					error.discordCode = details?.code || null;
+					error.statusCode = response.statusCode || 0;
+					reject(error);
+					return;
+				}
+				resolve(text ? parseJsonText(text, null) : null);
+			});
+			response.on("error", reject);
+		});
+		request.setTimeout(60000, () => request.destroy(new Error("Discord API request timed out.")));
+		request.on("error", reject);
+		if (payload) {
+			request.write(payload);
+		}
+		request.end();
+	});
+}
 
 function createUncheckedUpdateState(message = "Updates have not been checked yet.") {
 	return {
@@ -171,6 +230,7 @@ const SQLITE_HEADER = Buffer.from([
 // The database worker is copied to Electron's user-data folder before running.
 // External Node cannot reliably execute files inside a packaged app.asar.
 const DATABASE_WORKER_FILE = "database-worker.js";
+const SQLITE_VIEWER_WORKER_FILE = "sqlite-viewer-worker.js";
 
 // Check whether a file or folder exists. This tiny wrapper keeps the rest of
 // the file readable when many validation steps ask "does this path exist?".
@@ -200,6 +260,31 @@ function normalizeConfigIdList(value) {
 		.split(/[\s,]+/u)
 		.map(item => item.trim())
 		.filter(item => item && !item.includes("(REQUIRED)")))];
+}
+
+function normalizeProfileId(value, fallback = "profile") {
+	const normalized = String(value || "").trim().toLowerCase()
+		.replace(/[^a-z0-9_-]+/gu, "-")
+		.replace(/^-+|-+$/gu, "")
+		.slice(0, 64);
+	return normalized || `${fallback}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, logCandidates, testEntryCandidates) {
+	// Emit exactly one JSON object so empty optional fields cannot shift positional shell output.
+	return `const fs=require('node:fs'),cp=require('node:child_process');` +
+		`const first=(items,type)=>items.find(item=>{try{return fs.statSync(item)[type]();}catch{return false;}})||null;` +
+		`const git=args=>cp.execFileSync('git',args,{encoding:'utf8'}).trim();` +
+		`const optionalGit=args=>{try{return git(args);}catch{return '';}};` +
+		`const packageJson=fs.existsSync('package.json')?JSON.parse(fs.readFileSync('package.json','utf8')):{};` +
+		`const output={origin:git(['remote','get-url','origin']),branch:git(['branch','--show-current']),` +
+		`defaultBranch:optionalGit(['symbolic-ref','--quiet','--short','refs/remotes/origin/HEAD']).split('/').pop(),packageJson,` +
+		`packageLockFound:fs.existsSync('package-lock.json'),` +
+		`ecosystemFile:first(${JSON.stringify(ecosystemCandidates)},'isFile'),` +
+		`databasePath:first(${JSON.stringify(databaseCandidates)},'isFile'),` +
+		`logsPath:first(${JSON.stringify(logCandidates)},'isDirectory'),` +
+		`testEntry:first(${JSON.stringify(testEntryCandidates)},'isFile')};` +
+		`process.stdout.write(JSON.stringify(output));`;
 }
 
 function idListForForm(value) {
@@ -273,92 +358,6 @@ function parseJsonText(text, fallback = {}) {
 	} catch {
 		return fallback;
 	}
-}
-
-// Parse Hachi's simple KEY=value .env files. HachiGen only needs enough parsing
-// to load and save its known fields, so comments, blanks, and one quote layer
-// are handled without bringing in a larger dotenv writer.
-function parseDotEnvContent(content) {
-	const values = {};
-	const lines = String(content || "").split(/\r?\n/);
-
-	for (const line of lines) {
-		const trimmed = line.trim();
-
-		if (!trimmed || trimmed.startsWith("#")) {
-			continue;
-		}
-
-		const equalsIndex = trimmed.indexOf("=");
-
-		if (equalsIndex === -1) {
-			continue;
-		}
-
-		const key = trimmed.slice(0, equalsIndex).trim();
-		let value = trimmed.slice(equalsIndex + 1).trim();
-
-		if (value.startsWith("\"") && value.endsWith("\"")) {
-			try {
-				value = JSON.parse(value);
-			} catch {
-				value = value.slice(1, -1);
-			}
-		} else if (value.startsWith("'") && value.endsWith("'")) {
-			value = value.slice(1, -1);
-		}
-
-		values[key] = value;
-	}
-
-	return values;
-}
-
-function parseDotEnv(filePath) {
-	if (!fileExists(filePath)) {
-		return {};
-	}
-
-	return parseDotEnvContent(fs.readFileSync(filePath, "utf8"));
-}
-
-// Format one value for .env output. JSON.stringify gives safe quoting for
-// secrets that contain spaces, punctuation, or backslashes.
-function formatEnvValue(value) {
-	return JSON.stringify(String(value || ""));
-}
-
-function updateDotEnvContent(content, values) {
-	const pending = new Map(Object.entries(values));
-	const lines = String(content || "").split(/\r?\n/u);
-	const output = [];
-
-	for (const line of lines) {
-		if (!line.trim()) {
-			if (line || output.length) {
-				output.push(line);
-			}
-
-			continue;
-		}
-
-		const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=/u);
-
-		if (!match || !pending.has(match[1])) {
-			output.push(line);
-			continue;
-		}
-
-		const key = match[1];
-		output.push(`${key}=${formatEnvValue(pending.get(key))}`);
-		pending.delete(key);
-	}
-
-	for (const [key, value] of pending) {
-		output.push(`${key}=${formatEnvValue(value)}`);
-	}
-
-	return `${output.filter((line, index, collection) => line || index < collection.length - 1).join("\n")}\n`;
 }
 
 function buildEnvLines(merged, currentEnv = {}) {
@@ -716,6 +715,43 @@ function collectLocalProjectFiles(root) {
 	return files;
 }
 
+function findProjectEnvironmentReference(root, candidates) {
+	const excluded = new Set([".git", ".hachigen", "logs", "manager", "node_modules"]);
+	let inspected = 0;
+	function visit(directory) {
+		for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+			if (inspected >= 1000) {
+				return "";
+			}
+			if (entry.isDirectory()) {
+				if (!excluded.has(entry.name.toLowerCase())) {
+					const nested = visit(path.join(directory, entry.name));
+					if (nested) {
+						return nested;
+					}
+				}
+				continue;
+			}
+			if (!entry.isFile() || !/\.(?:c?js|mjs|ts)$/iu.test(entry.name)) {
+				continue;
+			}
+			const filePath = path.join(directory, entry.name);
+			if (fs.statSync(filePath).size > 1024 * 1024) {
+				continue;
+			}
+			inspected += 1;
+			const source = fs.readFileSync(filePath, "utf8");
+			for (const candidate of candidates) {
+				if (source.includes(candidate)) {
+					return candidate;
+				}
+			}
+		}
+		return "";
+	}
+	return visit(root) || "";
+}
+
 function readRuntimeArchiveManifest(archivePath) {
 	const entries = readTarGzEntries(archivePath);
 	const manifestBuffer = entries.get("manifest.json");
@@ -796,6 +832,17 @@ function redactUrlCredentials(value) {
 	} catch {
 		return redactHachiGenLogText(value);
 	}
+}
+
+function normalizeGitRepositoryIdentity(value) {
+	return String(value || "")
+		.trim()
+		.replace(/^git@([^:]+):/iu, "https://$1/")
+		.replace(/^git\+ssh:\/\/git@/iu, "https://")
+		.replace(/^ssh:\/\/git@/iu, "https://")
+		.replace(/\.git\/?$/iu, "")
+		.replace(/\/$/u, "")
+		.toLowerCase();
 }
 
 function summarizeRepository(repository = {}) {
@@ -1549,18 +1596,43 @@ function nodeVersionMeetsMinimum(versionText) {
 		(parsed.major === MIN_NODE_VERSION.major && parsed.minor >= MIN_NODE_VERSION.minor);
 }
 
-// PM2 sometimes prints non-JSON text around `pm2 jlist` output. Extracting the
-// array portion makes status checks more forgiving without hiding parse errors.
+// PM2 can print banners such as "[PM2] Spawning..." before `pm2 jlist`. Scan
+// balanced arrays instead of assuming the first bracket starts the JSON payload.
 function parsePm2Json(stdout) {
 	const text = String(stdout || "");
-	const start = text.indexOf("[");
-	const end = text.lastIndexOf("]");
-
-	if (start === -1 || end === -1 || end < start) {
-		return [];
+	for (let start = text.indexOf("["); start !== -1; start = text.indexOf("[", start + 1)) {
+		let depth = 0;
+		let escaped = false;
+		let quoted = false;
+		for (let index = start; index < text.length; index += 1) {
+			const character = text[index];
+			if (quoted) {
+				if (escaped) {
+					escaped = false;
+				} else if (character === "\\") {
+					escaped = true;
+				} else if (character === "\"") {
+					quoted = false;
+				}
+				continue;
+			}
+			if (character === "\"") {
+				quoted = true;
+			} else if (character === "[") {
+				depth += 1;
+			} else if (character === "]") {
+				depth -= 1;
+				if (depth === 0) {
+					const parsed = parseJsonText(text.slice(start, index + 1), null);
+					if (Array.isArray(parsed)) {
+						return parsed;
+					}
+					break;
+				}
+			}
+		}
 	}
-
-	return JSON.parse(text.slice(start, end + 1));
+	throw new Error("PM2 did not return a valid JSON process list.");
 }
 
 // Convert one `git status --porcelain` line into the object the Updates UI
@@ -1904,7 +1976,7 @@ function shouldShowShellEntryInUi(entry) {
 }
 
 class HachiManager {
-	constructor({ managerRoot, defaultInstallPath, userDataPath, sendEvent }) {
+	constructor({ managerRoot, defaultInstallPath, userDataPath, backupsRoot, sendEvent, protectSecret, unprotectSecret }) {
 		// managerRoot is the manager folder in development and the bundled app
 		// location after packaging. defaultInstallPath is passed from main.js so
 		// packaged HachiGen can default to the folder beside HachiGen.exe.
@@ -1915,6 +1987,15 @@ class HachiManager {
 		// development and packaged builds so settings/logs do not live in source.
 		this.userDataPath = userDataPath || getDefaultHachiGenUserDataPath();
 		this.settingsPath = path.join(this.userDataPath, "settings.json");
+		this.fleetPath = path.join(this.userDataPath, "fleet.json");
+		this.profilesDir = path.join(this.userDataPath, "Profiles");
+		this.botDefinitionsDir = path.join(this.profilesDir, "Bots");
+		this.testingProfilesDir = path.join(this.profilesDir, "Testing");
+		// Tests and embedders may isolate backup writes while production keeps the
+		// user-visible backups folder at HachiGen's root.
+		this.backupsRoot = backupsRoot || path.join(this.managerRoot, "backups");
+		this.protectSecret = protectSecret || null;
+		this.unprotectSecret = unprotectSecret || null;
 
 		// sendEvent comes from main.js and streams backend activity to the UI.
 		this.sendEvent = sendEvent || noop;
@@ -1935,9 +2016,2680 @@ class HachiManager {
 		// remote installs where SSH/Git commands take several seconds.
 		this.checkUpdatesPromise = null;
 		this.databaseCipherTest = null;
+		this.fleetMaintenanceTimer = null;
+		this.testingRuns = new Map();
 
 		ensureDir(this.userDataPath);
+		this.migrateLegacyBotProfiles();
 		this.settings = this.loadSettings();
+		this.fleet = this.loadFleetRegistry();
+		this.migrateLegacyDatabaseBackups();
+		this.renameManagedDatabaseBackups();
+	}
+
+	backupFolderName(value, fallback = "Bot") {
+		const safeCharacters = [...String(value || "")].map(character =>
+			character.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(character) ? "-" : character,
+		);
+		const cleaned = safeCharacters.join("").trim().replace(/[. ]+$/gu, "");
+		return cleaned || fallback;
+	}
+
+	getFleetBackupDir(context) {
+		const profileName = this.backupFolderName(context.definition.displayName, context.definition.id);
+		const installationName = context.server.connection.type === "ssh" ?
+			`Remote-${this.backupFolderName(context.server.name, context.server.id)}` :
+			"Local";
+		return path.join(this.backupsRoot, profileName, installationName);
+	}
+
+	fleetBackupReason(record = {}) {
+		const originalName = path.basename(record.legacySource || record.backupPath || "").toLowerCase();
+		return record.reason || ["pre-encryption", "pre-key-rotation", "pre-restore", "pre-pull", "pre-push"]
+			.find(candidate => originalName.includes(candidate)) || "backup";
+	}
+
+	fleetBackupFileStem(reason, createdAt) {
+		const date = new Date(createdAt);
+		const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+		const dateLabel = [
+			String(safeDate.getMonth() + 1).padStart(2, "0"),
+			String(safeDate.getDate()).padStart(2, "0"),
+			safeDate.getFullYear(),
+		].join("-");
+		const safeReason = String(reason || "backup").toLowerCase().replace(/[^a-z0-9-]+/gu, "-").replace(/^-+|-+$/gu, "") || "backup";
+		return `${safeReason}-${dateLabel}`;
+	}
+
+	nextFleetBackupPath(context, reason, createdAt, reservedPaths = new Set()) {
+		const directory = this.getFleetBackupDir(context);
+		const stem = this.fleetBackupFileStem(reason, createdAt);
+		let suffix = 1;
+		let candidate = path.join(directory, `${stem}.hgbak`);
+		while (fileExists(candidate) || reservedPaths.has(path.normalize(candidate).toLowerCase())) {
+			suffix += 1;
+			candidate = path.join(directory, `${stem}-${suffix}.hgbak`);
+		}
+		return candidate;
+	}
+
+	createFleetBackupRecord(context, content, { createdAt = new Date().toISOString(), databaseRuntimeKey = null, legacySource = "", reason = "backup" } = {}) {
+		if (!this.protectSecret) {
+			throw new Error("Operating-system backup-key encryption is unavailable.");
+		}
+		const backupId = `backup-${crypto.randomUUID()}`;
+		const backupPath = this.nextFleetBackupPath(context, reason, createdAt);
+		const key = crypto.randomBytes(32);
+		const iv = crypto.randomBytes(12);
+		const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+		const encrypted = Buffer.concat([cipher.update(content), cipher.final()]);
+		ensureDir(path.dirname(backupPath));
+		fs.writeFileSync(backupPath, Buffer.concat([Buffer.from("HGBK1"), iv, cipher.getAuthTag(), encrypted]), { flag: "wx", mode: 0o600 });
+		try {
+			const vault = this.getFleetBackupVault();
+			vault.records[backupId] = {
+				backupPath,
+				createdAt,
+				databaseRuntimeKey: databaseRuntimeKey?.key ? this.protectSecret(databaseRuntimeKey.key) : undefined,
+				databaseRuntimeKeyFile: databaseRuntimeKey?.keyFilePath || undefined,
+				databaseRuntimeKeySource: databaseRuntimeKey?.source || undefined,
+				deploymentId: context.deployment.id,
+				key: this.protectSecret(key.toString("base64")),
+				legacySource: legacySource || undefined,
+				reason,
+				serverId: context.server.id,
+			};
+			this.saveFleetBackupVault(vault);
+		} catch (error) {
+			// A backup without its protected envelope key is unusable, so remove the
+			// just-created container if the vault commit cannot complete.
+			fs.rmSync(backupPath, { force: true });
+			throw error;
+		}
+		return { backupId, backupPath, bytes: encrypted.length + 33, encrypted: true, ok: true };
+	}
+
+	migrateLegacyDatabaseBackups() {
+		ensureDir(this.backupsRoot);
+		if (!this.protectSecret || !this.unprotectSecret) {
+			return;
+		}
+		let vault = this.getFleetBackupVault();
+		let vaultChanged = false;
+		for (const record of Object.values(vault.records)) {
+			const deployment = this.fleet.deployments.find(item => item.id === record.deploymentId);
+			if (!deployment || !path.isAbsolute(record.backupPath || "") || !fileExists(record.backupPath)) {
+				continue;
+			}
+			const context = this.getFleetDeploymentContext(deployment.id);
+			const canonicalRoot = this.getFleetBackupDir(context);
+			if (isPathInside(canonicalRoot, record.backupPath)) {
+				continue;
+			}
+			let destination = path.join(canonicalRoot, path.basename(record.backupPath));
+			ensureDir(canonicalRoot);
+			if (fileExists(destination) && sha256File(record.backupPath) !== sha256File(destination)) {
+				destination = path.join(canonicalRoot, `${path.parse(record.backupPath).name}-${crypto.randomUUID()}.hgbak`);
+			}
+			if (!fileExists(destination)) {
+				fs.copyFileSync(record.backupPath, destination, fs.constants.COPYFILE_EXCL);
+			}
+			if (sha256File(record.backupPath) !== sha256File(destination)) {
+				throw new Error(`Backup migration verification failed for ${path.basename(record.backupPath)}.`);
+			}
+			record.legacySource ||= record.backupPath;
+			record.backupPath = destination;
+			vaultChanged = true;
+		}
+		if (vaultChanged) {
+			this.saveFleetBackupVault(vault);
+			vault = this.getFleetBackupVault();
+		}
+		const imports = [];
+		const localHachi = this.fleet.deployments.find(item => item.botTypeId === "hachi" && item.serverId === "local");
+		if (localHachi) {
+			imports.push({ deployment: localHachi, directory: path.join(localHachi.installPath, "manager", "backups", "database") });
+		}
+		const localPaldeck = this.fleet.deployments.find(item => item.botTypeId === "paldeck" && item.serverId === "local");
+		if (localPaldeck) {
+			imports.push({ deployment: localPaldeck, directory: path.join(this.managerRoot, "manager", "backups", "paldeck") });
+		}
+		for (const candidate of imports) {
+			if (!fileExists(candidate.directory)) {
+				continue;
+			}
+			const context = this.getFleetDeploymentContext(candidate.deployment.id);
+			for (const entry of fs.readdirSync(candidate.directory, { withFileTypes: true })) {
+				const sourcePath = path.join(candidate.directory, entry.name);
+				if (!entry.isFile() || !/\.sqlite$/iu.test(entry.name) ||
+					Object.values(vault.records).some(record => record.legacySource === sourcePath)) {
+					continue;
+				}
+				const stats = fs.statSync(sourcePath);
+				const legacyReason = ["pre-encryption", "pre-key-rotation", "pre-pull", "pre-push"]
+					.find(reason => entry.name.toLowerCase().includes(reason)) || "backup";
+				this.createFleetBackupRecord(context, fs.readFileSync(sourcePath), {
+					createdAt: stats.mtime.toISOString(),
+					legacySource: sourcePath,
+					reason: legacyReason,
+				});
+				vault = this.getFleetBackupVault();
+			}
+		}
+	}
+
+	renameManagedDatabaseBackups() {
+		const vault = this.getFleetBackupVault();
+		const moves = [];
+		const reservedPaths = new Set();
+		const records = Object.entries(vault.records)
+			.sort(([, left], [, right]) => String(left.createdAt).localeCompare(String(right.createdAt)));
+		for (const [backupId, record] of records) {
+			const deployment = this.fleet.deployments.find(item => item.id === record.deploymentId);
+			if (!deployment || !fileExists(record.backupPath)) {
+				continue;
+			}
+			const context = this.getFleetDeploymentContext(deployment.id);
+			const canonicalRoot = this.getFleetBackupDir(context);
+			if (!isPathInside(canonicalRoot, record.backupPath)) {
+				continue;
+			}
+			const reason = this.fleetBackupReason(record);
+			const expectedStem = this.fleetBackupFileStem(reason, record.createdAt);
+			const currentStem = path.basename(record.backupPath, path.extname(record.backupPath));
+			if (currentStem === expectedStem || currentStem.startsWith(`${expectedStem}-`) && /^\d+$/u.test(currentStem.slice(expectedStem.length + 1))) {
+				reservedPaths.add(path.normalize(record.backupPath).toLowerCase());
+				record.reason = reason;
+				continue;
+			}
+			const destination = this.nextFleetBackupPath(context, reason, record.createdAt, reservedPaths);
+			reservedPaths.add(path.normalize(destination).toLowerCase());
+			moves.push({ backupId, destination, source: record.backupPath });
+		}
+		if (!moves.length) {
+			return;
+		}
+		try {
+			for (const move of moves) {
+				fs.renameSync(move.source, move.destination);
+				vault.records[move.backupId].backupPath = move.destination;
+				vault.records[move.backupId].reason = this.fleetBackupReason(vault.records[move.backupId]);
+			}
+			this.saveFleetBackupVault(vault);
+		} catch (error) {
+			// Roll file moves back if the vault cannot be committed; a record must
+			// never point at a name that was only partially migrated.
+			let rollbackError = null;
+			for (const move of [...moves].reverse()) {
+				if (fileExists(move.destination) && !fileExists(move.source)) {
+					try {
+						fs.renameSync(move.destination, move.source);
+					} catch (moveError) {
+						rollbackError ||= moveError;
+					}
+				}
+			}
+			if (rollbackError) {
+				throw new Error(`Backup rename failed: ${error.message}. Rollback also failed: ${rollbackError.message}`);
+			}
+			this.event("error", `Managed backup names were left unchanged: ${error.message}`, { area: "fleet-backup" });
+		}
+	}
+
+	migrateLegacyBotProfiles() {
+		const legacyDir = path.join(this.userDataPath, "bot-definitions");
+		ensureDir(this.botDefinitionsDir);
+		ensureDir(this.testingProfilesDir);
+		if (!fileExists(legacyDir)) {
+			return;
+		}
+		// Copy rather than move so rolling back to an older HachiGen build remains safe.
+		for (const entry of fs.readdirSync(legacyDir, { withFileTypes: true })) {
+			if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".json") {
+				continue;
+			}
+			const destination = path.join(this.botDefinitionsDir, entry.name);
+			if (!fileExists(destination)) {
+				fs.copyFileSync(path.join(legacyDir, entry.name), destination);
+			}
+		}
+	}
+
+	getTestingProfiles() {
+		ensureDir(this.testingProfilesDir);
+		const profiles = [];
+		for (const entry of fs.readdirSync(this.testingProfilesDir, { withFileTypes: true })) {
+			if (!entry.isDirectory()) {
+				continue;
+			}
+			const root = path.join(this.testingProfilesDir, entry.name);
+			const metadata = readJson(path.join(root, "profile.json"), null);
+			if (!metadata) {
+				continue;
+			}
+			const secrets = parseDotEnv(path.join(root, "secrets.env"));
+			profiles.push({
+				id: entry.name,
+				name: String(metadata.name || entry.name),
+				isDefault: metadata.isDefault === true,
+				guildIds: normalizeConfigIdList(metadata.guildIds),
+				createdAt: metadata.createdAt || null,
+				updatedAt: metadata.updatedAt || null,
+				hasValues: Object.fromEntries(["TOKEN", "clientId", "publicKey", "clientSecret"].map(field => [field, String(secrets[field] || "").startsWith("os:v1:")])),
+			});
+		}
+		return profiles.sort((left, right) => Number(right.isDefault) - Number(left.isDefault) || left.name.localeCompare(right.name));
+	}
+
+	saveTestingProfile(values) {
+		if (!this.protectSecret) {
+			throw new Error("Operating-system secret protection is unavailable.");
+		}
+		const requestedId = normalizeProfileId(values?.id || values?.name, "testing");
+		const existing = this.getTestingProfiles().find(profile => profile.id === requestedId);
+		if (!values?.id && existing) {
+			throw new Error("A testing identity already uses that profile name.");
+		}
+		const profileId = existing ? requestedId : normalizeProfileId(values?.name || requestedId, "testing");
+		const root = path.join(this.testingProfilesDir, profileId);
+		ensureDir(root);
+		const metadataPath = path.join(root, "profile.json");
+		const secretsPath = path.join(root, "secrets.env");
+		const now = new Date().toISOString();
+		const previousMetadata = readJson(metadataPath, {});
+		const previousSecrets = fileExists(secretsPath) ? fs.readFileSync(secretsPath, "utf8") : "";
+		const updates = { HACHIGEN_TEST_SECRETS_PROTECTION: "os" };
+		for (const field of ["TOKEN", "clientId", "publicKey", "clientSecret"]) {
+			const submitted = String(values?.[field] || "").trim();
+			if (submitted) {
+				updates[field] = `os:v1:${this.protectSecret(submitted)}`;
+			}
+		}
+		const parsedSecrets = parseDotEnvContent(updateDotEnvContent(previousSecrets, updates));
+		if (!String(parsedSecrets.TOKEN || "").startsWith("os:v1:") || !String(parsedSecrets.clientId || "").startsWith("os:v1:")) {
+			throw new Error("A test bot token and application ID are required.");
+		}
+		if (values?.isDefault) {
+			for (const profile of this.getTestingProfiles()) {
+				if (profile.id === profileId) {
+					continue;
+				}
+				const otherPath = path.join(this.testingProfilesDir, profile.id, "profile.json");
+				const other = readJson(otherPath, null);
+				if (other?.isDefault) {
+					writeJsonFile(otherPath, { ...other, isDefault: false, updatedAt: now });
+				}
+			}
+		}
+		writeJsonFile(metadataPath, {
+			createdAt: previousMetadata.createdAt || now,
+			guildIds: normalizeConfigIdList(values?.guildIds ?? previousMetadata.guildIds),
+			id: profileId,
+			isDefault: values?.isDefault === true,
+			name: String(values?.name || previousMetadata.name || profileId).trim(),
+			updatedAt: now,
+			version: 1,
+		});
+		fs.writeFileSync(secretsPath, updateDotEnvContent(previousSecrets, updates), { encoding: "utf8", mode: 0o600 });
+		this.log(`Testing identity saved: ${profileId}.`, { area: "testing", profileId });
+		return { message: "Testing identity saved.", profiles: this.getTestingProfiles() };
+	}
+
+	readTestingSecretForCopy(profileId, field) {
+		if (!this.unprotectSecret) {
+			throw new Error("Operating-system secret protection is unavailable.");
+		}
+		if (!["TOKEN", "clientId", "publicKey", "clientSecret"].includes(field)) {
+			throw new Error("Unsupported testing credential field.");
+		}
+		const safeId = normalizeProfileId(profileId);
+		const secrets = parseDotEnv(path.join(this.testingProfilesDir, safeId, "secrets.env"));
+		const protectedValue = String(secrets[field] || "");
+		if (!protectedValue.startsWith("os:v1:")) {
+			throw new Error(`${field} has no saved value.`);
+		}
+		return { field, profileId: safeId, ttlMs: 60000, value: this.unprotectSecret(protectedValue.slice("os:v1:".length)) };
+	}
+
+	readTestingIdentity(profileId) {
+		if (!this.unprotectSecret) {
+			throw new Error("Operating-system secret protection is unavailable.");
+		}
+		const safeId = normalizeProfileId(profileId);
+		const metadata = readJson(path.join(this.testingProfilesDir, safeId, "profile.json"), null);
+		const secrets = parseDotEnv(path.join(this.testingProfilesDir, safeId, "secrets.env"));
+		if (!metadata) {
+			throw new Error("Testing identity was not found.");
+		}
+		const values = {};
+		for (const field of ["TOKEN", "clientId", "publicKey", "clientSecret"]) {
+			const protectedValue = String(secrets[field] || "");
+			values[field] = protectedValue.startsWith("os:v1:") ? this.unprotectSecret(protectedValue.slice("os:v1:".length)) : "";
+		}
+		if (!values.TOKEN || !values.clientId) {
+			throw new Error("Testing identity requires a bot token and application ID.");
+		}
+		return { id: safeId, guildIds: normalizeConfigIdList(metadata.guildIds), name: metadata.name || safeId, values };
+	}
+
+	getTestingDatabaseKey(profileId, botTypeId) {
+		if (!this.protectSecret || !this.unprotectSecret) {
+			throw new Error("Operating-system secret protection is unavailable.");
+		}
+		const safeProfileId = normalizeProfileId(profileId);
+		const safeBotId = normalizeProfileId(botTypeId, "bot");
+		const field = `HACHIGEN_DATABASE_KEY_${safeBotId.replace(/[^a-z0-9]+/giu, "_").toUpperCase()}`;
+		const secretsPath = path.join(this.testingProfilesDir, safeProfileId, "secrets.env");
+		const previous = fileExists(secretsPath) ? fs.readFileSync(secretsPath, "utf8") : "";
+		const protectedValue = String(parseDotEnvContent(previous)[field] || "");
+		if (protectedValue.startsWith("os:v1:")) {
+			return this.unprotectSecret(protectedValue.slice("os:v1:".length));
+		}
+		// Each test identity and bot pair gets an independent key. It stays in the
+		// existing OS-protected testing secret store and is never returned to the UI.
+		const key = crypto.randomBytes(32).toString("base64url");
+		const updated = updateDotEnvContent(previous, {
+			HACHIGEN_TEST_SECRETS_PROTECTION: "os",
+			[field]: `os:v1:${this.protectSecret(key)}`,
+		});
+		fs.writeFileSync(secretsPath, updated, { encoding: "utf8", mode: 0o600 });
+		return key;
+	}
+
+	setTestingDatabaseKey(profileId, botTypeId, key) {
+		const safeProfileId = normalizeProfileId(profileId);
+		const safeBotId = normalizeProfileId(botTypeId, "bot");
+		const field = `HACHIGEN_DATABASE_KEY_${safeBotId.replace(/[^a-z0-9]+/giu, "_").toUpperCase()}`;
+		const secretsPath = path.join(this.testingProfilesDir, safeProfileId, "secrets.env");
+		const previous = fileExists(secretsPath) ? fs.readFileSync(secretsPath, "utf8") : "";
+		fs.writeFileSync(secretsPath, updateDotEnvContent(previous, {
+			HACHIGEN_TEST_SECRETS_PROTECTION: "os",
+			[field]: `os:v1:${this.protectSecret(key)}`,
+		}), { encoding: "utf8", mode: 0o600 });
+	}
+
+	testingIdentityEnvironment(identity, overrides = {}) {
+		return {
+			...process.env,
+			TOKEN: identity.values.TOKEN,
+			clientId: identity.values.clientId,
+			clientSecret: identity.values.clientSecret,
+			guildIds: identity.guildIds.join(","),
+			HACHIGEN_TEST_MODE: "true",
+			publicKey: identity.values.publicKey,
+			testID: identity.values.clientId,
+			testTOKEN: identity.values.TOKEN,
+			...overrides,
+		};
+	}
+
+	testingDatabaseEnvironment(context, identity) {
+		const declaredPath = context.definition.paths?.database;
+		if (!declaredPath) {
+			return { databasePath: null, env: {} };
+		}
+		const derivedKey = `${context.definition.id.replace(/[^a-z0-9]+/giu, "_").replace(/^_+|_+$/gu, "").toUpperCase()}_DATABASE_PATH`;
+		const candidates = [derivedKey, "HACHIGEN_TEST_DATABASE_PATH", "DATABASE_PATH"];
+		const supportedKey = findProjectEnvironmentReference(context.deployment.installPath, candidates);
+		if (!supportedKey) {
+			throw new Error(`${context.definition.displayName} declares a database but does not support an isolated test database path. Add support for ${derivedKey} before running it with testing credentials.`);
+		}
+		const databaseRoot = path.join(this.testingProfilesDir, identity.id, "data", normalizeProfileId(context.definition.id, "bot"));
+		ensureDir(databaseRoot);
+		const databasePath = path.join(databaseRoot, path.basename(declaredPath));
+		const env = {
+			[supportedKey]: databasePath,
+			HACHIGEN_TEST_DATABASE_PATH: databasePath,
+		};
+		if (context.definition.capabilities?.databaseToolConnection && databaseFileStatus(databasePath).encryptedLikely) {
+			const databasePrefix = context.definition.id.replace(/[^a-z0-9]+/giu, "_").replace(/^_+|_+$/gu, "").toUpperCase();
+			env[`${databasePrefix}_DB_ENCRYPTION`] = "encrypted";
+			env[`${databasePrefix}_DB_KEY`] = this.getTestingDatabaseKey(identity.id, context.definition.id);
+			env[`${databasePrefix}_DB_KEY_FILE`] = "";
+		}
+		return {
+			databasePath,
+			env,
+		};
+	}
+
+	async protectTestingDatabase(botTypeId, profileId) {
+		const context = this.getLocalTestingDeploymentContext(botTypeId);
+		const running = this.testingRuns.get(context.deployment.id);
+		if (running?.status === "running" || running?.status === "starting") {
+			throw new Error("Stop the test bot before encrypting or rotating its database key.");
+		}
+		if (context.definition.source === "external" && context.deployment.definitionFingerprint !== context.definition.fingerprint) {
+			throw new Error(`${context.definition.displayName} profile changed after approval. Review and reapprove it before modifying test data.`);
+		}
+		if (!context.definition.capabilities?.databaseToolConnection || !context.deployment.approvedCapabilities?.databaseToolConnection) {
+			throw new Error(`${context.definition.displayName} does not have an approved encrypted database adapter.`);
+		}
+		await this.verifyFleetDatabaseEncryptionPrerequisites(context);
+		const identity = this.readTestingIdentity(profileId);
+		const testDatabase = this.testingDatabaseEnvironment(context, identity);
+		if (!context.definition.capabilities?.databaseToolConnection || !testDatabase.databasePath) {
+			throw new Error(`${context.definition.displayName} does not declare an isolated testing database.`);
+		}
+		const status = databaseFileStatus(testDatabase.databasePath);
+		if (status.status === "missing") {
+			throw new Error("Start the test bot once to create its isolated database before encrypting it.");
+		}
+		if (status.status !== "plaintext" && !status.encryptedLikely) {
+			throw new Error(`The isolated testing database has an unsupported format: ${status.detail}`);
+		}
+		const databaseRoot = path.dirname(testDatabase.databasePath);
+		const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+		const operation = status.encryptedLikely ? "key-rotation" : "encryption";
+		const backupPath = path.join(databaseRoot, `${path.basename(testDatabase.databasePath, path.extname(testDatabase.databasePath))}-pre-${operation}-${stamp}${path.extname(testDatabase.databasePath)}`);
+		const encryptedPath = `${testDatabase.databasePath}.encrypted-${crypto.randomUUID()}`;
+		const displacedPath = `${testDatabase.databasePath}.plaintext-${crypto.randomUUID()}`;
+		fs.copyFileSync(testDatabase.databasePath, backupPath, fs.constants.COPYFILE_EXCL);
+		const oldKey = this.getTestingDatabaseKey(identity.id, context.definition.id);
+		const newKey = status.encryptedLikely ? crypto.randomBytes(32).toString("base64url") : oldKey;
+		const conversionScript = status.encryptedLikely ?
+			[
+				"const db=require('./database/dbEncryption.js');",
+				"db.rekeyEncryptedDatabase({dbPath:process.env.HACHIGEN_SOURCE_DATABASE,oldKey:process.env.HACHIGEN_OLD_DATABASE_KEY,newKey:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+				"db.verifyEncryptedDatabaseFile({dbPath:process.env.HACHIGEN_SOURCE_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+			].join("") :
+			[
+				"const db=require('./database/dbEncryption.js');",
+				"db.convertPlainDatabaseToEncrypted({sourcePath:process.env.HACHIGEN_SOURCE_DATABASE,targetPath:process.env.HACHIGEN_TARGET_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+				"db.verifyEncryptedDatabaseFile({dbPath:process.env.HACHIGEN_TARGET_DATABASE,key:process.env.HACHIGEN_DATABASE_KEY,root:process.cwd()});",
+			].join("");
+		const result = await run("node", ["-e", conversionScript], {
+			allowFailure: true,
+			cwd: context.deployment.installPath,
+			env: {
+				...process.env,
+				HACHIGEN_DATABASE_KEY: newKey,
+				HACHIGEN_OLD_DATABASE_KEY: oldKey,
+				HACHIGEN_SOURCE_DATABASE: testDatabase.databasePath,
+				HACHIGEN_TARGET_DATABASE: encryptedPath,
+			},
+			timeoutMs: 120000,
+		});
+		if (result.code !== 0 || (!status.encryptedLikely && !fileExists(encryptedPath))) {
+			fs.rmSync(encryptedPath, { force: true });
+			if (status.encryptedLikely) {
+				fs.copyFileSync(backupPath, testDatabase.databasePath);
+			}
+			throw new Error(result.stderr || `The isolated testing database ${operation} failed. Its safety backup was retained.`);
+		}
+		// Swap only after conversion and keyed verification succeed. Any rename
+		// failure restores the original bytes; the timestamped backup is retained.
+		try {
+			if (status.encryptedLikely) {
+				this.setTestingDatabaseKey(identity.id, context.definition.id, newKey);
+				return { database: databaseFileStatus(testDatabase.databasePath), message: "Testing database key rotated and verified.", ok: true };
+			}
+			fs.renameSync(testDatabase.databasePath, displacedPath);
+			fs.renameSync(encryptedPath, testDatabase.databasePath);
+			fs.rmSync(displacedPath, { force: true });
+		} catch (error) {
+			fs.rmSync(encryptedPath, { force: true });
+			if (status.encryptedLikely) {
+				fs.copyFileSync(backupPath, testDatabase.databasePath);
+				this.setTestingDatabaseKey(identity.id, context.definition.id, oldKey);
+			}
+			if (fileExists(displacedPath) && !fileExists(testDatabase.databasePath)) {
+				fs.renameSync(displacedPath, testDatabase.databasePath);
+			}
+			throw error;
+		}
+		this.log(`Encrypted isolated testing database for ${context.definition.displayName}.`, {
+			area: "testing",
+			backupPath,
+			botTypeId: context.definition.id,
+		});
+		return { database: databaseFileStatus(testDatabase.databasePath), message: "Testing database encrypted and verified.", ok: true };
+	}
+
+	async resetTestingCommands(deploymentId, profileId) {
+		const context = this.getLocalTestingDeploymentContext(deploymentId);
+		const concreteDeploymentId = context.deployment.id;
+		const packageJson = readJson(path.join(context.deployment.installPath, "package.json"), {});
+		const hasDetectedTestDeploy = packageJson.scripts?.["deploy:test"];
+		if (context.definition.id !== "hachi" && !context.definition.commands?.testDeployCommands && !hasDetectedTestDeploy) {
+			throw new Error(`${context.definition.displayName} does not define a test command deployment script.`);
+		}
+		const identity = this.readTestingIdentity(profileId);
+		const [botUser, botGuilds] = await Promise.all([
+			discordApiRequest("GET", "/users/@me", identity.values.TOKEN),
+			discordApiRequest("GET", "/users/@me/guilds?limit=200", identity.values.TOKEN),
+		]);
+		const tokenApplicationId = String(botUser?.id || "");
+		if (!tokenApplicationId || tokenApplicationId !== identity.values.clientId) {
+			throw new Error(
+				`The testing identity's client ID (${identity.values.clientId || "missing"}) does not match ` +
+				`the bot token's application ID (${tokenApplicationId || "unavailable"}). Correct the testing identity before resetting commands.`,
+			);
+		}
+		const applicationId = encodeURIComponent(tokenApplicationId);
+		const guildIds = new Set(Array.isArray(botGuilds) ? botGuilds.map(guild => String(guild.id || "")).filter(Boolean) : []);
+		const inaccessibleGuildIds = identity.guildIds.filter(guildId => !guildIds.has(guildId));
+		if (inaccessibleGuildIds.length) {
+			throw new Error(
+				`The test bot does not have access to configured guild ID${inaccessibleGuildIds.length === 1 ? "" : "s"}: ` +
+				`${inaccessibleGuildIds.join(", ")}. Invite the test bot to ${inaccessibleGuildIds.length === 1 ? "that server" : "those servers"} ` +
+				"or remove the inaccessible ID from the testing identity before resetting commands.",
+			);
+		}
+
+		// Bulk-overwrite with an empty array deletes commands only for this test
+		// application. Production application IDs and tokens never enter this path.
+		await discordApiRequest("PUT", `/applications/${applicationId}/commands`, identity.values.TOKEN, []);
+		const skippedGuildIds = [];
+		for (const guildId of guildIds) {
+			try {
+				await discordApiRequest("PUT", `/applications/${applicationId}/guilds/${encodeURIComponent(guildId)}/commands`, identity.values.TOKEN, []);
+			} catch (error) {
+				if (error.discordCode === 50001 || error.statusCode === 403) {
+					// The bot can leave a guild between discovery and cleanup. Continue with
+					// remaining guilds and report the race instead of failing the whole reset.
+					skippedGuildIds.push(guildId);
+					continue;
+				}
+				throw error;
+			}
+		}
+
+		const env = this.testingIdentityEnvironment(identity);
+		if (context.definition.id === "hachi") {
+			await this.runFleetDefinitionCommand(concreteDeploymentId, "deployGlobalCommands", { env, timeoutMs: 300000 });
+			if (identity.guildIds.length) {
+				const source = [
+					"const {getCommandData,redeployCommands}=require('./utils/commandLoader.js');",
+					"const ids=process.env.guildIds.split(',').filter(Boolean),commands=getCommandData('guild');",
+					"(async()=>{for(const guildId of ids)await redeployCommands('guild',",
+					"{clientId:process.env.clientId,commands,guildId,token:process.env.TOKEN});})()",
+					".catch(e=>{console.error(e);process.exitCode=1;});",
+				].join("");
+				await this.runFleetDeploymentCommand(context, { command: "node", args: ["-e", source] }, "", { env, timeoutMs: 300000 });
+			}
+		} else if (context.definition.commands?.testDeployCommands) {
+			await this.runFleetDefinitionCommand(concreteDeploymentId, "testDeployCommands", { env, timeoutMs: 300000 });
+		} else if (hasDetectedTestDeploy) {
+			// Preserve older generated profiles: deploy:test is a deliberately named,
+			// local-only test adapter and still requires the UI confirmation.
+			await this.runFleetDeploymentCommand(context, { command: "npm", args: ["run", "deploy:test"] }, "", { env, timeoutMs: 300000 });
+		} else {
+			throw new Error(`${context.definition.displayName} does not define a test-compatible command deployment.`);
+		}
+		this.log(`Test commands reset for ${context.deployment.name} using ${identity.name}.`, {
+			area: "testing",
+			skippedGuildIds,
+			deploymentId: concreteDeploymentId,
+			profileId: identity.id,
+		});
+		return {
+			deploymentId: concreteDeploymentId,
+			guildCount: guildIds.size,
+			ok: true,
+			skippedGuildIds,
+			message: skippedGuildIds.length ?
+				`Test commands were redeployed. ${skippedGuildIds.length} inaccessible guild cleanup ${skippedGuildIds.length === 1 ? "was" : "were"} skipped.` :
+				"Test application commands were deleted and redeployed.",
+		};
+	}
+
+	getTestingRunState() {
+		return [...this.testingRuns.values()].map(runState => ({
+			databasePath: runState.databasePath || null,
+			deploymentId: runState.deploymentId,
+			exitedAt: runState.exitedAt || null,
+			exitCode: runState.exitCode ?? null,
+			output: runState.output || "",
+			profileId: runState.profileId,
+			startedAt: runState.startedAt,
+			status: runState.status,
+		}));
+	}
+
+	async startTestingBot(deploymentId, profileId) {
+		const context = this.getLocalTestingDeploymentContext(deploymentId);
+		const concreteDeploymentId = context.deployment.id;
+		const existing = this.testingRuns.get(concreteDeploymentId);
+		if (existing?.status === "running") {
+			throw new Error("This bot already has a testing process running.");
+		}
+		const detectedTestEntry = ["start-test.js", "test.js", "scripts/start-test.js"]
+			.find(candidate => fileExists(path.join(context.deployment.installPath, candidate)));
+		const command = context.definition.commands?.testStart ||
+			(detectedTestEntry ? { executable: "node", args: [detectedTestEntry] } : null) ||
+			(context.definition.id === "hachi" ? { executable: "node", args: ["index.js"] } : null);
+		if (context.definition.source === "external" && context.deployment.definitionFingerprint !== context.definition.fingerprint) {
+			throw new Error(`${context.definition.displayName} profile changed after approval. Open ${context.definition.displayName}, then use Review & Reapprove before testing it.`);
+		}
+		if (!command || command.executable !== "node" || !command.args?.length) {
+			throw new Error(`${context.definition.displayName} does not have a recognized local testing entry point.`);
+		}
+		const entryPath = path.resolve(context.deployment.installPath, command.args[0]);
+		const relativeEntry = path.relative(path.resolve(context.deployment.installPath), entryPath);
+		if (!relativeEntry || relativeEntry.startsWith("..") || path.isAbsolute(relativeEntry) || !fileExists(entryPath)) {
+			throw new Error("The bot's testing entry point is missing or outside its repository.");
+		}
+		const identity = this.readTestingIdentity(profileId);
+		const testDatabase = this.testingDatabaseEnvironment(context, identity);
+		const env = this.testingIdentityEnvironment(identity, testDatabase.env);
+		// Use the bot host's Node runtime; process.execPath is HachiGen.exe in packaged builds.
+		const child = childProcess.spawn("node", [entryPath, ...command.args.slice(1)], {
+			cwd: context.deployment.installPath,
+			env,
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		const runState = {
+			child,
+			databasePath: testDatabase.databasePath,
+			deploymentId: concreteDeploymentId,
+			exitedAt: null,
+			exitCode: null,
+			output: "",
+			profileId: identity.id,
+			startedAt: new Date().toISOString(),
+			status: "starting",
+		};
+		this.testingRuns.set(concreteDeploymentId, runState);
+		const appendOutput = chunk => {
+			let output = `${runState.output}${chunk}`;
+			for (const secret of Object.values(identity.values).filter(Boolean)) {
+				output = output.split(secret).join("[REDACTED]");
+			}
+			runState.output = redactHachiGenLogText(output).slice(-20000);
+		};
+		child.stdout.on("data", appendOutput);
+		child.stderr.on("data", appendOutput);
+		child.on("exit", code => {
+			runState.status = "exited";
+			runState.exitCode = code;
+			runState.exitedAt = new Date().toISOString();
+			this.log(`Testing process exited for ${context.deployment.name}.`, { area: "testing", deploymentId: concreteDeploymentId, exitCode: code });
+		});
+		await new Promise((resolve, reject) => {
+			child.once("spawn", () => {
+				runState.status = "running";
+				resolve();
+			});
+			child.once("error", error => {
+				runState.status = "exited";
+				runState.exitedAt = new Date().toISOString();
+				reject(error);
+			});
+		});
+		this.log(`Testing process started for ${context.deployment.name} with ${identity.name}.`, { area: "testing", deploymentId: concreteDeploymentId, profileId: identity.id });
+		return { message: "Testing process started without changing bot credential files.", runs: this.getTestingRunState() };
+	}
+
+	async stopTestingBot(deploymentId) {
+		const concreteDeploymentId = this.getLocalTestingDeploymentContext(deploymentId).deployment.id;
+		const runState = this.testingRuns.get(concreteDeploymentId);
+		if (!runState || runState.status !== "running") {
+			throw new Error("This bot does not have a running testing process.");
+		}
+		runState.status = "stopping";
+		const waitForExit = timeoutMs => new Promise(resolve => {
+			if (runState.child.exitCode !== null || runState.status === "exited") {
+				resolve(true);
+				return;
+			}
+			const timeout = setTimeout(() => {
+				runState.child.off("exit", onExit);
+				resolve(false);
+			}, timeoutMs);
+			const onExit = () => {
+				clearTimeout(timeout);
+				resolve(true);
+			};
+			runState.child.once("exit", onExit);
+		});
+		runState.child.kill("SIGTERM");
+		this.log(`Testing process stop requested.`, { area: "testing", deploymentId: concreteDeploymentId });
+		let exited = await waitForExit(10000);
+		if (!exited) {
+			// Test processes should never remain detached after Stop. Escalate only
+			// after a generous graceful-shutdown window and still wait for final state.
+			runState.child.kill("SIGKILL");
+			exited = await waitForExit(3000);
+		}
+		if (!exited) {
+			throw new Error("The testing process did not exit after a forced stop.");
+		}
+		return { message: "Testing process stopped.", runs: this.getTestingRunState() };
+	}
+
+	stopAllTestingBots() {
+		for (const runState of this.testingRuns.values()) {
+			if (["running", "starting"].includes(runState.status)) {
+				runState.child.kill("SIGTERM");
+			}
+		}
+	}
+
+	deleteTestingProfile(profileId) {
+		const safeId = normalizeProfileId(profileId);
+		const root = path.join(this.testingProfilesDir, safeId);
+		if (!fileExists(path.join(root, "profile.json"))) {
+			throw new Error("Testing identity was not found.");
+		}
+		fs.rmSync(root, { force: true, recursive: true });
+		this.log(`Testing identity deleted: ${safeId}.`, { area: "testing", profileId: safeId });
+		return { message: "Testing identity deleted.", profiles: this.getTestingProfiles() };
+	}
+
+	loadFleetRegistry() {
+		// The fleet registry is stored separately from legacy settings so the
+		// migration can be rolled back without destroying the working Hachi setup.
+		const saved = readJson(this.fleetPath, null);
+		const fleet = normalizeFleetRegistry(saved, this.settings, this.defaultInstallPath);
+		writeFleetRegistry(this.fleetPath, fleet);
+		return fleet;
+	}
+
+	saveFleetRegistry() {
+		writeFleetRegistry(this.fleetPath, this.fleet);
+	}
+
+	addFleetServer(values) {
+		const server = normalizeServer(values, new Set(this.fleet.servers.map(item => item.id)));
+		if (server.connection.type === "ssh") {
+			const duplicate = this.fleet.servers.find(item => item.connection.type === "ssh" &&
+				item.connection.host.toLowerCase() === server.connection.host.toLowerCase() &&
+				item.connection.username === server.connection.username &&
+				item.connection.port === server.connection.port);
+			if (duplicate) {
+				throw new Error(`That SSH connection already exists as ${duplicate.name}.`);
+			}
+		}
+		this.fleet.servers.push(server);
+		this.saveFleetRegistry();
+		this.log(`Fleet server added: ${server.name}.`, { area: "fleet", serverId: server.id });
+		return this.getFleetState();
+	}
+
+	updateFleetServer(serverId, values) {
+		const index = this.fleet.servers.findIndex(item => item.id === serverId);
+		const current = this.fleet.servers[index];
+		if (!current) {
+			throw new Error("Server was not found.");
+		}
+		if (current.id === "local") {
+			throw new Error("The built-in local connection cannot be edited.");
+		}
+		const updated = normalizeServer({ ...values, id: current.id });
+		if (updated.connection.type !== "ssh") {
+			throw new Error("Saved remote connections must remain SSH connections.");
+		}
+		const duplicate = this.fleet.servers.find(item => item.id !== current.id && item.connection.type === "ssh" &&
+			item.connection.host.toLowerCase() === updated.connection.host.toLowerCase() &&
+			item.connection.username === updated.connection.username &&
+			item.connection.port === updated.connection.port);
+		if (duplicate) {
+			throw new Error(`That SSH connection already exists as ${duplicate.name}.`);
+		}
+		assertSshPrivateKeyFile(updated.connection.sshKeyPath);
+		// Server ids stay stable so every attached deployment follows deliberate
+		// endpoint or key rotations without registry rewrites.
+		this.fleet.servers[index] = updated;
+		this.saveFleetRegistry();
+		this.log(`Fleet server updated: ${updated.name}.`, { area: "fleet", serverId: updated.id });
+		return this.getFleetState();
+	}
+
+	removeFleetServer(serverId) {
+		const server = this.fleet.servers.find(item => item.id === serverId);
+		if (!server) {
+			throw new Error("Server was not found.");
+		}
+		if (server.id === "local") {
+			throw new Error("The built-in local server cannot be removed.");
+		}
+		const attachedDeployments = this.fleet.deployments.filter(item => item.serverId === server.id);
+		if (attachedDeployments.some(item => item.botTypeId !== "hachi")) {
+			throw new Error("Move or remove this server's deployments first.");
+		}
+		// Fleet hides Hachi, but early migration still attached its internal record to
+		// the configured remote server. Move that record locally so an apparently
+		// empty additional-bot connection can be removed without losing Hachi state.
+		for (const deployment of attachedDeployments) {
+			deployment.serverId = "local";
+			deployment.installPath = this.settings.installPath || this.defaultInstallPath;
+			deployment.pm2Name = "Hachi";
+		}
+		this.fleet.servers = this.fleet.servers.filter(item => item.id !== server.id);
+		this.saveFleetRegistry();
+		this.log(`Fleet server removed: ${server.name}.`, { area: "fleet", serverId: server.id });
+		return this.getFleetState();
+	}
+
+	async addFleetDeployment(values) {
+		const definitions = loadBotDefinitions(this.botDefinitionsDir).definitions;
+		const deployment = normalizeDeployment(values, this.fleet, definitions);
+		const server = this.fleet.servers.find(item => item.id === deployment.serverId);
+		const definition = definitions.find(item => item.id === deployment.botTypeId);
+		const verified = await this.verifyFleetDeploymentCandidate({ definition, deployment, server });
+		// Branches belong to installations, not capabilities. A reviewed local
+		// checkout may use a feature branch while production tracks main.
+		const verifiedDeployment = { ...deployment, repositoryBranch: verified.branch };
+		this.fleet.deployments.push(verifiedDeployment);
+		this.fleet.activeDeploymentId = verifiedDeployment.id;
+		this.fleet.activeDeploymentByBotType ||= {};
+		this.fleet.activeDeploymentByBotType[verifiedDeployment.botTypeId] = verifiedDeployment.id;
+		this.saveFleetRegistry();
+		this.log(`Fleet deployment added: ${verifiedDeployment.name}.`, { area: "fleet", deploymentId: verifiedDeployment.id, serverId: verifiedDeployment.serverId });
+		return this.getFleetState();
+	}
+
+	async inspectFleetBotCandidate(values) {
+		const server = this.fleet.servers.find(item => item.id === values?.serverId);
+		if (!server) {
+			throw new Error("Select a valid connection.");
+		}
+		// Profile generation and testing begin from a repository HachiGen can
+		// inspect directly. Remote deployments are attached only after approval.
+		if (server.connection.type !== "local") {
+			throw new Error("Initial bot setup requires a local repository. Add the remote production installation afterward.");
+		}
+		const installPath = String(values?.installPath || "").trim();
+		if (!installPath) {
+			throw new Error("Select a bot folder.");
+		}
+		const ecosystemCandidates = ["ecosystem.config.js", "ecosystem.config.cjs", "config/ecosystem.config.js", "config/ecosystem.config.cjs"];
+		const databaseCandidates = ["database/database.sqlite", "data/database.sqlite", "data/bot.sqlite", "database.sqlite"];
+		const logCandidates = ["logs", "log"];
+		const testEntryCandidates = ["start-test.js", "test.js", "scripts/start-test.js"];
+		const configurationCandidates = [".env", "config/config.json", "config.json", "config/settings.json", "settings.json", "config/config.yaml", "config/config.yml", "config/settings.yaml", "config/settings.yml"];
+		let origin;
+		let branch;
+		let profileBranch;
+		let packageJson;
+		let ecosystemFile;
+		let ecosystemFound;
+		let databasePath;
+		let logsPath;
+		let packageLockFound;
+		let testEntry;
+		if (server.connection.type === "ssh") {
+			const inspectionSource = fleetRemoteInspectionScript(ecosystemCandidates, databaseCandidates, logCandidates, testEntryCandidates);
+			const inspectScript = `cd ${quoteRemotePath(installPath)} && node -e ${quotePosix(inspectionSource)}`;
+			const result = await this.runFleetRemoteCommand(server, inspectScript, { allowFailure: true, log: false, timeoutMs: 30000 });
+			if (result.code !== 0) {
+				throw new Error(result.stderr || "Remote bot folder must be a Git checkout with an origin remote.");
+			}
+			const inspection = parseJsonText(result.stdout.trim(), null);
+			if (!inspection) {
+				throw new Error("Remote repository inspection returned an invalid response.");
+			}
+			({ origin, branch, packageJson, packageLockFound, databasePath, logsPath } = inspection);
+			profileBranch = inspection.defaultBranch || branch;
+			testEntry = inspection.testEntry;
+			ecosystemFile = inspection.ecosystemFile || "ecosystem.config.js";
+			ecosystemFound = Boolean(inspection.ecosystemFile);
+		} else {
+			if (!fileExists(installPath)) {
+				throw new Error("Bot folder does not exist.");
+			}
+			const originResult = await run("git", ["remote", "get-url", "origin"], { allowFailure: true, cwd: installPath, timeoutMs: 30000 });
+			const branchResult = await run("git", ["branch", "--show-current"], { allowFailure: true, cwd: installPath, timeoutMs: 30000 });
+			const defaultBranchResult = await run("git", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { allowFailure: true, cwd: installPath, timeoutMs: 30000 });
+			if (originResult.code !== 0 || !originResult.stdout.trim()) {
+				throw new Error("Bot folder must be a Git checkout with an origin remote.");
+			}
+			origin = originResult.stdout.trim();
+			branch = branchResult.stdout.trim();
+			profileBranch = defaultBranchResult.stdout.trim().replace(/^origin\//u, "") || branch;
+			packageJson = readJson(path.join(installPath, "package.json"), {});
+			packageLockFound = fileExists(path.join(installPath, "package-lock.json"));
+			ecosystemFile = ecosystemCandidates.find(candidate => fileExists(path.join(installPath, candidate))) || "ecosystem.config.js";
+			ecosystemFound = fileExists(path.join(installPath, ecosystemFile));
+			databasePath = databaseCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
+			logsPath = logCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
+			testEntry = testEntryCandidates.find(candidate => fileExists(path.join(installPath, candidate)));
+		}
+		if (!String(origin || "").trim() || String(origin).trim() === "-" || !String(branch || "").trim() || String(branch).trim() === "-") {
+			throw new Error("Bot folder must be a Git checkout with an origin remote.");
+		}
+		const scripts = packageJson.scripts || {};
+		const validationScript = ["check", "lint", "test"].find(name => scripts[name]);
+		const deployScript = ["deploy", "deploy:commands", "commands:deploy"].find(name => scripts[name]);
+		const testDeployScript = ["deploy:test", "test:deploy"].find(name => scripts[name]);
+		const displayName = String(values?.name || packageJson.displayName || packageJson.name || path.basename(installPath)).trim();
+		const id = normalizeProfileId(packageJson.name || displayName, "bot");
+		const definition = {
+			id,
+			displayName,
+			repository: { branch: String(profileBranch || branch || "").trim() || "main", url: String(origin).trim() },
+			runtime: { ecosystemFile, pm2Name: String(values?.pm2Name || displayName).trim() },
+			credentials: { mode: "external" },
+			paths: {},
+			capabilities: { gitUpdates: true, pm2: ecosystemFound },
+			commands: { install: { executable: "npm", args: [packageLockFound ? "ci" : "install"] } },
+			configuration: { files: configurationCandidates.filter(candidate => fileExists(path.join(installPath, candidate))) },
+		};
+		if (validationScript) {
+			definition.commands.validate = { executable: "npm", args: ["run", validationScript] };
+		}
+		if (deployScript) {
+			definition.commands.deployCommands = { executable: "npm", args: ["run", deployScript] };
+			definition.capabilities.discordCommands = true;
+		}
+		if (testDeployScript) {
+			definition.commands.testDeployCommands = { executable: "npm", args: ["run", testDeployScript] };
+			definition.capabilities.discordCommands = true;
+		}
+		if (testEntry) {
+			definition.commands.testStart = { executable: "node", args: [testEntry] };
+		}
+		if (databasePath) {
+			definition.paths.database = databasePath;
+			definition.capabilities.backups = true;
+			const cipherDeclared = Boolean(packageJson.dependencies?.[CIPHER_DRIVER_PACKAGE] || packageJson.optionalDependencies?.[CIPHER_DRIVER_PACKAGE]);
+			const encryptionFilesFound = fileExists(path.join(installPath, "database", "dbToolConnection.js")) &&
+				fileExists(path.join(installPath, "database", "dbEncryption.js"));
+			if (scripts["database:encrypt"] && scripts["database:verify"] && cipherDeclared && encryptionFilesFound && cipherDriverStatus(installPath).installed) {
+				definition.capabilities.databaseEncryption = true;
+				definition.capabilities.databaseToolConnection = true;
+				definition.commands.databaseEncrypt = { executable: "npm", args: ["run", "database:encrypt"] };
+				definition.commands.databaseVerify = { executable: "npm", args: ["run", "database:verify"] };
+				if (scripts["database:rotate"]) {
+					definition.commands.databaseRotate = { executable: "npm", args: ["run", "database:rotate"] };
+				}
+				if (scripts["database:plaintext"]) {
+					definition.commands.databasePlaintext = { executable: "npm", args: ["run", "database:plaintext"] };
+				}
+			}
+		}
+		if (logsPath) {
+			definition.paths.logs = logsPath;
+			definition.capabilities.logs = true;
+		}
+		return {
+			definition,
+			detected: { branch, databasePath: databasePath || null, ecosystemFound: definition.capabilities.pm2, ecosystemFile, logsPath: logsPath || null, packageName: packageJson.name || null },
+			installPath,
+			serverId: server.id,
+			warnings: definition.capabilities.pm2 ? [] : ["No PM2 ecosystem file was found. The bot will be added without PM2 controls."],
+		};
+	}
+
+	previewExternalBotDefinition(jsonText) {
+		const parsed = parseJsonText(jsonText, null);
+		if (!parsed) {
+			throw new Error("Bot definition is not valid JSON.");
+		}
+		const definition = validateExternalBotDefinition(parsed);
+		return {
+			id: definition.id,
+			displayName: definition.displayName,
+			repository: definition.repository,
+			credentialsMode: definition.credentials.mode,
+			capabilities: Object.entries(definition.capabilities).filter(([, enabled]) => enabled).map(([name]) => name),
+			commands: Object.keys(definition.commands),
+			paths: definition.paths,
+			fingerprint: definition.fingerprint,
+		};
+	}
+
+	setActiveFleetDeployment(deploymentId) {
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		if (!deployment) {
+			throw new Error("Deployment was not found.");
+		}
+		this.fleet.activeDeploymentId = deploymentId;
+		this.fleet.activeDeploymentByBotType ||= {};
+		this.fleet.activeDeploymentByBotType[deployment.botTypeId] = deploymentId;
+		this.saveFleetRegistry();
+		return this.getFleetState();
+	}
+
+	async reapproveFleetDeployment(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		if (context.definition.source !== "external") {
+			throw new Error("Native Hachi does not require profile reapproval.");
+		}
+		const verified = await this.verifyFleetDeploymentCandidate(context);
+		// Approval snapshots prevent a profile file from silently gaining powers.
+		// Reapproval refreshes them only after the installation is revalidated.
+		context.deployment.definitionFingerprint = context.definition.fingerprint;
+		context.deployment.approvedCapabilities = Object.fromEntries(
+			Object.entries(context.definition.capabilities || {}).filter(([, enabled]) => enabled),
+		);
+		context.deployment.repositoryBranch = verified.branch;
+		this.saveFleetRegistry();
+		this.log(`Fleet deployment profile reapproved: ${context.deployment.name}.`, { area: "fleet", deploymentId });
+		return this.getFleetState();
+	}
+
+	removeFleetDeployment(deploymentId) {
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId);
+		if (!deployment) {
+			throw new Error("Deployment was not found.");
+		}
+		if (deployment.botTypeId === "hachi" && this.fleet.deployments.filter(item => item.botTypeId === "hachi").length === 1) {
+			throw new Error("The migrated native Hachi deployment cannot be removed until another Hachi deployment exists.");
+		}
+		this.fleet.deployments = this.fleet.deployments.filter(item => item.id !== deploymentId);
+		if (this.fleet.activeDeploymentId === deploymentId) {
+			this.fleet.activeDeploymentId = this.fleet.deployments[0]?.id || null;
+		}
+		if (this.fleet.activeDeploymentByBotType?.[deployment.botTypeId] === deploymentId) {
+			const replacement = this.fleet.deployments.find(item => item.botTypeId === deployment.botTypeId);
+			if (replacement) {
+				this.fleet.activeDeploymentByBotType[deployment.botTypeId] = replacement.id;
+			} else {
+				delete this.fleet.activeDeploymentByBotType[deployment.botTypeId];
+			}
+		}
+		this.saveFleetRegistry();
+		this.log(`Fleet deployment removed: ${deployment.name}.`, { area: "fleet", deploymentId });
+		return this.getFleetState();
+	}
+
+	installExternalBotDefinition(jsonText) {
+		const parsed = parseJsonText(jsonText, null);
+		if (!parsed) {
+			throw new Error("Bot definition is not valid JSON.");
+		}
+		const definition = validateExternalBotDefinition(parsed);
+		ensureDir(this.botDefinitionsDir);
+		const destination = path.join(this.botDefinitionsDir, `${definition.id}.json`);
+		if (fileExists(destination)) {
+			throw new Error(`Bot type ${definition.id} is already installed.`);
+		}
+		writeJsonFile(destination, parsed);
+		this.log(`External bot type installed: ${definition.displayName}.`, { area: "fleet", botTypeId: definition.id });
+		return this.getFleetState();
+	}
+
+	async verifyFleetDeploymentCandidate(context) {
+		if (!context.definition.repository?.url) {
+			throw new Error("Bot definition must declare its repository URL.");
+		}
+		let origin;
+		let branch;
+		let ecosystemFound;
+		if (context.server.connection.type === "ssh") {
+			const ecosystemCheck = context.definition.capabilities?.pm2 ?
+				` && test -f ${quotePosix(context.definition.runtime.ecosystemFile)}` :
+				"";
+			const result = await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && git remote get-url origin && git branch --show-current${ecosystemCheck}`,
+				{ allowFailure: true, log: false, timeoutMs: 30000 },
+			);
+			if (result.code !== 0) {
+				throw new Error(result.stderr || "Remote deployment is missing its Git origin or ecosystem file.");
+			}
+			const lines = result.stdout.trim().split(/\r?\n/u);
+			origin = lines[0];
+			branch = lines[1];
+			ecosystemFound = true;
+		} else {
+			if (!fileExists(context.deployment.installPath)) {
+				throw new Error("Deployment folder does not exist.");
+			}
+			const result = await run("git", ["remote", "get-url", "origin"], {
+				allowFailure: true,
+				cwd: context.deployment.installPath,
+				timeoutMs: 30000,
+			});
+			if (result.code !== 0) {
+				throw new Error("Deployment folder is not a Git checkout with an origin remote.");
+			}
+			origin = result.stdout.trim();
+			const branchResult = await run("git", ["branch", "--show-current"], {
+				allowFailure: true,
+				cwd: context.deployment.installPath,
+				timeoutMs: 30000,
+			});
+			branch = branchResult.stdout.trim();
+			ecosystemFound = fileExists(path.join(context.deployment.installPath, context.definition.runtime.ecosystemFile));
+		}
+		if (normalizeGitRepositoryIdentity(origin) !== normalizeGitRepositoryIdentity(context.definition.repository.url)) {
+			throw new Error(`Repository origin mismatch. Expected ${context.definition.repository.url}, found ${redactUrlCredentials(origin)}.`);
+		}
+		if (!branch) {
+			throw new Error("Deployment repository is in detached HEAD state. Check out a named branch before adding it.");
+		}
+		if (context.definition.capabilities?.pm2 && !ecosystemFound) {
+			throw new Error(`Required ecosystem file was not found: ${context.definition.runtime.ecosystemFile}.`);
+		}
+		return { branch, origin, ok: true };
+	}
+
+	removeExternalBotDefinition(botTypeId) {
+		if (botTypeId === "hachi") {
+			throw new Error("Native Hachi cannot be removed.");
+		}
+		if (this.fleet.deployments.some(item => item.botTypeId === botTypeId)) {
+			throw new Error("Remove this bot type's deployments first.");
+		}
+		const destination = path.join(this.botDefinitionsDir, `${botTypeId}.json`);
+		if (!fileExists(destination)) {
+			throw new Error("External bot type was not found.");
+		}
+		fs.rmSync(destination, { force: true });
+		this.log(`External bot type removed: ${botTypeId}.`, { area: "fleet", botTypeId });
+		return this.getFleetState();
+	}
+
+	async runFleetDefinitionCommand(deploymentId, commandName, options = {}) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		const capabilityByCommand = {
+			credentialsWrite: "secretEncryption",
+			databaseEncrypt: "databaseEncryption",
+			databasePlaintext: "databaseEncryption",
+			databaseVerify: "databaseEncryption",
+			deployCommands: "discordCommands",
+			deployGlobalCommands: "discordCommands",
+			deployGuildCommands: "discordCommands",
+			deleteCommands: "discordCommands",
+			testDeployCommands: "discordCommands",
+			install: "gitUpdates",
+			validate: "gitUpdates",
+		};
+		if (capabilityByCommand[commandName]) {
+			this.assertFleetCapability(context, capabilityByCommand[commandName]);
+		}
+		const command = context.definition.commands?.[commandName];
+		if (!command) {
+			throw new Error(`${context.definition.displayName} does not define ${commandName}.`);
+		}
+		const remoteCommand = [command.executable, ...command.args].map(quotePosix).join(" ");
+		return this.runFleetDeploymentCommand(
+			context,
+			{ command: command.executable, args: command.args },
+			remoteCommand,
+			{ env: options.env, timeoutMs: options.timeoutMs || 600000 },
+		);
+	}
+
+	async runFleetPlaintextDatabaseAdapter(context) {
+		this.assertFleetCapability(context, "databaseEncryption");
+		if (context.definition.id === "hachi") {
+			const updates = {
+				HACHI_DB_ENCRYPTION: "",
+				HACHI_DB_KEY: "",
+				HACHI_DB_KEY_FILE: "",
+			};
+			if (context.server.connection.type === "ssh") {
+				const script = [
+					"const fs=require('node:fs');",
+					`const updates=${JSON.stringify(updates)};`,
+					"const file='.env',text=fs.existsSync(file)?fs.readFileSync(file,'utf8'):'';",
+					"const pending=new Map(Object.entries(updates)),lines=text.split(/\\r?\\n/u),out=[];",
+					"for(const line of lines){const match=line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=/u);",
+					"if(match&&pending.has(match[1])){out.push(match[1]+'='+JSON.stringify(pending.get(match[1])));",
+					"pending.delete(match[1]);}else if(line||out.length)out.push(line);}",
+					"for(const [key,value] of pending)out.push(key+'='+JSON.stringify(value));",
+					"const temporary=file+'.hachigen-'+process.pid+'.tmp';fs.writeFileSync(temporary,out.join('\\n').replace(/\\n*$/u,'')+'\\n',{mode:0o600});fs.renameSync(temporary,file);",
+				].join("");
+				return this.runFleetRemoteCommand(
+					context.server,
+					`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
+					{ log: false, timeoutMs: 30000 },
+				);
+			}
+			const envPath = path.join(context.deployment.installPath, ".env");
+			const current = fileExists(envPath) ? fs.readFileSync(envPath, "utf8") : "";
+			const temporaryPath = `${envPath}.hachigen-${process.pid}.tmp`;
+			fs.writeFileSync(temporaryPath, updateDotEnvContent(current, updates), { encoding: "utf8", mode: 0o600 });
+			fs.renameSync(temporaryPath, envPath);
+			return { ok: true, message: "Hachi database encryption was disabled for the restored plaintext database." };
+		}
+		if (context.definition.commands?.databasePlaintext) {
+			return this.runFleetDefinitionCommand(context.deployment.id, "databasePlaintext", { timeoutMs: 120000 });
+		}
+		let packageJson;
+		if (context.server.connection.type === "ssh") {
+			const script = "const p=require('./package.json');process.stdout.write(JSON.stringify({available:Boolean(p.scripts&&p.scripts['database:plaintext'])}))";
+			const result = await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
+				{ log: false, timeoutMs: 30000 },
+			);
+			packageJson = parseJsonText(result.stdout, {});
+		} else {
+			packageJson = { available: Boolean(readJson(path.join(context.deployment.installPath, "package.json"), {})?.scripts?.["database:plaintext"]) };
+		}
+		if (!packageJson.available) {
+			throw new Error("The selected installation does not provide the required database:plaintext adapter.");
+		}
+		// Compatibility for profiles approved before plaintext restore was added:
+		// only this fixed package script is allowed under databaseEncryption approval.
+		return this.runFleetDeploymentCommand(
+			context,
+			{ command: "npm", args: ["run", "database:plaintext"] },
+			"npm run database:plaintext",
+			{ timeoutMs: 120000 },
+		);
+	}
+
+	async runFleetGit(context, args, options = {}) {
+		if (context.server.connection.type === "ssh") {
+			return this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && ${gitShellCommand(args)}`,
+				options,
+			);
+		}
+		return run("git", args, {
+			cwd: context.deployment.installPath,
+			allowFailure: Boolean(options.allowFailure),
+			timeoutMs: options.timeoutMs || 300000,
+			onLog: options.log === false ? undefined : entry => this.logShell(entry),
+		});
+	}
+
+	async getFleetRepositoryStatus(deploymentId, options = {}) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		if (options.fetch) {
+			this.assertFleetCapability(context, "gitUpdates");
+		}
+		const [head, branch, changes, origin] = await Promise.all([
+			this.runFleetGit(context, ["rev-parse", "HEAD"], { allowFailure: true, log: false }),
+			this.runFleetGit(context, ["branch", "--show-current"], { allowFailure: true, log: false }),
+			this.runFleetGit(context, ["status", "--porcelain"], { allowFailure: true, log: false }),
+			this.runFleetGit(context, ["remote", "get-url", "origin"], { allowFailure: true, log: false }),
+		]);
+		if (head.code !== 0) {
+			return { deploymentId, isGit: false, message: "Deployment is not a Git checkout." };
+		}
+		// A user may deliberately switch an installation after onboarding. Always
+		// update the branch that is actually checked out, using saved metadata only
+		// when Git cannot report a current branch.
+		const targetBranch = branch.stdout.trim() || context.deployment.repositoryBranch || context.definition.repository?.branch || "main";
+		const originUrl = origin.stdout.trim();
+		const originMatches = origin.code === 0 && normalizeGitRepositoryIdentity(originUrl) === normalizeGitRepositoryIdentity(context.definition.repository?.url);
+		if (!originMatches && options.fetch) {
+			throw new Error(`Repository origin mismatch. Expected ${context.definition.repository?.url || "a declared URL"}, found ${redactUrlCredentials(originUrl) || "none"}.`);
+		}
+		let behind = null;
+		if (options.fetch) {
+			await this.runFleetGit(context, ["fetch", "origin", targetBranch], { timeoutMs: 300000 });
+			const count = await this.runFleetGit(context, ["rev-list", "--count", `HEAD..origin/${targetBranch}`], { allowFailure: true, log: false });
+			behind = count.code === 0 ? Number.parseInt(count.stdout.trim(), 10) || 0 : null;
+		}
+		return {
+			deploymentId,
+			isGit: true,
+			head: head.stdout.trim(),
+			branch: branch.stdout.trim(),
+			originUrl: redactUrlCredentials(originUrl),
+			originMatches,
+			targetBranch,
+			dirty: Boolean(changes.stdout.trim()),
+			changes: changes.stdout.trim().split(/\r?\n/u).filter(Boolean).slice(0, 100),
+			behind,
+			updateAvailable: behind !== null && behind > 0,
+		};
+	}
+
+	async updateFleetDeployment(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "gitUpdates");
+		if (!context.definition.capabilities?.gitUpdates) {
+			throw new Error(`${context.definition.displayName} does not declare Git update capability.`);
+		}
+		const before = await this.getFleetRepositoryStatus(deploymentId, { fetch: true });
+		if (!before.isGit) {
+			throw new Error(before.message);
+		}
+		if (before.dirty) {
+			throw new Error("Deployment has local changes. Commit or stash them before updating.");
+		}
+		if (!before.updateAvailable) {
+			return { ...before, ok: true, message: "Deployment is already current." };
+		}
+		const runtimeBefore = context.definition.capabilities?.pm2 ? await this.getFleetDeploymentStatus(deploymentId) : null;
+		let databaseBackup = null;
+		if (context.definition.paths?.database) {
+			this.assertFleetCapability(context, "backups");
+			databaseBackup = await this.backupFleetDatabase(deploymentId);
+		}
+		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		try {
+			await this.runFleetGit(context, ["merge", "--ff-only", `origin/${before.targetBranch}`], { timeoutMs: 300000 });
+			if (context.definition.commands?.install) {
+				await this.runFleetDefinitionCommand(deploymentId, "install", { timeoutMs: 600000 });
+			}
+			if (context.definition.commands?.validate) {
+				await this.runFleetDefinitionCommand(deploymentId, "validate", { timeoutMs: 300000 });
+			}
+			if (context.definition.capabilities?.pm2) {
+				await this.controlFleetDeployment(deploymentId, "start");
+			}
+			const after = await this.getFleetRepositoryStatus(deploymentId);
+			this.log(`Fleet deployment updated: ${context.deployment.name}.`, { area: "fleet-update", deploymentId, from: before.head, to: after.head });
+			return { ...after, backupId: databaseBackup?.backupId || null, ok: true, message: "Deployment updated and validated." };
+		} catch (error) {
+			const rollback = [];
+			const attempt = async (label, operation) => {
+				try {
+					const result = await operation();
+					const ok = result?.code === undefined || result.code === 0;
+					rollback.push({ label, ok, detail: ok ? "completed" : (result.stderr || `exit ${result.code}`) });
+				} catch (rollbackError) {
+					rollback.push({ label, ok: false, detail: readableCause(rollbackError) });
+				}
+			};
+			// The worktree was verified clean before updating, so returning to the
+			// recorded commit cannot overwrite changes that existed before this run.
+			await attempt("restore code", () => this.runFleetGit(context, ["reset", "--hard", before.head], { allowFailure: true, timeoutMs: 300000 }));
+			if (context.definition.commands?.install) {
+				await attempt("restore dependencies", () => this.runFleetDefinitionCommand(deploymentId, "install", { timeoutMs: 600000 }));
+			}
+			if (databaseBackup) {
+				await attempt("restore database", () => this.restoreFleetDatabaseBackup(deploymentId, databaseBackup.backupId));
+			}
+			if (runtimeBefore?.status === "online") {
+				await attempt("restart previous runtime", () => this.controlFleetDeployment(deploymentId, "start"));
+			}
+			this.log(`Fleet update rollback finished for ${context.deployment.name}.`, { area: "fleet-update", deploymentId, rollback });
+			const summary = rollback.map(step => `${step.label}: ${step.ok ? "ok" : `failed (${step.detail})`}`).join("; ");
+			throw new Error(`${error.message} Rollback results: ${summary || "no recovery steps were available"}.`);
+		}
+	}
+
+	async deployFleetDiscordCommands(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "discordCommands");
+		if (!context.definition.capabilities?.discordCommands) {
+			throw new Error(`${context.definition.displayName} does not declare Discord command deployment capability.`);
+		}
+		await this.assertCredentialLeaseAvailable(deploymentId);
+		if (context.definition.id === "hachi") {
+			for (const commandName of ["deleteCommands", "deployGlobalCommands", "deployGuildCommands"]) {
+				await this.runFleetDefinitionCommand(deploymentId, commandName, { timeoutMs: 300000 });
+			}
+		} else {
+			await this.runFleetDefinitionCommand(deploymentId, "deployCommands", { timeoutMs: 300000 });
+		}
+		this.log(`Discord commands deployed for ${context.deployment.name}.`, { area: "fleet-discord", deploymentId });
+		return { deploymentId, ok: true, message: "Discord commands deployed." };
+	}
+
+	getFleetDeploymentContext(deploymentId) {
+		// Accept a concrete installation id or a stable logical bot id. Logical
+		// selections resolve through the bot's active target just as Hachi resolves
+		// its local/remote runtimeTarget before every operation.
+		const activeId = this.fleet.activeDeploymentByBotType?.[deploymentId];
+		const deployment = this.fleet.deployments.find(item => item.id === deploymentId) ||
+			this.fleet.deployments.find(item => item.id === activeId && item.botTypeId === deploymentId) ||
+			this.fleet.deployments.find(item => item.botTypeId === deploymentId && item.serverId === "local") ||
+			this.fleet.deployments.find(item => item.botTypeId === deploymentId);
+		if (!deployment) {
+			throw new Error("Deployment was not found.");
+		}
+		const server = this.fleet.servers.find(item => item.id === deployment.serverId);
+		if (!server) {
+			throw new Error("Deployment server was not found.");
+		}
+		const loaded = loadBotDefinitions(this.botDefinitionsDir);
+		const definition = loaded.definitions.find(item => item.id === deployment.botTypeId);
+		if (!definition) {
+			throw new Error(`Bot type ${deployment.botTypeId} is not installed.`);
+		}
+		return { definition, deployment, server };
+	}
+
+	getLocalTestingDeploymentContext(deploymentId) {
+		// Testing always executes from a local source checkout, independently of
+		// the production runtime target. Accept logical bot IDs so removed or
+		// replaced deployment IDs cannot remain embedded in renderer controls.
+		const exact = this.fleet.deployments.find(item => item.id === deploymentId);
+		const botTypeId = exact?.botTypeId || deploymentId;
+		const local = this.fleet.deployments.find(item => item.botTypeId === botTypeId && item.serverId === "local");
+		if (!local) {
+			throw new Error("A local repository installation is required for testing this bot.");
+		}
+		return this.getFleetDeploymentContext(local.id);
+	}
+
+	assertFleetCapability(context, capability, { allowChangedDefinition = false } = {}) {
+		if (context.definition.source === "native") {
+			return;
+		}
+		if (!allowChangedDefinition && context.deployment.definitionFingerprint !== context.definition.fingerprint) {
+			throw new Error(`${context.definition.displayName} definition changed after approval. Review and reapprove this deployment before modifying it.`);
+		}
+		if (!context.definition.capabilities?.[capability] || !context.deployment.approvedCapabilities?.[capability]) {
+			throw new Error(`${context.definition.displayName} deployment has not approved the ${capability} capability.`);
+		}
+	}
+
+	async runFleetRemoteCommand(server, command, options = {}) {
+		const connection = server.connection;
+		const settings = normalizeRemoteSettings({
+			host: connection.host,
+			username: connection.username,
+			sshKeyPath: connection.sshKeyPath,
+			portMode: connection.portMode,
+			port: connection.port,
+			remotePath: "/",
+			pm2Name: "unused",
+		});
+		validateRemoteSettings(settings, { requireFields: true });
+		return run("ssh", this.buildRemoteSshArgs(settings, command), {
+			allowFailure: Boolean(options.allowFailure),
+			input: options.input,
+			timeoutMs: options.timeoutMs || 120000,
+			onLog: options.log === false ? undefined : entry => this.logShell(entry),
+		});
+	}
+
+	async runFleetDeploymentCommand(context, localCommand, remoteCommand, options = {}) {
+		if (context.server.connection.type === "ssh") {
+			return this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && ${remoteCommand}`, options);
+		}
+		return run(localCommand.command, localCommand.args || [], {
+			cwd: context.deployment.installPath,
+			allowFailure: Boolean(options.allowFailure),
+			env: options.env,
+			input: options.input,
+			timeoutMs: options.timeoutMs || 120000,
+			onLog: options.log === false ? undefined : entry => this.logShell(entry),
+		});
+	}
+
+	async getFleetDeploymentStatus(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		let result;
+		if (context.server.connection.type === "ssh") {
+			result = await this.runFleetRemoteCommand(context.server, "pm2 jlist", { allowFailure: true, log: false, timeoutMs: 30000 });
+		} else {
+			if (!await commandExists("pm2")) {
+				return { deploymentId, installed: false, registered: false, status: "pm2-missing", message: "PM2 is not installed." };
+			}
+			result = await run("pm2", ["jlist"], { allowFailure: true, timeoutMs: 30000 });
+		}
+		if (result.code !== 0) {
+			return { deploymentId, installed: true, registered: false, status: "error", message: result.stderr || "Could not read PM2 status." };
+		}
+		try {
+			const app = parsePm2Json(result.stdout).find(item => item.name === context.deployment.pm2Name);
+			if (!app) {
+				return { deploymentId, installed: true, registered: false, status: "not-registered", message: `${context.deployment.pm2Name} is not registered.` };
+			}
+			return {
+				deploymentId,
+				installed: true,
+				registered: true,
+				status: app.pm2_env?.status || "unknown",
+				pid: app.pid || null,
+				cpu: app.monit?.cpu || 0,
+				memory: app.monit?.memory || 0,
+				restarts: app.pm2_env?.restart_time || 0,
+				message: `${context.deployment.name} is ${app.pm2_env?.status || "unknown"}.`,
+			};
+		} catch (error) {
+			return { deploymentId, installed: true, registered: false, status: "error", message: error.message };
+		}
+	}
+
+	async controlFleetDeployment(deploymentId, action) {
+		if (!["start", "stop", "restart"].includes(action)) {
+			throw new Error("Unsupported runtime action.");
+		}
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "pm2");
+		if (action === "start" || action === "restart") {
+			await this.assertCredentialLeaseAvailable(deploymentId);
+		}
+		if (!context.definition.capabilities?.pm2) {
+			throw new Error(`${context.definition.displayName} does not declare PM2 capability.`);
+		}
+		const status = await this.getFleetDeploymentStatus(deploymentId);
+		const ecosystem = context.definition.runtime.ecosystemFile;
+		let localArgs;
+		let remoteCommand;
+		if (action === "start" && !status.registered) {
+			localArgs = ["start", ecosystem, "--only", context.deployment.pm2Name];
+			remoteCommand = `pm2 start ${quotePosix(ecosystem)} --only ${quotePosix(context.deployment.pm2Name)}`;
+		} else {
+			localArgs = [action === "start" ? "restart" : action, context.deployment.pm2Name];
+			remoteCommand = `pm2 ${action === "start" ? "restart" : action} ${quotePosix(context.deployment.pm2Name)}`;
+		}
+		this.log(`${action[0].toUpperCase()}${action.slice(1)}ing fleet deployment ${context.deployment.name}.`, { area: "fleet-runtime", action, deploymentId, serverId: context.server.id });
+		await this.runFleetDeploymentCommand(context, { command: "pm2", args: localArgs }, remoteCommand);
+		if (action !== "stop") {
+			if (context.server.connection.type === "ssh") {
+				await this.runFleetRemoteCommand(context.server, "pm2 save", { timeoutMs: 120000 });
+			} else {
+				await run("pm2", ["save"], { timeoutMs: 120000, onLog: entry => this.logShell(entry) });
+			}
+		}
+		return this.getFleetDeploymentStatus(deploymentId);
+	}
+
+	async getFleetDeploymentLogs(deploymentId, lines = 200) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		// PM2 log reads do not execute profile-supplied commands. Continue honoring
+		// the immutable approved snapshot while a changed profile awaits review.
+		this.assertFleetCapability(context, "logs", { allowChangedDefinition: true });
+		const safeLines = Math.min(1000, Math.max(20, Number.parseInt(String(lines), 10) || 200));
+		const result = await this.runFleetDeploymentCommand(
+			context,
+			{ command: "pm2", args: ["logs", context.deployment.pm2Name, "--lines", String(safeLines), "--nostream", "--no-color"] },
+			`pm2 logs ${quotePosix(context.deployment.pm2Name)} --lines ${safeLines} --nostream --no-color`,
+			{ allowFailure: true, log: false, timeoutMs: 30000 },
+		);
+		return { deploymentId, logs: redactHachiGenLogText(`${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`), ok: result.code === 0 };
+	}
+
+	async readFleetDatabaseTable(deploymentId, tableName = "", sort = {}) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		const databasePath = context.definition.paths?.database;
+		if (!databasePath) {
+			throw new Error("This Bot Profile does not declare a database.");
+		}
+		// Viewing is observational: the worker confines the current profile path to
+		// the deployment root and opens SQLite read-only. Profile changes continue
+		// to block every command or database mutation until they are reapproved.
+		const approvedEncryptedViewer = context.definition.capabilities?.databaseToolConnection &&
+			context.deployment.approvedCapabilities?.databaseToolConnection &&
+			context.deployment.definitionFingerprint === context.definition.fingerprint;
+		if (!approvedEncryptedViewer && context.deployment.approvedCapabilities?.databaseToolConnection) {
+			const security = await this.auditFleetDeploymentSecurity(deploymentId);
+			if (security.database?.encryptedLikely || security.database?.plaintext === false) {
+				// Never load repository-owned connection code after its immutable profile
+				// fingerprint changes. Explain the approval boundary before the generic
+				// SQLite worker produces the misleading "file is not a database" error.
+				const botName = context.definition.displayName;
+				throw new Error(`${botName} uses an encrypted database, but its Bot Profile changed after approval. ` +
+					`Open ${botName}, then use Review & Reapprove before viewing it.`);
+			}
+		}
+		const request = approvedEncryptedViewer ?
+			{ action: "view", dbPath: databasePath, root: ".", sort, table: tableName } :
+			{ dbPath: databasePath, root: ".", sort, table: tableName };
+		const workerFile = approvedEncryptedViewer ? DATABASE_WORKER_FILE : SQLITE_VIEWER_WORKER_FILE;
+		const workerSource = fs.readFileSync(path.join(this.managerRoot, "src", workerFile), "utf8");
+		let result;
+		if (context.server.connection.type === "ssh") {
+			// Keep the generic viewer outside the managed bot repository and remove it
+			// after every attempt so read-only inspection leaves no support files behind.
+			const workerPath = `/tmp/hachigen-${approvedEncryptedViewer ? "database" : "sqlite-viewer"}-${crypto.randomUUID()}.js`;
+			try {
+				await this.runFleetRemoteCommand(
+					context.server,
+					`cat > ${quotePosix(workerPath)}`,
+					{ input: workerSource, log: false, timeoutMs: 30000 },
+				);
+				result = await this.runFleetRemoteCommand(
+					context.server,
+					`cd ${quoteRemotePath(context.deployment.installPath)} && node ${quotePosix(workerPath)}`,
+					{ allowFailure: true, input: JSON.stringify(request), log: false, timeoutMs: 120000 },
+				);
+			} finally {
+				await this.runFleetRemoteCommand(context.server, `rm -f ${quotePosix(workerPath)}`, { allowFailure: true, log: false, timeoutMs: 30000 });
+			}
+		} else {
+			const absoluteDatabasePath = path.join(context.deployment.installPath, databasePath);
+			if (!isPathInside(context.deployment.installPath, absoluteDatabasePath) || !fileExists(absoluteDatabasePath)) {
+				throw new Error("The declared database is missing or outside the deployment root.");
+			}
+			result = await run("node", [path.join(this.managerRoot, "src", workerFile)], {
+				allowFailure: true,
+				cwd: context.deployment.installPath,
+				input: JSON.stringify(request),
+				timeoutMs: 120000,
+			});
+		}
+		const parsed = parseJsonText((result.stdout || "").trim(), null);
+		if (!parsed?.ok) {
+			throw new Error(parsed?.error || result.stderr || "Database viewer did not return valid data.");
+		}
+		this.log(`Fleet database viewer loaded ${parsed.selectedTable || "no table"}.`, { area: "fleet", deploymentId });
+		return parsed;
+	}
+
+	async readTestingDatabaseTable(botTypeId, profileId, tableName = "", sort = {}) {
+		const context = this.getLocalTestingDeploymentContext(botTypeId);
+		const identity = this.readTestingIdentity(profileId);
+		const declaredPath = context.definition.paths?.database;
+		if (!declaredPath) {
+			throw new Error(`${context.definition.displayName} does not declare a database.`);
+		}
+		// Test data is isolated under the identity profile. Encrypted bot profiles
+		// reuse their approved repository-owned connection adapter and key lookup.
+		const databaseRoot = path.join(
+			this.testingProfilesDir,
+			identity.id,
+			"data",
+			normalizeProfileId(context.definition.id, "bot"),
+		);
+		const databaseFile = path.basename(declaredPath);
+		const databasePath = path.join(databaseRoot, databaseFile);
+		if (!isPathInside(this.testingProfilesDir, databasePath) || !fileExists(databasePath)) {
+			throw new Error(`No ${context.definition.displayName} database exists for ${identity.name} yet.`);
+		}
+		const approvedEncryptedViewer = context.definition.capabilities?.databaseToolConnection &&
+			context.deployment.approvedCapabilities?.databaseToolConnection &&
+			context.deployment.definitionFingerprint === context.definition.fingerprint;
+		const request = approvedEncryptedViewer ?
+			{ action: "view", dbPath: databasePath, root: context.deployment.installPath, sort, table: tableName } :
+			{ dbPath: databaseFile, root: ".", sort, table: tableName };
+		const workerFile = approvedEncryptedViewer ? DATABASE_WORKER_FILE : SQLITE_VIEWER_WORKER_FILE;
+		const testDatabase = approvedEncryptedViewer ? this.testingDatabaseEnvironment(context, identity) : { env: {} };
+		const result = await run("node", [path.join(this.managerRoot, "src", workerFile)], {
+			allowFailure: true,
+			cwd: databaseRoot,
+			env: { ...process.env, ...testDatabase.env },
+			input: JSON.stringify(request),
+			timeoutMs: 120000,
+		});
+		const parsed = parseJsonText((result.stdout || "").trim(), null);
+		if (!parsed?.ok) {
+			throw new Error(parsed?.error || result.stderr || "Testing database viewer did not return valid data.");
+		}
+		this.log(`Testing database viewer loaded ${parsed.selectedTable || "no table"}.`, {
+			area: "testing",
+			botTypeId: context.definition.id,
+			profileId: identity.id,
+		});
+		return {
+			...parsed,
+			database: databaseFileStatus(databasePath),
+			source: { profileId: identity.id, profileName: identity.name, type: "testing" },
+		};
+	}
+
+	async checkFleetDeploymentHealth(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		let pathResult;
+		if (context.server.connection.type === "ssh") {
+			pathResult = await this.runFleetRemoteCommand(context.server, `test -d ${quoteRemotePath(context.deployment.installPath)}`, { allowFailure: true, log: false, timeoutMs: 30000 });
+		} else {
+			pathResult = { code: fileExists(context.deployment.installPath) ? 0 : 1 };
+		}
+		const runtime = await this.getFleetDeploymentStatus(deploymentId);
+		return {
+			deploymentId,
+			checkedAt: new Date().toISOString(),
+			installFound: pathResult.code === 0,
+			runtime,
+			security: { status: "unverified", message: "Run a deployment security audit before treating stored Discord data as protected." },
+			ok: pathResult.code === 0 && !["error", "pm2-missing"].includes(runtime.status),
+		};
+	}
+
+	async getFleetDeploymentOverview(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		const probes = [
+			() => this.checkFleetDeploymentHealth(deploymentId),
+			() => this.getFleetRepositoryStatus(deploymentId),
+			() => this.auditFleetDeploymentSecurity(deploymentId),
+		];
+		// Many SSH servers throttle simultaneous unauthenticated handshakes. Remote
+		// overview reads share one ordered pathway; local filesystem/process probes
+		// remain concurrent because they do not create connection pressure.
+		const results = context.server.connection.type === "ssh" ? [] : await Promise.allSettled(probes.map(probe => probe()));
+		if (context.server.connection.type === "ssh") {
+			for (const probe of probes) {
+				try {
+					results.push({ status: "fulfilled", value: await probe() });
+				} catch (reason) {
+					results.push({ status: "rejected", reason });
+				}
+			}
+		}
+		const [healthResult, repositoryResult, securityResult] = results;
+		const failure = result => result.status === "rejected" ? { error: readableCause(result.reason) } : result.value;
+		return {
+			deployment: {
+				capabilities: context.definition.source === "native" ? context.definition.capabilities : context.deployment.approvedCapabilities,
+				id: context.deployment.id,
+				installPath: context.deployment.installPath,
+				name: context.deployment.name,
+			},
+			health: failure(healthResult),
+			repository: failure(repositoryResult),
+			security: failure(securityResult),
+			server: {
+				id: context.server.id,
+				name: context.server.name,
+				type: context.server.connection.type,
+			},
+		};
+	}
+
+	getFleetBackupVault() {
+		return readJson(path.join(this.userDataPath, "fleet-backup-vault.json"), { version: 1, records: {} }) || { version: 1, records: {} };
+	}
+
+	saveFleetBackupVault(vault) {
+		if (!this.protectSecret) {
+			throw new Error("Operating-system backup-key encryption is unavailable.");
+		}
+		const filePath = path.join(this.userDataPath, "fleet-backup-vault.json");
+		const temporaryPath = `${filePath}.${process.pid}.tmp`;
+		fs.writeFileSync(temporaryPath, `${JSON.stringify(vault, null, "\t")}\n`, { encoding: "utf8", mode: 0o600 });
+		fs.renameSync(temporaryPath, filePath);
+	}
+
+	async auditFleetDeploymentSecurity(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		const databaseRelativePath = context.definition.paths?.database;
+		if (!databaseRelativePath) {
+			return { deploymentId, checkedAt: new Date().toISOString(), database: { status: "not-applicable", message: "No database is declared." }, ok: true };
+		}
+		let database;
+		if (context.server.connection.type === "ssh") {
+			// Kept as one literal because it executes on the remote Node runtime.
+			// eslint-disable-next-line max-len
+			const script = "const fs=require('node:fs');const p=process.argv[1];if(!fs.existsSync(p)){console.log(JSON.stringify({exists:false}));process.exit(0)}const fd=fs.openSync(p,'r');const b=Buffer.alloc(16);fs.readSync(fd,b,0,16,0);fs.closeSync(fd);const s=fs.statSync(p);console.log(JSON.stringify({exists:true,header:b.toString('hex'),size:s.size,mode:s.mode&511}))";
+			const result = await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(databaseRelativePath)}`,
+				{ allowFailure: true, log: false, timeoutMs: 30000 },
+			);
+			database = parseJsonText(result.stdout, { exists: false, error: result.stderr || "Database inspection failed." });
+		} else {
+			const databasePath = path.join(context.deployment.installPath, databaseRelativePath);
+			if (!isPathInside(context.deployment.installPath, databasePath)) {
+				throw new Error("Database path escapes the deployment root.");
+			}
+			if (!fileExists(databasePath)) {
+				database = { exists: false };
+			} else {
+				const fd = fs.openSync(databasePath, "r");
+				const header = Buffer.alloc(16);
+				try {
+					fs.readSync(fd, header, 0, 16, 0);
+				} finally {
+					fs.closeSync(fd);
+				}
+				const stats = fs.statSync(databasePath);
+				database = { exists: true, header: header.toString("hex"), size: stats.size, mode: stats.mode & 0o777 };
+			}
+		}
+		if (!database.exists) {
+			return { deploymentId, checkedAt: new Date().toISOString(), database: { ...database, status: "missing", message: "Declared database was not found." }, ok: false };
+		}
+		const plaintext = database.header === SQLITE_HEADER.toString("hex");
+		let verified = false;
+		let verificationMessage = "Encrypted-looking header has not been verified with the database key.";
+		const databaseVerificationApproved = context.definition.native ||
+			(context.deployment.definitionFingerprint === context.definition.fingerprint &&
+			context.definition.capabilities?.databaseEncryption && context.deployment.approvedCapabilities?.databaseEncryption);
+		if (!plaintext && context.definition.commands?.databaseVerify && databaseVerificationApproved) {
+			const result = await this.runFleetDefinitionCommand(deploymentId, "databaseVerify", { timeoutMs: 120000 });
+			verified = result.code === 0;
+			verificationMessage = verified ? "Database opened successfully through the bot's declared verification command." : "Database verification command failed.";
+		}
+		const status = plaintext ? "noncompliant" : (verified ? "protected" : "encrypted-unverified");
+		return {
+			deploymentId,
+			checkedAt: new Date().toISOString(),
+			database: {
+				...database,
+				path: databaseRelativePath,
+				plaintext,
+				verified,
+				status,
+				message: plaintext ? "Plain SQLite header detected. Discord API data is not encrypted at rest." : verificationMessage,
+			},
+			ok: status === "protected",
+		};
+	}
+
+	async backupFleetDatabase(deploymentId, { databaseRuntimeKeyOverride = null, prune = true, reason = "backup" } = {}) {
+		if (!this.protectSecret) {
+			throw new Error("Operating-system backup-key encryption is unavailable.");
+		}
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
+		const databaseRelativePath = context.definition.paths?.database;
+		if (!databaseRelativePath) {
+			throw new Error("This bot type does not declare a database.");
+		}
+		let content;
+		if (context.server.connection.type === "ssh") {
+			// Remote database bytes are encoded only for SSH transport, then encrypted
+			// into the same local HGBK store used by every other installation.
+			const script = "const fs=require('node:fs'),p=process.argv[1];if(!fs.existsSync(p))throw Error('Declared database was not found.');process.stdout.write(fs.readFileSync(p).toString('base64'))";
+			const result = await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(databaseRelativePath)}`,
+				{ log: false, timeoutMs: 300000 },
+			);
+			content = Buffer.from(String(result.stdout || "").trim(), "base64");
+			if (!content.length) {
+				throw new Error("Remote database backup returned no data.");
+			}
+		} else {
+			const sourcePath = path.join(context.deployment.installPath, databaseRelativePath);
+			if (!isPathInside(context.deployment.installPath, sourcePath) || !fileExists(sourcePath)) {
+				throw new Error("Declared database was not found.");
+			}
+			content = fs.readFileSync(sourcePath);
+		}
+		let databaseRuntimeKey = null;
+		if (!content.subarray(0, 16).equals(SQLITE_HEADER)) {
+			databaseRuntimeKey = databaseRuntimeKeyOverride || await this.readFleetDatabaseRuntimeKey(context);
+			if (!databaseRuntimeKey?.key) {
+				throw new Error("The database is encrypted, but its runtime key could not be read. HachiGen will not create an incomplete recovery point.");
+			}
+		}
+		const backup = this.createFleetBackupRecord(context, content, { databaseRuntimeKey, reason });
+		this.log(`Encrypted fleet database backup created for ${context.deployment.name}.`, { area: "fleet-backup", backupId: backup.backupId, deploymentId, serverId: context.server.id });
+		if (prune) {
+			await this.pruneFleetBackups(deploymentId);
+		}
+		return backup;
+	}
+
+	async inspectFleetDatabaseRestore(deploymentId, backupId) {
+		if (!this.unprotectSecret) {
+			throw new Error("Operating-system backup-key decryption is unavailable.");
+		}
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
+		const record = this.getFleetBackupVault().records[backupId];
+		if (!record || record.deploymentId !== context.deployment.id || record.serverId !== context.server.id) {
+			throw new Error("Backup does not belong to this deployment and server.");
+		}
+		const databaseRelativePath = context.definition.paths?.database;
+		const restored = this.readFleetBackupContent(record);
+		let result;
+		if (context.server.connection.type === "ssh") {
+			const script = [
+				"const fs=require('node:fs'),p=process.argv[1],h=Buffer.from('SQLite format 3\\0');",
+				"let current='missing';",
+				"if(fs.existsSync(p))current=fs.readFileSync(p).subarray(0,16).equals(h)?'plaintext':'encrypted';",
+				"console.log(JSON.stringify({current}));",
+			].join("");
+			const command = await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(databaseRelativePath)}`, {
+				log: false,
+				timeoutMs: 300000,
+			});
+			const remote = parseJsonText(command.stdout, null);
+			result = remote ?
+				{
+					backup: restored.subarray(0, 16).equals(SQLITE_HEADER) ? "plaintext" : "encrypted",
+					current: remote.current,
+				} :
+				null;
+		} else {
+			const destination = path.join(context.deployment.installPath, databaseRelativePath);
+			const currentHeader = fileExists(destination) ? fs.readFileSync(destination).subarray(0, 16) : null;
+			result = {
+				backup: restored.subarray(0, 16).equals(SQLITE_HEADER) ? "plaintext" : "encrypted",
+				current: currentHeader ? (currentHeader.equals(SQLITE_HEADER) ? "plaintext" : "encrypted") : "missing",
+			};
+		}
+		if (!result) {
+			throw new Error("Database restore inspection did not return a valid result.");
+		}
+		return {
+			backupId,
+			backupProtection: result.backup,
+			currentProtection: result.current,
+			disablesEncryption: result.current === "encrypted" && result.backup === "plaintext",
+		};
+	}
+
+	readFleetBackupContent(record) {
+		const buffer = fs.readFileSync(record.backupPath);
+		if (buffer.subarray(0, 5).toString() !== "HGBK1") {
+			throw new Error("Backup format is invalid.");
+		}
+		const key = this.unprotectSecret(record.key);
+		const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(key, "base64"), buffer.subarray(5, 17));
+		decipher.setAuthTag(buffer.subarray(17, 33));
+		return Buffer.concat([decipher.update(buffer.subarray(33)), decipher.final()]);
+	}
+
+	async writeFleetDatabaseBackupToDestination(context, record, databaseRelativePath) {
+		const restored = this.readFleetBackupContent(record);
+		if (context.server.connection.type === "ssh") {
+			// The decrypted bytes cross the authenticated SSH process through stdin and
+			// are written directly to the destination without a remote backup copy.
+			// eslint-disable-next-line max-len
+			const script = "const fs=require('node:fs'),p=process.argv[1],b=Buffer.from(fs.readFileSync(0,'utf8'),'base64');fs.writeFileSync(p,b,{mode:384});for(const s of ['-wal','-shm','-journal'])fs.rmSync(p+s,{force:true});";
+			await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(databaseRelativePath)}`, {
+				input: restored.toString("base64"),
+				log: false,
+				timeoutMs: 300000,
+			});
+			return;
+		}
+		const destination = path.join(context.deployment.installPath, databaseRelativePath);
+		fs.writeFileSync(destination, restored, { mode: 0o600 });
+		removeLocalDatabaseSidecars(destination);
+	}
+
+	databaseRuntimeFields(context) {
+		const prefix = context.definition.id.replace(/[^a-z0-9]+/giu, "_").replace(/^_+|_+$/gu, "").toUpperCase();
+		return {
+			encryption: `${prefix}_DB_ENCRYPTION`,
+			key: `${prefix}_DB_KEY`,
+			keyFile: `${prefix}_DB_KEY_FILE`,
+		};
+	}
+
+	async readFleetDatabaseRuntimeKey(context, { allowLegacyDiscovery = false } = {}) {
+		const fields = this.databaseRuntimeFields(context);
+		if (context.server.connection.type === "ssh") {
+			const script = [
+				"const fs=require('node:fs'),os=require('node:os'),path=require('node:path');",
+				`const fields=${JSON.stringify(fields)},botId=${JSON.stringify(context.definition.id)};`,
+				"const text=fs.existsSync('.env')?fs.readFileSync('.env','utf8'):'';const env={};",
+				"for(const line of text.split(/\\r?\\n/u)){const m=line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.*)$/u);if(!m)continue;let v=m[2].trim();try{v=JSON.parse(v)}catch{}env[m[1]]=String(v)}",
+				"let key=String(env[fields.key]||'').trim(),keyFile=String(env[fields.keyFile]||'').trim(),source=key?'direct':'';",
+				"const resolve=p=>p.startsWith('~/')?path.join(os.homedir(),p.slice(2)):path.resolve(p);",
+				"if(!key&&keyFile){keyFile=resolve(keyFile);if(fs.existsSync(keyFile)){key=fs.readFileSync(keyFile,'utf8').trim();source='file'}}",
+				allowLegacyDiscovery ? "if(!key){const p=path.join(os.homedir(),'.config',botId.toLowerCase(),'db.key');if(fs.existsSync(p)){key=fs.readFileSync(p,'utf8').trim();keyFile=p;source='legacy-file'}}" : "",
+				"process.stdout.write(JSON.stringify({key:Buffer.from(key).toString('base64'),keyFilePath:keyFile,source}))",
+			].join("");
+			const result = await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
+				log: false,
+				timeoutMs: 30000,
+			});
+			const parsed = parseJsonText(result.stdout, {});
+			return { key: parsed.key ? Buffer.from(parsed.key, "base64").toString("utf8") : "", keyFilePath: parsed.keyFilePath || "", source: parsed.source || "" };
+		}
+		const env = parseDotEnv(path.join(context.deployment.installPath, ".env"));
+		let key = String(env[fields.key] || "").trim();
+		let keyFilePath = String(env[fields.keyFile] || "").trim();
+		let source = key ? "direct" : "";
+		if (!key && keyFilePath) {
+			keyFilePath = resolveLocalPath(keyFilePath, context.deployment.installPath);
+			if (fileExists(keyFilePath)) {
+				key = fs.readFileSync(keyFilePath, "utf8").trim();
+				source = "file";
+			}
+		}
+		if (!key && allowLegacyDiscovery) {
+			const profileFolder = context.definition.displayName || context.definition.id;
+			const candidates = process.platform === "win32" ?
+				[path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), profileFolder, "db.key")] :
+				[path.join(os.homedir(), ".config", context.definition.id.toLowerCase(), "db.key")];
+			keyFilePath = candidates.find(candidate => fileExists(candidate)) || "";
+			if (keyFilePath) {
+				key = fs.readFileSync(keyFilePath, "utf8").trim();
+				source = "legacy-file";
+			}
+		}
+		return { key, keyFilePath, source };
+	}
+
+	backupDatabaseRuntimeKey(record) {
+		if (!record?.databaseRuntimeKey) {
+			return null;
+		}
+		return {
+			key: this.unprotectSecret(record.databaseRuntimeKey),
+			keyFilePath: record.databaseRuntimeKeyFile || "",
+			source: record.databaseRuntimeKeySource || "direct",
+		};
+	}
+
+	async verifyFleetDatabaseRuntimeKey(context, keyInfo) {
+		if (!keyInfo?.key || !context.definition.commands?.databaseVerify) {
+			return false;
+		}
+		const fields = this.databaseRuntimeFields(context);
+		const result = await this.runFleetDefinitionCommand(context.deployment.id, "databaseVerify", {
+			env: {
+				[fields.encryption]: "encrypted",
+				[fields.key]: keyInfo.key,
+				[fields.keyFile]: "",
+			},
+			timeoutMs: 120000,
+		});
+		return result.code === 0;
+	}
+
+	async applyFleetDatabaseRuntimeKey(context, keyInfo) {
+		if (!keyInfo?.key) {
+			throw new Error("The encrypted recovery point does not include a readable database runtime key.");
+		}
+		const fields = this.databaseRuntimeFields(context);
+		const useKeyFile = Boolean(keyInfo.keyFilePath && keyInfo.source !== "direct");
+		const updates = {
+			[fields.encryption]: "encrypted",
+			[fields.key]: useKeyFile ? "" : keyInfo.key,
+			[fields.keyFile]: useKeyFile ? keyInfo.keyFilePath : "",
+		};
+		if (context.server.connection.type === "ssh") {
+			const payload = Buffer.from(JSON.stringify({ key: keyInfo.key, keyFilePath: useKeyFile ? keyInfo.keyFilePath : "", updates })).toString("base64");
+			const script = [
+				"const fs=require('node:fs'),os=require('node:os'),path=require('node:path');",
+				"const data=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8')),file='.env';",
+				"if(data.keyFilePath){const p=data.keyFilePath.startsWith('~/')?path.join(os.homedir(),data.keyFilePath.slice(2)):data.keyFilePath;",
+				"fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,data.key+'\\n',{mode:0o600})}",
+				"const text=fs.existsSync(file)?fs.readFileSync(file,'utf8'):'';",
+				"const pending=new Map(Object.entries(data.updates)),out=[];",
+				"for(const line of text.split(/\\r?\\n/u)){const m=line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=/u);",
+				"if(m&&pending.has(m[1])){out.push(m[1]+'='+JSON.stringify(pending.get(m[1])));pending.delete(m[1])}",
+				"else if(line||out.length)out.push(line)}for(const [k,v] of pending)out.push(k+'='+JSON.stringify(v));",
+				"const tmp=file+'.hachigen-'+process.pid+'.tmp';",
+				"fs.writeFileSync(tmp,out.join('\\n').replace(/\\n*$/u,'')+'\\n',{mode:0o600});fs.renameSync(tmp,file)",
+			].join("");
+			await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(payload)}`, { log: false, timeoutMs: 30000 });
+			return;
+		}
+		if (useKeyFile) {
+			ensureDir(path.dirname(keyInfo.keyFilePath));
+			fs.writeFileSync(keyInfo.keyFilePath, `${keyInfo.key}\n`, { encoding: "utf8", mode: 0o600 });
+		}
+		const envPath = path.join(context.deployment.installPath, ".env");
+		const current = fileExists(envPath) ? fs.readFileSync(envPath, "utf8") : "";
+		const temporaryPath = `${envPath}.hachigen-${process.pid}.tmp`;
+		fs.writeFileSync(temporaryPath, updateDotEnvContent(current, updates), { encoding: "utf8", mode: 0o600 });
+		fs.renameSync(temporaryPath, envPath);
+	}
+
+	async restoreFleetDatabaseBackup(deploymentId, backupId, { allowPlaintextTransition = false } = {}) {
+		if (!this.unprotectSecret) {
+			throw new Error("Operating-system backup-key decryption is unavailable.");
+		}
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
+		const record = this.getFleetBackupVault().records[backupId];
+		if (!record || record.deploymentId !== context.deployment.id || record.serverId !== context.server.id) {
+			throw new Error("Backup does not belong to this deployment and server.");
+		}
+		// Reinspect at the mutation boundary so stale renderer state cannot silently
+		// authorize an encrypted-to-plaintext transition.
+		const inspection = await this.inspectFleetDatabaseRestore(deploymentId, backupId);
+		if (inspection.disablesEncryption && !allowPlaintextTransition) {
+			throw new Error("This restore changes the database from encrypted to plaintext and requires explicit confirmation.");
+		}
+		let restoredRuntimeKey = this.backupDatabaseRuntimeKey(record);
+		if (inspection.backupProtection === "encrypted" && !restoredRuntimeKey) {
+			// Backups made before runtime-key snapshots were introduced can still be
+			// recovered when the bot-owned default key file retained by the plaintext
+			// adapter is available. Verification below prevents accepting a wrong key.
+			restoredRuntimeKey = await this.readFleetDatabaseRuntimeKey(context, { allowLegacyDiscovery: true });
+			if (!restoredRuntimeKey?.key) {
+				throw new Error("This encrypted backup predates database-key snapshots, and its retained runtime key could not be found. The database was not changed.");
+			}
+		}
+		let currentRuntimeKey = null;
+		if (inspection.currentProtection === "encrypted") {
+			currentRuntimeKey = await this.readFleetDatabaseRuntimeKey(context);
+			if (!currentRuntimeKey?.key) {
+				const recoveryCandidates = [
+					restoredRuntimeKey,
+					await this.readFleetDatabaseRuntimeKey(context, { allowLegacyDiscovery: true }),
+				].filter(candidate => candidate?.key);
+				for (const candidate of recoveryCandidates) {
+					if (await this.verifyFleetDatabaseRuntimeKey(context, candidate).catch(() => false)) {
+						currentRuntimeKey = candidate;
+						break;
+					}
+				}
+				if (!currentRuntimeKey?.key) {
+					throw new Error("The current database is encrypted without an active key, and none of the retained recovery keys can open it. The database was not changed.");
+				}
+			}
+		}
+		// Do not run retention until the selected restore has completed; a policy of
+		// one backup must not prune the very backup this operation is about to read.
+		const recovery = await this.backupFleetDatabase(deploymentId, {
+			databaseRuntimeKeyOverride: currentRuntimeKey,
+			prune: false,
+			reason: "pre-restore",
+		});
+		const recoveryRecord = this.getFleetBackupVault().records[recovery.backupId];
+		const databaseRelativePath = context.definition.paths?.database;
+		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		try {
+			await this.writeFleetDatabaseBackupToDestination(context, record, databaseRelativePath);
+			if (inspection.disablesEncryption) {
+				await this.runFleetPlaintextDatabaseAdapter(context);
+			} else if (inspection.backupProtection === "encrypted") {
+				await this.applyFleetDatabaseRuntimeKey(context, restoredRuntimeKey);
+				const verified = await this.auditFleetDeploymentSecurity(deploymentId);
+				if (!verified.ok) {
+					throw new Error(verified.database?.message || "The restored encrypted database could not be verified with its saved key.");
+				}
+			}
+		} catch (error) {
+			if (recoveryRecord) {
+				await this.writeFleetDatabaseBackupToDestination(context, recoveryRecord, databaseRelativePath).catch(() => null);
+				const recoveryContent = this.readFleetBackupContent(recoveryRecord);
+				if (recoveryContent.subarray(0, 16).equals(SQLITE_HEADER)) {
+					await this.runFleetPlaintextDatabaseAdapter(context).catch(() => null);
+				} else {
+					await this.applyFleetDatabaseRuntimeKey(context, this.backupDatabaseRuntimeKey(recoveryRecord)).catch(() => null);
+				}
+			}
+			throw new Error(`${error.message} The pre-restore database backup was reapplied.`);
+		}
+		this.log(`Fleet database backup restored for ${context.deployment.name}.`, { area: "fleet-backup", backupId, deploymentId });
+		return {
+			backupId,
+			deploymentId,
+			disabledEncryption: inspection.disablesEncryption,
+			ok: true,
+			recoveryBackupId: recovery.backupId,
+			message: inspection.disablesEncryption ?
+				"Plaintext database restored and database encryption disabled. The prior encrypted database and key material were retained for recovery." :
+				inspection.backupProtection === "encrypted" ?
+					"Encrypted database and its matching runtime key were restored and verified. The prior database was retained as a recovery backup." :
+					"Database restored. The prior database was retained as a recovery backup.",
+		};
+	}
+
+	async encryptFleetDatabase(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "databaseEncryption");
+		if (context.definition.id === "hachi" && context.deployment.installPath === this.getActiveInstallIdentifier()) {
+			return this.convertDatabaseEncryption();
+		}
+		if (!context.definition.commands?.databaseEncrypt || !context.definition.commands?.databaseVerify) {
+			throw new Error("External bot definition must declare databaseEncrypt and databaseVerify commands.");
+		}
+		await this.verifyFleetDatabaseEncryptionPrerequisites(context);
+		const recovery = await this.backupFleetDatabase(deploymentId, { reason: "pre-encryption" });
+		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		try {
+			await this.runFleetDefinitionCommand(deploymentId, "databaseEncrypt", { timeoutMs: 600000 });
+			const audit = await this.auditFleetDeploymentSecurity(deploymentId);
+			if (!audit.ok) {
+				throw new Error(audit.database.message || "Encrypted database verification failed.");
+			}
+			return { ...audit, backupId: recovery.backupId, message: "Database encrypted and verified. Encrypted recovery backup retained." };
+		} catch (error) {
+			await this.restoreFleetDatabaseBackup(deploymentId, recovery.backupId);
+			throw new Error(`${error.message} Original database restored from encrypted recovery backup.`);
+		}
+	}
+
+	async rotateFleetDatabaseKey(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "databaseEncryption");
+		if (!context.definition.commands?.databaseRotate) {
+			throw new Error("This bot profile does not declare a databaseRotate command. Review the updated profile before rotating its key.");
+		}
+		await this.verifyFleetDatabaseEncryptionPrerequisites(context, { requireRotation: true });
+		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		await this.runFleetDefinitionCommand(deploymentId, "databaseRotate", { timeoutMs: 600000 });
+		const audit = await this.auditFleetDeploymentSecurity(deploymentId);
+		if (!audit.ok) {
+			throw new Error(audit.database?.message || "The bot's key rotation command completed, but the selected database could not be verified.");
+		}
+		return { ...audit, message: "Database key rotated and verified. The bot retained its safety backup." };
+	}
+
+	async exportFleetDatabaseKeyBackup(deploymentId, destinationPath) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "databaseEncryption");
+		await this.verifyFleetDatabaseEncryptionPrerequisites(context);
+		const script = [
+			"const path=require('node:path'),db=require('./database/dbEncryption.js');",
+			"const info=db.readDatabaseKeyFromEnvFile(path.resolve('.env'),process.env,process.cwd());",
+			"if(!String(info.key||'').trim())throw Error('No database key is configured.');",
+			"process.stdout.write(JSON.stringify({key:Buffer.from(info.key,'utf8').toString('base64'),ok:true}));",
+		].join("");
+		const commandResult = context.server.connection.type === "ssh" ?
+			await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
+				{ allowFailure: true, log: false, timeoutMs: 60000 },
+			) :
+			await run("node", ["-e", script], { allowFailure: true, cwd: context.deployment.installPath, timeoutMs: 60000 });
+		const payload = parseJsonText(String(commandResult.stdout || "").trim(), null);
+		if (commandResult.code !== 0 || !payload?.ok || !payload.key) {
+			throw new Error(commandResult.stderr || "The selected bot did not return a database key.");
+		}
+		const key = Buffer.from(payload.key, "base64").toString("utf8").trim();
+		if (!key) {
+			throw new Error("The selected bot returned an empty database key.");
+		}
+		fs.writeFileSync(destinationPath, `${key}\n`, { encoding: "utf8", mode: 0o600 });
+		return { ok: true, message: "Database key backup exported." };
+	}
+
+	async rotateFleetBackupKeys(deploymentId) {
+		if (!this.protectSecret || !this.unprotectSecret) {
+			throw new Error("Operating-system backup-key protection is unavailable.");
+		}
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
+		const vault = this.getFleetBackupVault();
+		const records = Object.values(vault.records).filter(record => record.deploymentId === context.deployment.id && record.serverId === context.server.id);
+		let rotated = 0;
+		for (const record of records) {
+			const oldProtectedKey = record.key;
+			const oldKey = this.unprotectSecret(oldProtectedKey);
+			const newKey = crypto.randomBytes(32).toString("base64");
+			const iv = crypto.randomBytes(12);
+			const temporaryPath = `${record.backupPath}.key-rotation-${crypto.randomUUID()}.tmp`;
+			const source = fs.readFileSync(record.backupPath);
+			if (source.subarray(0, 5).toString() !== "HGBK1") {
+				throw new Error("Backup format is invalid.");
+			}
+			const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(oldKey, "base64"), source.subarray(5, 17));
+			decipher.setAuthTag(source.subarray(17, 33));
+			const raw = Buffer.concat([decipher.update(source.subarray(33)), decipher.final()]);
+			const cipher = crypto.createCipheriv("aes-256-gcm", Buffer.from(newKey, "base64"), iv);
+			const encrypted = Buffer.concat([cipher.update(raw), cipher.final()]);
+			fs.writeFileSync(temporaryPath, Buffer.concat([Buffer.from("HGBK1"), iv, cipher.getAuthTag(), encrypted]), { mode: 0o600 });
+			record.key = this.protectSecret(newKey);
+			try {
+				this.saveFleetBackupVault(vault);
+				fs.copyFileSync(temporaryPath, record.backupPath);
+				fs.rmSync(temporaryPath, { force: true });
+				rotated += 1;
+			} catch (error) {
+				record.key = oldProtectedKey;
+				this.saveFleetBackupVault(vault);
+				fs.rmSync(temporaryPath, { force: true });
+				throw error;
+			}
+		}
+		return { ok: true, rotated, message: `${rotated} backup encryption key${rotated === 1 ? "" : "s"} rotated.` };
+	}
+
+	async verifyFleetDatabaseEncryptionPrerequisites(context, { requireRotation = false } = {}) {
+		const script = [
+			"const fs=require('node:fs'),path=require('node:path');",
+			`const driver=${JSON.stringify(CIPHER_DRIVER_PACKAGE)},failures=[];`,
+			`const requireRotation=${JSON.stringify(requireRotation)};`,
+			"let pkg={};try{pkg=JSON.parse(fs.readFileSync('package.json','utf8'));}catch{failures.push('package.json is missing or invalid');}",
+			"if(!pkg.scripts?.['database:encrypt'])failures.push('package script database:encrypt is missing');",
+			"if(!pkg.scripts?.['database:verify'])failures.push('package script database:verify is missing');",
+			"if(requireRotation&&!pkg.scripts?.['database:rotate'])failures.push('package script database:rotate is missing');",
+			"if(!(pkg.dependencies?.[driver]||pkg.optionalDependencies?.[driver]))failures.push(driver+' is not declared as a runtime dependency');",
+			"for(const file of ['database/dbEncryption.js','database/dbToolConnection.js'])if(!fs.existsSync(file))failures.push(file+' is missing');",
+			"try{require.resolve(driver,{paths:[process.cwd()]});}catch{failures.push(driver+' is not installed in this application');}",
+			"try{const tool=require(path.resolve('database/dbToolConnection.js'));",
+			"if(typeof tool.openToolDatabase!=='function')failures.push('database tool adapter is invalid');",
+			"}catch(error){failures.push('database tool adapter cannot load: '+error.message);}",
+			"try{const encryption=require(path.resolve('database/dbEncryption.js'));",
+			"for(const name of ['convertPlainDatabaseToEncrypted','verifyEncryptedDatabaseFile','rekeyEncryptedDatabase'])",
+			"if(typeof encryption[name]!=='function')failures.push('database encryption adapter lacks '+name);",
+			"}catch(error){failures.push('database encryption adapter cannot load: '+error.message);}",
+			"process.stdout.write(JSON.stringify({failures,ok:failures.length===0}));",
+		].join("");
+		let result;
+		if (context.server.connection.type === "ssh") {
+			result = await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`,
+				{ allowFailure: true, log: false, timeoutMs: 60000 },
+			);
+		} else {
+			result = await run("node", ["-e", script], {
+				allowFailure: true,
+				cwd: context.deployment.installPath,
+				timeoutMs: 60000,
+			});
+		}
+		const report = parseJsonText(String(result.stdout || "").trim(), null);
+		if (result.code !== 0 || !report?.ok) {
+			const detail = report?.failures?.join("; ") || result.stderr || "installation verification did not return a valid result";
+			throw new Error(`Database encryption preflight failed for ${context.definition.displayName}: ${detail}. No database changes were made.`);
+		}
+		return report;
+	}
+
+	setFleetDeploymentPolicies(deploymentId, values = {}) {
+		const { deployment } = this.getFleetDeploymentContext(deploymentId);
+		deployment.policies = {
+			...deployment.policies,
+			backupRetention: Math.min(365, Math.max(1, Number.parseInt(String(values.backupRetention), 10) || 14)),
+			autoBackupHours: Math.min(720, Math.max(0, Number.parseInt(String(values.autoBackupHours), 10) || 0)),
+			logRetentionDays: Math.min(3650, Math.max(1, Number.parseInt(String(values.logRetentionDays), 10) || 30)),
+			requireEncryptedDatabase: values.requireEncryptedDatabase !== false,
+			requireEncryptedBackups: true,
+		};
+		this.saveFleetRegistry();
+		this.log(`Security and retention policies updated for ${deployment.name}.`, { area: "fleet-policy", deploymentId });
+		return this.getFleetState();
+	}
+
+	startFleetMaintenance() {
+		if (this.fleetMaintenanceTimer) {
+			return;
+		}
+		const runMaintenance = () => this.runFleetMaintenance().catch(error => {
+			this.event("error", `Fleet maintenance failed: ${error.message}`, { area: "fleet-maintenance" });
+		});
+		this.fleetMaintenanceTimer = setInterval(runMaintenance, 5 * 60 * 1000);
+		this.fleetMaintenanceTimer.unref?.();
+		setTimeout(runMaintenance, 15000).unref?.();
+	}
+
+	stopFleetMaintenance() {
+		if (this.fleetMaintenanceTimer) {
+			clearInterval(this.fleetMaintenanceTimer);
+		}
+		this.fleetMaintenanceTimer = null;
+	}
+
+	async runFleetMaintenance() {
+		for (const deployment of this.fleet.deployments) {
+			const hours = deployment.policies?.autoBackupHours || 0;
+			if (!hours) {
+				continue;
+			}
+			const context = this.getFleetDeploymentContext(deployment.id);
+			if (!context.definition.paths?.database) {
+				continue;
+			}
+			// Scheduled work must honor the same reviewed capability snapshot as manual actions.
+			if (!context.definition.native && !context.deployment.approvedCapabilities?.backups) {
+				continue;
+			}
+			const latest = this.listFleetBackups(deployment.id)[0];
+			const due = !latest || Date.now() - new Date(latest.createdAt).getTime() >= hours * 3600000;
+			if (!due) {
+				continue;
+			}
+			await this.backupFleetDatabase(deployment.id);
+			if (context.definition.native || context.deployment.approvedCapabilities?.logs) {
+				await this.pruneFleetLogs(deployment.id).catch(() => null);
+			}
+		}
+		return { ok: true };
+	}
+
+	listFleetBackups(deploymentId) {
+		const concreteDeploymentId = this.getFleetDeploymentContext(deploymentId).deployment.id;
+		return Object.entries(this.getFleetBackupVault().records)
+			.filter(([, record]) => record.deploymentId === concreteDeploymentId)
+			.map(([backupId, record]) => {
+				let databaseProtection = "unknown";
+				const reason = this.fleetBackupReason(record);
+				try {
+					const content = this.readFleetBackupContent(record);
+					databaseProtection = content.subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER) ? "plaintext" : "encrypted";
+				} catch {
+					// Keep damaged or unavailable records visible so the user can diagnose
+					// them instead of silently losing a restore point from the list.
+				}
+				return {
+					backupId,
+					backupPath: record.backupPath,
+					createdAt: record.createdAt,
+					databaseProtection,
+					displayName: path.basename(record.backupPath, path.extname(record.backupPath)),
+					encrypted: true,
+					reason,
+					serverId: record.serverId,
+				};
+			})
+			.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+	}
+
+	async pruneFleetBackups(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "backups");
+		const backups = this.listFleetBackups(deploymentId);
+		const expired = backups.slice(context.deployment.policies?.backupRetention || 14);
+		if (!expired.length) {
+			return { deploymentId, deleted: 0, kept: backups.length, ok: true };
+		}
+		const backupRoot = this.getFleetBackupDir(context);
+		for (const backup of expired) {
+			if (!isPathInside(backupRoot, backup.backupPath)) {
+				throw new Error("Refused to prune a backup outside the selected HachiGen backup folder.");
+			}
+			fs.rmSync(backup.backupPath, { force: true });
+		}
+		const vault = this.getFleetBackupVault();
+		for (const backup of expired) {
+			delete vault.records[backup.backupId];
+		}
+		this.saveFleetBackupVault(vault);
+		this.log(`Pruned ${expired.length} expired encrypted backup(s) for ${context.deployment.name}.`, { area: "fleet-backup", deploymentId });
+		return { deploymentId, deleted: expired.length, kept: backups.length - expired.length, ok: true };
+	}
+
+	async pruneFleetLogs(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		this.assertFleetCapability(context, "logs");
+		const logsRelativePath = context.definition.paths?.logs;
+		if (!logsRelativePath) {
+			throw new Error("This bot type does not declare a log directory.");
+		}
+		const retentionDays = context.deployment.policies?.logRetentionDays || 30;
+		if (context.server.connection.type === "ssh") {
+			// eslint-disable-next-line max-len
+			const script = "const fs=require('node:fs'),path=require('node:path'),p=JSON.parse(fs.readFileSync(0,'utf8')),cut=Date.now()-p.days*86400000;let n=0;if(fs.existsSync(p.dir))for(const e of fs.readdirSync(p.dir,{withFileTypes:true})){const f=path.join(p.dir,e.name);if(e.isFile()&&/\\.(?:log|txt)$/i.test(e.name)&&fs.statSync(f).mtimeMs<cut){fs.rmSync(f,{force:true});n++}}console.log(JSON.stringify({deleted:n}))";
+			const result = await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)}`, {
+				input: JSON.stringify({ dir: logsRelativePath, days: retentionDays }),
+				log: false,
+			});
+			return { deploymentId, ...parseJsonText(result.stdout, { deleted: 0 }), ok: true };
+		}
+		const logsPath = path.join(context.deployment.installPath, logsRelativePath);
+		if (!isPathInside(context.deployment.installPath, logsPath)) {
+			throw new Error("Log path escapes deployment root.");
+		}
+		const cutoff = Date.now() - retentionDays * 86400000;
+		let deleted = 0;
+		if (fileExists(logsPath)) {
+			for (const entry of fs.readdirSync(logsPath, { withFileTypes: true })) {
+				const filePath = path.join(logsPath, entry.name);
+				if (entry.isFile() && /\.(?:log|txt)$/iu.test(entry.name) && fs.statSync(filePath).mtimeMs < cutoff) {
+					fs.rmSync(filePath, { force: true });
+					deleted += 1;
+				}
+			}
+		}
+		this.log(`Pruned ${deleted} expired log file(s) for ${context.deployment.name}.`, { area: "fleet-logs", deploymentId });
+		return { deploymentId, deleted, ok: true };
+	}
+
+	async assertCredentialLeaseAvailable(deploymentId) {
+		const deployment = this.getFleetDeploymentContext(deploymentId).deployment;
+		if (!deployment?.credentialFingerprint || deployment.allowConcurrentCredentials) {
+			return;
+		}
+		const conflicts = this.fleet.deployments.filter(item =>
+			item.id !== deployment.id && item.credentialFingerprint === deployment.credentialFingerprint,
+		);
+		for (const conflict of conflicts) {
+			const status = await this.getFleetDeploymentStatus(conflict.id);
+			if (status.status === "online" || status.status === "launching") {
+				throw new Error(`The same Discord identity is already active on ${conflict.name}. Stop that deployment before starting this one.`);
+			}
+		}
+	}
+
+	async saveFleetDeploymentCredentials(deploymentId, values) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		if (context.definition.source !== "native") {
+			this.assertFleetCapability(context, "secretEncryption");
+			if (context.definition.credentials?.mode !== "adapter") {
+				throw new Error("This bot keeps credentials externally managed. HachiGen will not modify them.");
+			}
+		}
+		const token = String(values?.token || "").trim();
+		const clientId = String(values?.clientId || "").trim();
+		if (!token || !clientId) {
+			throw new Error("Discord token and application ID are required.");
+		}
+		const payload = {
+			token,
+			clientId,
+			clientSecret: String(values.clientSecret || ""),
+			publicKey: String(values.publicKey || ""),
+			guildIds: normalizeConfigIdList(values.guildIds),
+		};
+		if (context.definition.id === "hachi" && context.deployment.installPath === this.getActiveInstallIdentifier()) {
+			await this.writeConfiguration({ TOKEN: token, clientId });
+		} else {
+			const command = context.definition.commands?.credentialsWrite;
+			if (!command) {
+				throw new Error("External bot definition must declare credentialsWrite to encrypt credentials in its deployment folder.");
+			}
+			const remoteCommand = [command.executable, ...command.args].map(quotePosix).join(" ");
+			await this.runFleetDeploymentCommand(
+				context,
+				{ command: command.executable, args: command.args },
+				remoteCommand,
+				{ input: JSON.stringify(payload), timeoutMs: 120000 },
+			);
+		}
+		context.deployment.credentialFingerprint = crypto.createHash("sha256").update(token).digest("hex").slice(0, 24);
+		context.deployment.credentialsConfigured = true;
+		context.deployment.applicationId = clientId;
+		context.deployment.allowConcurrentCredentials = Boolean(values.allowConcurrent);
+		this.saveFleetRegistry();
+		this.log(`Deployment credentials updated in ${context.deployment.name}'s own storage.`, {
+			area: "deployment-credentials",
+			deploymentId,
+		});
+		return this.getFleetState();
+	}
+
+	getFleetState() {
+		const botTypes = loadBotDefinitions(this.botDefinitionsDir);
+		const servers = this.fleet.servers.map(server => ({
+			...server,
+			deploymentCount: this.fleet.deployments.filter(deployment => deployment.serverId === server.id).length,
+		}));
+
+		return {
+			activeDeploymentId: this.fleet.activeDeploymentId,
+			activeDeploymentByBotType: { ...(this.fleet.activeDeploymentByBotType || {}) },
+			botDefinitionErrors: botTypes.errors,
+			botTypes: botTypes.definitions,
+			deployments: this.fleet.deployments.map(deployment => {
+				const server = this.fleet.servers.find(item => item.id === deployment.serverId);
+				const definition = botTypes.definitions.find(item => item.id === deployment.botTypeId);
+				const packageJson = server?.connection?.type === "local" ? readJson(path.join(deployment.installPath, "package.json"), {}) : {};
+				return {
+					...deployment,
+					testCommandsAvailable: definition?.id === "hachi" || Boolean(definition?.commands?.testDeployCommands || packageJson.scripts?.["deploy:test"]),
+				};
+			}),
+			policies: this.fleet.policies,
+			servers,
+			version: this.fleet.version,
+		};
+	}
+
+	getFleetDeploymentConfiguration(deploymentId) {
+		const selected = this.getFleetDeploymentContext(deploymentId);
+		const localDeployment = this.fleet.deployments.find(item => item.botTypeId === selected.deployment.botTypeId &&
+			this.fleet.servers.find(server => server.id === item.serverId)?.connection?.type === "local");
+		if (!localDeployment) {
+			throw new Error("A local source repository is required to manage this bot's configuration.");
+		}
+		const defaults = [".env", "config/config.json", "config.json", "config/settings.json", "settings.json", "config/config.yaml", "config/config.yml", "config/settings.yaml", "config/settings.yml"];
+		const candidates = [...new Set([...defaults, ...(selected.definition.configuration?.files || [])])];
+		const files = candidates.flatMap(relativePath => {
+			const filePath = path.join(localDeployment.installPath, relativePath);
+			if (!isPathInside(localDeployment.installPath, filePath) || !fileExists(filePath)) {
+				return [];
+			}
+			const text = fs.readFileSync(filePath, "utf8");
+			if (relativePath === ".env") {
+				const fields = Object.entries(parseDotEnvContent(text)).map(([key, value]) => {
+					const sensitive = isSensitiveConfigKey(key);
+					return { hasValue: sensitive ? Boolean(value) : undefined, key, sensitive, type: "string", value: sensitive ? "" : value };
+				});
+				return [{ fields, format: "env", hash: crypto.createHash("sha256").update(text).digest("hex"), path: relativePath }];
+			}
+			const yaml = /\.ya?ml$/iu.test(relativePath);
+			const parsed = yaml ? YAML.parse(text) : parseJsonText(text, null);
+			if (!parsed || Array.isArray(parsed)) {
+				return [];
+			}
+			const fields = flattenConfigValues(parsed).map(field => {
+				const sensitive = isSensitiveConfigKey(field.key);
+				return { ...field, hasValue: sensitive ? Boolean(field.value) : undefined, sensitive, value: sensitive ? "" : field.value };
+			});
+			return [{
+				fields,
+				format: yaml ? "yaml" : "json",
+				hash: crypto.createHash("sha256").update(text).digest("hex"),
+				path: relativePath,
+			}];
+		});
+		return { deploymentId, files, localDeploymentId: localDeployment.id };
+	}
+
+	saveFleetDeploymentConfiguration(deploymentId, values = {}) {
+		const configuration = this.getFleetDeploymentConfiguration(deploymentId);
+		const file = configuration.files.find(item => item.path === values.path);
+		if (!file) {
+			throw new Error("Configuration file is not managed for this bot.");
+		}
+		const localDeployment = this.fleet.deployments.find(item => item.id === configuration.localDeploymentId);
+		const filePath = path.join(localDeployment.installPath, file.path);
+		const currentText = fs.readFileSync(filePath, "utf8");
+		if (crypto.createHash("sha256").update(currentText).digest("hex") !== values.hash) {
+			throw new Error("Configuration changed outside HachiGen. Refresh before saving.");
+		}
+		if (file.format === "env") {
+			const updates = {};
+			for (const field of Array.isArray(values.fields) ? values.fields : []) {
+				if (!Object.hasOwn(parseDotEnvContent(currentText), field.key)) {
+					throw new Error(`Environment field ${field.key} no longer exists.`);
+				}
+				// Sensitive inputs are replacements only; blank means preserve the
+				// existing value, which never crossed the IPC boundary.
+				if (!isSensitiveConfigKey(field.key) || String(field.value || "")) {
+					updates[field.key] = String(field.value ?? "");
+				}
+			}
+			const temporaryPath = `${filePath}.hachigen-${process.pid}.tmp`;
+			fs.writeFileSync(temporaryPath, updateDotEnvContent(currentText, updates), { encoding: "utf8", mode: 0o600 });
+			fs.renameSync(temporaryPath, filePath);
+			this.log(`Environment configuration saved for ${localDeployment.name}.`, { area: "fleet", deploymentId });
+			return this.getFleetDeploymentConfiguration(deploymentId);
+		}
+		const yamlDocument = file.format === "yaml" ? YAML.parseDocument(currentText) : null;
+		if (yamlDocument?.errors?.length) {
+			throw new Error(`YAML configuration is invalid: ${yamlDocument.errors[0].message}`);
+		}
+		const parsed = yamlDocument ? yamlDocument.toJS() : parseJsonText(currentText, null);
+		for (const field of Array.isArray(values.fields) ? values.fields : []) {
+			if (isSensitiveConfigKey(field.key) && !String(field.value || "")) {
+				continue;
+			}
+			const original = flattenConfigValues(parsed).find(item => item.key === field.key);
+			if (!original) {
+				throw new Error(`Configuration field ${field.key} no longer exists.`);
+			}
+			let next = field.value;
+			if (original.type === "number") {
+				next = Number(next);
+			}
+			if (original.type === "boolean") {
+				next = next === true || next === "true";
+			}
+			if (yamlDocument) {
+				yamlDocument.setIn(field.key.split("."), next);
+			} else {
+				setConfigValue(parsed, field.key, next);
+			}
+		}
+		const temporaryPath = `${filePath}.hachigen-${process.pid}.tmp`;
+		const output = yamlDocument ? yamlDocument.toString() : `${JSON.stringify(parsed, null, 2)}\n`;
+		fs.writeFileSync(temporaryPath, output, { encoding: "utf8", mode: 0o600 });
+		fs.renameSync(temporaryPath, filePath);
+		this.log(`Configuration saved for ${localDeployment.name}.`, { area: "fleet", deploymentId });
+		return this.getFleetDeploymentConfiguration(deploymentId);
+	}
+
+	readFleetConfigurationSecretForCopy(deploymentId, relativePath, key) {
+		const configuration = this.getFleetDeploymentConfiguration(deploymentId);
+		const file = configuration.files.find(item => item.path === relativePath);
+		const field = file?.fields.find(item => item.key === key);
+		if (!file || !field?.sensitive) {
+			throw new Error("Choose a recognized sensitive configuration field.");
+		}
+		const localDeployment = this.fleet.deployments.find(item => item.id === configuration.localDeploymentId);
+		const filePath = path.join(localDeployment.installPath, file.path);
+		const text = fs.readFileSync(filePath, "utf8");
+		const structured = file.format === "yaml" ? YAML.parse(text) : parseJsonText(text, {});
+		const value = file.format === "env" ? parseDotEnvContent(text)[key] : flattenConfigValues(structured).find(item => item.key === key)?.value;
+		if (value === undefined || value === null || String(value) === "") {
+			throw new Error(`${key} has no saved value.`);
+		}
+		return { field: key, ttlMs: 60000, value: String(value) };
 	}
 
 	loadSettings() {
@@ -2017,6 +4769,7 @@ class HachiManager {
 
 		return {
 			appName: "HachiGen",
+			fleet: this.getFleetState(),
 			hachiGenVersion: this.getHachiGenVersion(),
 			hachiVersion: scan?.packageVersion || "unknown",
 			installPath: this.getInstallPath(),
@@ -2401,6 +5154,24 @@ class HachiManager {
 		return result.stdout || "";
 	}
 
+	async readRemoteConfigurationFiles() {
+		// Configuration refresh used to open four SSH sessions concurrently. Some
+		// servers throttle concurrent handshakes, so read the fixed allowlist in one
+		// remote process and return structured content instead.
+		const script = [
+			"const fs=require('node:fs');",
+			`const files=${JSON.stringify(["blank.env", ".env", "config/blank.json", "config/config.json"])};`,
+			"const output={};",
+			"for(const file of files)output[file]=fs.existsSync(file)?fs.readFileSync(file,'utf8'):'';",
+			"process.stdout.write(JSON.stringify(output));",
+		].join("");
+		return this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Remote configuration files could not be read.",
+			log: false,
+			timeoutMs: 30000,
+		});
+	}
+
 	async writeRemoteText(relativePath, content) {
 		const directory = path.posix.dirname(relativePath);
 		const mkdir = directory && directory !== "." ? `mkdir -p ${quotePosix(directory)} && ` : "";
@@ -2569,18 +5340,36 @@ class HachiManager {
 
 	async testRemoteConnection() {
 		const settings = this.getRemoteSettings();
-		const errors = validateRemoteSettings(settings);
+		this.log("Testing remote connection...");
+		const tested = await this.executeRemoteConnectionTest(settings);
+		const lastTest = {
+			checkedAt: tested.checkedAt,
+			message: tested.message,
+			ok: tested.ok,
+			target: remoteConnectionLabel(settings),
+		};
 
+		this.settings.lastRemoteTest = lastTest;
+		this.saveSettings();
+
+		return tested;
+	}
+
+	async testFleetRemoteConnection(values) {
+		const settings = normalizeRemoteSettings(values);
+		this.log("Testing Fleet remote connection...", { area: "fleet" });
+		return this.executeRemoteConnectionTest(settings);
+	}
+
+	async executeRemoteConnectionTest(settings) {
+		const errors = validateRemoteSettings(settings);
 		if (errors.length) {
 			throw new Error(errors[0]);
 		}
-
 		assertSshPrivateKeyFile(settings.sshKeyPath);
-
 		if (!await commandExists("ssh")) {
 			throw new Error("OpenSSH client was not found on this computer.");
 		}
-
 		const remoteCommand = [
 			`cd ${quoteRemotePath(settings.remotePath)}`,
 			"printf 'path='",
@@ -2590,28 +5379,16 @@ class HachiManager {
 			"printf 'pm2='",
 			`pm2 describe ${quotePosix(settings.pm2Name)} --no-color`,
 		].join(" && ");
-		this.log("Testing remote connection...");
 		const result = await run("ssh", this.buildRemoteSshArgs(settings, remoteCommand), {
 			allowFailure: true,
 			timeoutMs: 20000,
 		});
 		const ok = result.code === 0;
-		const message = ok ? "Remote connection validated." : "Remote connection test failed. Review the output for details.";
-		const lastTest = {
-			checkedAt: new Date().toISOString(),
-			message,
-			ok,
-			target: remoteConnectionLabel(settings),
-		};
-
-		this.settings.lastRemoteTest = lastTest;
-		this.saveSettings();
-
 		return {
-			checkedAt: lastTest.checkedAt,
+			checkedAt: new Date().toISOString(),
 			code: result.code,
 			ok,
-			message,
+			message: ok ? "Remote connection validated." : "Remote connection test failed. Review the output for details.",
 			stderr: result.stderr,
 			stdout: result.stdout,
 		};
@@ -2644,10 +5421,7 @@ class HachiManager {
 	}
 
 	getDatabaseBackupDir() {
-		// Database backups live inside the selected install folder so they stay
-		// with the Hachi instance they protect, while .gitignore keeps them local.
-		// Example: <Hachi>/manager/backups/database/database-2026-06-21.sqlite
-		return path.join(this.getInstallPath(), "manager", "backups", "database");
+		return this.getFleetBackupDir(this.getFleetDeploymentContext("hachi"));
 	}
 
 	getRuntimeExportsDir() {
@@ -2674,41 +5448,29 @@ class HachiManager {
 	}
 
 	getDatabaseBackups() {
-		// Return backup metadata for the Database tab without mutating files.
-		// Sorting newest-first makes the most likely restore target appear first.
-		const backupDir = this.getDatabaseBackupDir();
-
-		if (!fileExists(backupDir)) {
-			return [];
-		}
-
-		const dbEncryption = loadDatabaseEncryptionModule(this.getInstallPath());
-		const currentKey = this.readLocalDatabaseProtectionKeyIfAvailable();
-
-		return fs.readdirSync(backupDir)
-			.filter(file => /\.sqlite$/i.test(file))
-			.map(file => {
-				const fullPath = path.join(backupDir, file);
-				const stats = fs.statSync(fullPath);
-				const protection = dbEncryption?.describeDatabaseBackup ?
-					dbEncryption.describeDatabaseBackup({
-						backupPath: fullPath,
-						currentKey,
-						root: this.getInstallPath(),
-						verifyWithCurrentKey: false,
-					}) :
-					null;
-
-				return {
-					file,
-					fullPath,
-					modifiedAt: stats.mtime.toISOString(),
-					protection,
-					size: stats.size,
-					sizeLabel: formatFileSize(stats.size),
-				};
-			})
-			.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+		return this.listFleetBackups("hachi").map(backup => {
+			const record = this.getFleetBackupVault().records[backup.backupId];
+			let content = Buffer.alloc(0);
+			try {
+				content = this.readFleetBackupContent(record);
+			} catch {
+				content = Buffer.alloc(0);
+			}
+			const plaintext = content.subarray(0, 16).equals(SQLITE_HEADER);
+			return {
+				...backup,
+				file: path.basename(backup.backupPath),
+				fullPath: backup.backupPath,
+				modifiedAt: backup.createdAt,
+				protection: {
+					detail: plaintext ? "Backup contains a plain SQLite database." : "Backup contains an encrypted database.",
+					label: plaintext ? "Plain Backup" : "Encrypted",
+					status: plaintext ? "plaintext" : "encrypted",
+				},
+				size: content.length,
+				sizeLabel: formatFileSize(content.length),
+			};
+		});
 	}
 
 	getLocalDatabaseKeyLocation() {
@@ -3831,6 +6593,22 @@ try {
 		};
 	}
 
+	async removeNativeTransientDatabaseBackup(backupPath) {
+		if (!backupPath) {
+			return;
+		}
+		if (this.getRuntimeTarget() === "remote") {
+			const script = "const fs=require('node:fs');for(const file of [process.argv[1],process.argv[1]+'.meta.json'])fs.rmSync(file,{force:true});";
+			await this.runRemoteHachiCommand(`node -e ${quotePosix(script)} ${quotePosix(backupPath)}`, { log: false, timeoutMs: 30000 });
+			return;
+		}
+		if (!isPathInside(this.getInstallPath(), backupPath)) {
+			throw new Error("Refusing to remove a transient database backup outside Hachi's installation.");
+		}
+		fs.rmSync(backupPath, { force: true });
+		fs.rmSync(`${backupPath}.meta.json`, { force: true });
+	}
+
 	databaseEncryptionConversionScript(backupFileName) {
 		return `
 const fs = require("node:fs");
@@ -4092,7 +6870,10 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 		}
 
 		this.logDatabase("checkpointing database before conversion.");
-		await this.checkpointLocalDatabase();
+		await this.checkpointDatabase();
+		// Keep the durable recovery point in HachiGen's shared backup vault. The
+		// bot-side script still uses a short-lived raw copy for atomic rollback.
+		const recovery = await this.backupFleetDatabase("hachi", { prune: false, reason: "pre-encryption" });
 
 		const script = this.databaseEncryptionConversionScript(backupFileName);
 		this.logDatabase(`creating encrypted database and recovery backup ${backupFileName}.`);
@@ -4111,6 +6892,7 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 		if (!result.ok) {
 			throw new Error(result.error || "Database encryption conversion failed.");
 		}
+		await this.removeNativeTransientDatabaseBackup(result.backupPath);
 
 		this.setDatabaseCipherTestState({
 			checkedAt: new Date().toISOString(),
@@ -4129,6 +6911,9 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 
 		return {
 			...result,
+			backupId: recovery.backupId,
+			backupPath: recovery.backupPath,
+			message: "Database encrypted. The plaintext recovery point is stored in HachiGen's shared backups folder.",
 			database: await this.getDatabaseState(),
 		};
 	}
@@ -4401,6 +7186,7 @@ async function verifyRuntimeOpen(newKey, keyFilePath) {
 
 		this.logDatabase(`starting key rotation${rotateBackups ? " with backup rotation" : ""}.`);
 		this.logDatabase(`planned safety backup: ${backupFileName}.`);
+		const recovery = await this.backupFleetDatabase("hachi", { prune: false, reason: "pre-key-rotation" });
 		const script = this.databaseKeyRotationScript(backupFileName, { rotateBackups });
 		const result = this.getRuntimeTarget() === "remote" ?
 			await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
@@ -4417,6 +7203,7 @@ async function verifyRuntimeOpen(newKey, keyFilePath) {
 		if (!result.ok) {
 			throw new Error(result.error || "Database key rotation failed.");
 		}
+		await this.removeNativeTransientDatabaseBackup(result.backupPath);
 
 		this.setDatabaseCipherTestState({
 			checkedAt: new Date().toISOString(),
@@ -4433,6 +7220,8 @@ async function verifyRuntimeOpen(newKey, keyFilePath) {
 
 		return {
 			...result,
+			backupId: recovery.backupId,
+			backupPath: recovery.backupPath,
 			database: await this.getDatabaseState(),
 		};
 	}
@@ -4671,16 +7460,13 @@ process.stdout.write(JSON.stringify({
 			log: false,
 			timeoutMs: 20000,
 		});
-		const backups = (state.backups || []).map(backup => ({
-			...backup,
-			sizeLabel: formatFileSize(backup.size),
-		}));
+		const backups = this.getDatabaseBackups();
 		const exists = Boolean(state.database);
 		const audit = await this.auditDatabase({ quiet: true });
 
 		return {
 			audit,
-			backupDir: state.backupDir || "manager/backups/database",
+			backupDir: this.getDatabaseBackupDir(),
 			backups,
 			exists,
 			latestBackup: backups[0] || null,
@@ -4917,156 +7703,31 @@ process.stdout.write(JSON.stringify({
 	}
 
 	async backupDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false } = {}) {
-		if (this.getRuntimeTarget() === "remote") {
-			return this.backupRemoteDatabase({ fileName, overwrite });
-		}
-
-		return this.backupLocalDatabase({ fileName, overwrite });
+		void fileName;
+		void overwrite;
+		await this.checkpointDatabase();
+		return this.backupFleetDatabase("hachi");
 	}
 
 	async backupLocalDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false, reason = "manual" } = {}) {
-		this.logDatabase(`${overwrite ? "overwriting" : "creating"} backup ${fileName}.`);
-		// Copy the current database into the dated backup folder. Manual backups
-		// use a date-only filename so HachiGen can ask before replacing today's.
-		// Automatic safety backups pass unique timestamped filenames.
+		void fileName;
+		void overwrite;
 		const paths = this.getPaths();
-
 		if (!fileExists(paths.database)) {
 			throw new Error("No Hachi database exists to back up.");
 		}
-
-		const backupDir = this.getDatabaseBackupDir();
-		const backupPath = path.join(backupDir, fileName);
-
-		ensureDir(backupDir);
-
-		if (fileExists(backupPath) && !overwrite) {
-			return {
-				backupPath,
-				fileName,
-				needsOverwrite: true,
-				ok: false,
-				message: `${fileName} already exists.`,
-			};
-		}
-
-		await this.checkpointDatabase();
-		fs.copyFileSync(paths.database, backupPath);
-		const dbEncryption = loadDatabaseEncryptionModule(paths.root);
-		let protection = null;
-
-		if (dbEncryption?.writeDatabaseBackupMetadata) {
-			try {
-				const key = this.readLocalDatabaseProtectionKeyIfAvailable();
-				const metadata = dbEncryption.writeDatabaseBackupMetadata({
-					backupPath,
-					key,
-					reason,
-					root: paths.root,
-					source: "local",
-				});
-				protection = dbEncryption.describeDatabaseBackup({
-					backupPath,
-					currentKey: key,
-					root: paths.root,
-					verifyWithCurrentKey: false,
-				});
-				protection.metadata = metadata;
-			} catch (error) {
-				this.logDatabase(`backup metadata skipped: ${error.message || error}`);
-			}
-		}
-		this.logDatabase(`backup created: ${displayPath(backupPath, paths.root)}.`, {
-			fileName,
-			protection: protection?.label || "",
-		});
-
-		return {
-			backupPath,
-			fileName,
-			ok: true,
-			protection,
-			message: `Database backup created: ${fileName}`,
-		};
+		await this.checkpointLocalDatabase();
+		const context = this.getFleetDeploymentContext("hachi");
+		const backup = this.createFleetBackupRecord(context, fs.readFileSync(paths.database), { reason });
+		this.logDatabase(`Hachi ${reason} backup created in the root backups folder.`);
+		return { ...backup, fileName: path.basename(backup.backupPath), message: "Hachi database backup created." };
 	}
 
 	async backupRemoteDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false } = {}) {
-		const safeFileName = path.basename(fileName);
-		this.logDatabase(`${overwrite ? "overwriting" : "creating"} remote backup ${safeFileName}.`);
-		const script = `
-const fs = require("node:fs");
-const path = require("node:path");
-const databasePath = "database/database.sqlite";
-const backupDir = "manager/backups/database";
-const fileName = ${JSON.stringify(safeFileName)};
-const overwrite = ${overwrite ? "true" : "false"};
-const backupPath = path.posix.join(backupDir, fileName);
-let dbEncryption = null;
-let currentKey = "";
-try {
-	dbEncryption = require("./database/dbEncryption.js");
-	currentKey = dbEncryption.readDatabaseKeyFromEnvFile(path.resolve(".env"), process.env, process.cwd()).key || "";
-} catch {
-	dbEncryption = null;
-}
-if (!fs.existsSync(databasePath)) {
-	process.stdout.write(JSON.stringify({ ok: false, error: "No remote Hachi database exists to back up." }));
-	process.exit(0);
-}
-fs.mkdirSync(backupDir, { recursive: true });
-if (fs.existsSync(backupPath) && !overwrite) {
-	process.stdout.write(JSON.stringify({
-		backupPath,
-		fileName,
-		needsOverwrite: true,
-		ok: false,
-		message: fileName + " already exists.",
-	}));
-	process.exit(0);
-}
-fs.copyFileSync(databasePath, backupPath);
-let protection = null;
-if (dbEncryption && dbEncryption.writeDatabaseBackupMetadata) {
-	try {
-		const metadata = dbEncryption.writeDatabaseBackupMetadata({
-			backupPath,
-			key: currentKey,
-			reason: "manual",
-			root: process.cwd(),
-			source: "remote",
-		});
-		protection = dbEncryption.describeDatabaseBackup({ backupPath, currentKey, root: process.cwd() });
-		protection.metadata = metadata;
-	} catch {
-		protection = null;
-	}
-}
-process.stdout.write(JSON.stringify({
-	backupPath,
-	fileName,
-	ok: true,
-	protection,
-	message: "Remote database backup created: " + fileName,
-}));
-`;
-
+		void fileName;
+		void overwrite;
 		await this.checkpointRemoteDatabase();
-		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
-			fallbackMessage: "Remote database backup did not return valid JSON.",
-			timeoutMs: 300000,
-		});
-
-		if (result.error) {
-			throw new Error(result.error);
-		}
-
-		if (result.ok) {
-			this.logDatabase(`remote backup created: ${result.fileName || safeFileName}.`, {
-				protection: result.protection?.label || "",
-			});
-		}
-
-		return result;
+		return this.backupFleetDatabase("hachi");
 	}
 
 	async readRemoteDatabaseFile() {
@@ -5834,12 +8495,11 @@ process.stdout.write(JSON.stringify({
 	}
 
 	async readRemoteConfiguration() {
-		const [blankEnv, env, blankConfigText, configText] = await Promise.all([
-			this.readRemoteText("blank.env"),
-			this.readRemoteText(".env"),
-			this.readRemoteText("config/blank.json"),
-			this.readRemoteText("config/config.json"),
-		]);
+		const files = await this.readRemoteConfigurationFiles();
+		const blankEnv = files["blank.env"] || "";
+		const env = files[".env"] || "";
+		const blankConfigText = files["config/blank.json"] || "";
+		const configText = files["config/config.json"] || "";
 		const envValues = {
 			...parseDotEnvContent(blankEnv),
 			...parseDotEnvContent(env),
@@ -5911,12 +8571,11 @@ process.stdout.write(JSON.stringify({
 	}
 
 	async writeRemoteConfiguration(values) {
-		const [blankEnvText, rawEnvText, blankConfigText, configText] = await Promise.all([
-			this.readRemoteText("blank.env"),
-			this.readRemoteText(".env"),
-			this.readRemoteText("config/blank.json"),
-			this.readRemoteText("config/config.json"),
-		]);
+		const files = await this.readRemoteConfigurationFiles();
+		const blankEnvText = files["blank.env"] || "";
+		const rawEnvText = files[".env"] || "";
+		const blankConfigText = files["config/blank.json"] || "";
+		const configText = files["config/config.json"] || "";
 		const rawEnv = {
 			...parseDotEnvContent(blankEnvText),
 			...parseDotEnvContent(rawEnvText),
@@ -5990,13 +8649,72 @@ process.stdout.write(JSON.stringify({
 		// Build the complete state object consumed by renderer/app.js. This keeps
 		// the renderer simple: it redraws from one object instead of coordinating
 		// several backend calls itself.
-		const repository = await this.getRepositoryInfo();
+		const readRepository = () => this.getRepositoryInfo().catch(error => ({
+			currentBranch: null,
+			error: error.message || "Repository status could not be read.",
+			isGit: false,
+			originUrl: null,
+			source: this.getRuntimeTarget(),
+			updateBranch: UPDATE_BRANCH,
+			updateRemote: UPDATE_REMOTE,
+			updateTarget: UPDATE_TARGET,
+		}));
+		const readScan = () => this.getQuickScan().catch(error => ({
+			configurationMissing: [],
+			configurationReady: false,
+			dependenciesReady: false,
+			error: error.message || "Installation status could not be read.",
+			hasGit: false,
+			hasNodeModules: false,
+			installPath: this.getRuntimeTarget() === "remote" ? this.settings.remote?.remotePath || "" : this.getInstallPath(),
+			missingDependencies: [],
+			missingFiles: [],
+			projectFound: false,
+			source: this.getRuntimeTarget(),
+		}));
+		const readDatabase = () => this.getDatabaseState().catch(error => ({
+			backups: [],
+			error: error.message || "Database status could not be read.",
+			exists: false,
+			path: "Unavailable",
+			size: 0,
+			sizeLabel: "0 B",
+			source: this.getRuntimeTarget(),
+		}));
+		const readPm2 = () => this.getPm2Status().catch(error => ({
+			installed: false,
+			message: error.message || "Runtime status could not be read.",
+			registered: false,
+			status: "unavailable",
+		}));
+		let repository;
+		let scan;
+		let database;
+		let pm2;
+		if (this.getRuntimeTarget() === "remote") {
+			// Use the same single-target pathway as other remote operations. Opening
+			// several SSH handshakes at once can trigger server-side banner throttling.
+			repository = await readRepository();
+			scan = await readScan();
+			database = await readDatabase();
+			pm2 = await readPm2();
+		} else {
+			[repository, scan, database, pm2] = await Promise.all([
+				readRepository(),
+				readScan(),
+				readDatabase(),
+				readPm2(),
+			]);
+		}
 
 		if (!this.updateStateMatchesRepository(repository)) {
 			this.updateState = createUncheckedUpdateState("Updates have not been checked for this install path yet.");
 		}
 
 		try {
+			if (repository.error || !repository.isGit) {
+				throw new Error(repository.error || "Repository is unavailable.");
+			}
 			await this.refreshActiveStash();
 		} catch {
 			// If Git stash inspection fails, keep the older saved stash value
@@ -6004,11 +8722,9 @@ process.stdout.write(JSON.stringify({
 			this.updateState.stash = this.settings.activeStash || null;
 		}
 
-		const scan = await this.getQuickScan();
-
 		return {
 			appName: "HachiGen",
-			database: await this.getDatabaseState(),
+			database,
 			hachiGenUpdate: this.hachiGenUpdateState,
 			hachiGenVersion: this.getHachiGenVersion(),
 			installPath: this.getInstallPath(),
@@ -6017,8 +8733,26 @@ process.stdout.write(JSON.stringify({
 			runtimeTarget: this.getRuntimeTarget(),
 			scan,
 			updates: this.updateState,
-			pm2: await this.getPm2Status(),
+			pm2,
 			recentEvents: this.logger.readRecentEvents(80),
+			fleet: this.getFleetState(),
+		};
+	}
+
+	getStartupState() {
+		// Startup needs only local manager-owned files. Expensive Git, PM2, SSH,
+		// database, configuration, log, and testing reads are loaded for the
+		// selected bot or active tab after the first usable render.
+		return {
+			appName: "HachiGen",
+			fleet: this.getFleetState(),
+			hachiGenUpdate: this.hachiGenUpdateState,
+			hachiGenVersion: this.getHachiGenVersion(),
+			installPath: this.getInstallPath(),
+			recentEvents: this.logger.readRecentEvents(20),
+			remote: this.getRemoteState(),
+			runtimeTarget: this.getRuntimeTarget(),
+			updates: this.updateState,
 		};
 	}
 
@@ -7271,9 +10005,19 @@ process.stdout.write(JSON.stringify({
 	async getRepositoryInfo({ onLog = null, log = Boolean(onLog) } = {}) {
 		const paths = this.getPaths();
 		const isRemote = this.getRuntimeTarget() === "remote";
+		let isGit = false;
+		let connectionError = null;
+		try {
+			isGit = isRemote ? await this.remotePathExists(".git", "d") : fileExists(paths.git);
+		} catch (error) {
+			// Remote availability is status data. A failed SSH probe must not reject
+			// the entire shared state response or block local testing workflows.
+			connectionError = error.message || "Remote repository could not be reached.";
+		}
 		const info = {
-			isGit: isRemote ? await this.remotePathExists(".git", "d") : fileExists(paths.git),
+			isGit,
 			currentBranch: null,
+			error: connectionError,
 			originUrl: null,
 			updateRemote: UPDATE_REMOTE,
 			updateBranch: UPDATE_BRANCH,
@@ -8220,4 +10964,5 @@ process.stdout.write(JSON.stringify({ backupDir, copied }));
 
 module.exports = {
 	HachiManager,
+	parsePm2Json,
 };

@@ -775,7 +775,9 @@ async function main() {
 	const stdinText = process.stdin.isTTY ? "" : fs.readFileSync(0, "utf8").trim();
 	const requestText = stdinText || process.argv[2] || "{}";
 	const request = JSON.parse(requestText);
-	const expectedSchema = loadExpectedSchema(request.root);
+	// Read-only Fleet viewers need only the bot's connection adapter. Hachi's
+	// schema contract is loaded solely for native review and sanitation actions.
+	const expectedSchema = request.action === `view` ? {} : loadExpectedSchema(request.root);
 	const db = await openDatabase(request.root, request.dbPath, request.action === "view");
 
 	try {

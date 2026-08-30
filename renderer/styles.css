@@ -23,11 +23,17 @@
 	--neutral-button-hover: #31444f;
 	--neutral-button-border: #55707d;
 	--shadow: rgba(31, 41, 48, 0.12);
+	--section-gap: 12px;
+	--control-gap: 10px;
 }
 
 /* Use predictable sizing: width/height include padding and borders. */
 * {
 	box-sizing: border-box;
+}
+
+[hidden] {
+	display: none !important;
 }
 
 /* Base page typography and background. */
@@ -210,8 +216,28 @@ h2 {
 .topbar-actions,
 .button-row {
 	display: flex;
-	gap: 10px;
+	gap: var(--control-gap);
 	align-items: center;
+}
+
+.bot-selector {
+	display: grid;
+	grid-template-columns: auto minmax(170px, 240px);
+	gap: 8px;
+	align-items: center;
+	margin-top: 0;
+}
+
+.bot-selector select {
+	min-width: 170px;
+}
+
+.topbar-actions > .button {
+	height: 38px;
+}
+
+#externalConfigurationMeta:empty {
+	display: none;
 }
 
 /* Buttons. Color classes describe the action style, not a specific location. */
@@ -317,7 +343,7 @@ h2 {
 }
 
 .install-actions {
-	margin-top: 18px;
+	margin-top: 14px;
 }
 
 /* View switching. app.js toggles .active on the selected panel. */
@@ -326,15 +352,24 @@ h2 {
 }
 
 .view.active {
-	display: block;
+	display: grid;
+	gap: var(--section-gap);
 }
 
 /* Dashboard cards and reusable panel frame. */
 .status-grid {
 	display: grid;
 	grid-template-columns: repeat(5, minmax(150px, 1fr));
-	gap: 12px;
-	margin-bottom: 12px;
+	gap: var(--section-gap);
+	margin-bottom: 0;
+}
+
+.fleet-status-grid {
+	grid-template-columns: repeat(5, minmax(150px, 1fr));
+}
+
+.compact-select {
+	min-width: 220px;
 }
 
 .status-card,
@@ -408,7 +443,7 @@ h2 {
 
 .panel {
 	padding: 16px;
-	margin-bottom: 12px;
+	margin-bottom: 0;
 }
 
 /* Horizontal panels with text on the left and buttons on the right. */
@@ -459,18 +494,20 @@ h2 {
 .two-column {
 	display: grid;
 	grid-template-columns: minmax(360px, 0.74fr) minmax(520px, 1.26fr);
-	gap: 12px;
+	gap: var(--section-gap);
 	align-items: stretch;
 }
 
 .panel-stack {
 	display: grid;
-	gap: 12px;
+	gap: var(--section-gap);
 	grid-template-rows: auto 1fr;
 }
 
 /* Form fields and inputs. */
-.field {
+.field,
+.select-field,
+.choice-field {
 	display: grid;
 	gap: 8px;
 	margin-top: 14px;
@@ -479,19 +516,37 @@ h2 {
 	font-weight: 750;
 }
 
-.field input {
+/* The global bot picker is a toolbar control, so it must not inherit the
+   vertical offset used to separate stacked form fields. */
+.topbar-actions .select-field.bot-selector {
+	margin-top: 0;
+}
+
+.field input,
+.field textarea {
 	width: 100%;
-	height: 38px;
 	border: 1px solid var(--line);
 	border-radius: 6px;
 	background: var(--surface-soft);
 	color: var(--text);
-	padding: 0 12px;
 	font-size: 13px;
 	font-weight: 500;
 }
 
-.field input:focus {
+.field input {
+	height: 38px;
+	padding: 0 12px;
+}
+
+.field textarea {
+	min-height: 152px;
+	padding: 10px 12px;
+	line-height: 1.45;
+	resize: vertical;
+}
+
+.field input:focus,
+.field textarea:focus {
 	border-color: var(--info);
 	outline: 3px solid rgba(63, 111, 159, 0.18);
 }
@@ -500,22 +555,24 @@ h2 {
 	cursor: pointer;
 }
 
-.select-field {
-	display: grid;
-	gap: 6px;
-	color: var(--muted);
-	font-size: 12px;
-	font-weight: 750;
+.field input:disabled,
+.field textarea:disabled,
+.select-field select:disabled {
+	cursor: not-allowed;
+	opacity: 0.58;
 }
 
 .select-field select {
-	min-width: 220px;
+	width: 100%;
+	min-width: 0;
 	height: 38px;
 	border: 1px solid var(--line);
 	border-radius: 6px;
 	background: var(--surface-soft);
 	color: var(--text);
 	padding: 0 10px;
+	font-size: 13px;
+	font-weight: 500;
 }
 
 .select-field select:focus {
@@ -523,18 +580,61 @@ h2 {
 	outline: 3px solid rgba(63, 111, 159, 0.18);
 }
 
+/* Compact selectors keep their labels inline in toolbars and panel headers. */
+.select-field.inline-select-field {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 10px;
+	margin-top: 0;
+}
+
+.inline-select-field > span {
+	white-space: nowrap;
+}
+
+.fleet-header-actions .inline-select-field select {
+	width: 220px;
+}
+
+.fleet-header-actions > .button {
+	height: 38px;
+}
+
+.choice-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 38px;
+	color: var(--text);
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.choice-option input {
+	width: 16px;
+	height: 16px;
+	accent-color: var(--primary);
+}
+
 /* Install path text field plus Browse button. */
 .input-row {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
-	gap: 10px;
+	gap: var(--control-gap);
 }
 
 .secret-field-row {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
-	gap: 8px;
+	gap: var(--control-gap);
 	align-items: center;
+}
+
+/* Buttons attached to an input form one control and therefore share its height. */
+.input-row .button,
+.secret-field-row .button {
+	height: 38px;
 }
 
 .secret-field-row .button {
@@ -554,8 +654,13 @@ h2 {
 	gap: 0 16px;
 }
 
-.field.wide {
+.field.wide,
+.select-field.wide {
 	grid-column: 1 / -1;
+}
+
+.modal-form {
+	min-width: min(680px, 72vw);
 }
 
 .remote-grid {
@@ -566,7 +671,7 @@ h2 {
 }
 
 .remote-actions {
-	margin-top: 18px;
+	margin-top: 14px;
 }
 
 .remote-settings-panel,
@@ -976,7 +1081,11 @@ h2 {
 .database-viewer-controls {
 	display: flex;
 	gap: 10px;
-	align-items: end;
+	align-items: center;
+}
+
+.database-viewer-controls .inline-select-field select {
+	width: 210px;
 }
 
 .database-table-wrap {
@@ -1423,11 +1532,139 @@ h2 {
 	margin-top: 18px;
 }
 
+.fleet-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 16px;
+}
+
+.section-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+	margin-bottom: 16px;
+}
+
+.section-header h2 {
+	margin-bottom: 4px;
+}
+
+.fleet-list,
+.fleet-form {
+	display: grid;
+	gap: 10px;
+}
+
+.fleet-form {
+	margin-top: 18px;
+	padding-top: 16px;
+	border-top: 1px solid var(--line);
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	column-gap: 16px;
+	row-gap: 0;
+}
+
+.fleet-form .select-field select {
+	width: 100%;
+	min-width: 0;
+}
+
+.fleet-form .button {
+	align-self: end;
+}
+
+.fleet-form-wide {
+	grid-column: 1 / -1;
+}
+
+.form-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 10px;
+	margin-top: 0;
+	padding-top: 14px;
+}
+
+.empty-state {
+	padding: 14px;
+	border: 1px dashed var(--line);
+	border-radius: 7px;
+	color: var(--muted);
+	font-size: 0.88rem;
+	text-align: center;
+}
+
+.component-description {
+	max-width: 760px;
+	margin: 4px 0 16px;
+	line-height: 1.55;
+}
+
+.optional-label {
+	color: var(--muted);
+	font-size: 0.72rem;
+	font-weight: 400;
+}
+
+.advanced-disclosure {
+	margin-top: 16px;
+	border-top: 1px solid var(--line);
+	padding-top: 14px;
+}
+
+.advanced-disclosure summary {
+	width: fit-content;
+	cursor: pointer;
+	color: #8eb9df;
+	font-size: 0.88rem;
+	font-weight: 650;
+}
+
+.advanced-disclosure[open] summary {
+	margin-bottom: 4px;
+}
+
+.form-help {
+	color: var(--muted);
+	font-size: 0.82rem;
+	line-height: 1.45;
+}
+
+.fleet-entry {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 12px;
+	padding: 11px 12px;
+	border: 1px solid var(--line);
+	border-radius: 7px;
+	background: rgba(255, 255, 255, 0.04);
+}
+
+.fleet-entry-main {
+	min-width: 0;
+}
+
+.fleet-entry-title {
+	font-weight: 650;
+}
+
+.fleet-entry-meta {
+	margin-top: 3px;
+	color: var(--muted);
+	font-size: 0.82rem;
+	overflow-wrap: anywhere;
+}
+
 /* Toast notifications in the bottom-right corner. */
 .toast-region {
 	position: fixed;
 	right: 22px;
 	bottom: 22px;
+	/* Toasts communicate operation results and must stay above sticky table
+	 * headers, cards, and modal layers regardless of their stacking contexts. */
+	z-index: 100;
 	display: grid;
 	gap: 10px;
 	width: 320px;
@@ -1460,6 +1697,11 @@ h2 {
 	.remote-grid,
 	.updates-grid,
 	.logs-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.fleet-grid,
+	.fleet-form {
 		grid-template-columns: 1fr;
 	}
 
