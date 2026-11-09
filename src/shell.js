@@ -15,7 +15,9 @@ const ALLOWED_COMMANDS = new Set([
 	"npx",
 	"pm2",
 	"pnpm",
+	"scp",
 	"ssh",
+	"tar",
 	"where",
 	"which",
 	"winget",
@@ -46,6 +48,10 @@ class ShellError extends Error {
 function displayCommand(command, args) {
 	if (command === "ssh") {
 		return "ssh [remote command hidden]";
+	}
+
+	if (command === "scp") {
+		return "scp [remote paths hidden]";
 	}
 
 	if (command === "node" && args[0] === "-e") {

@@ -72,6 +72,14 @@ async function validateBotRegistryFoundation() {
 		"Optional bots should load approved encryption and repository-owned database-tool capabilities.",
 	);
 	assert(external.credentials.mode === "external" && external.fingerprint, "External bots should default to unmanaged credentials and receive a definition fingerprint.");
+	const commandAdapter = validateExternalBotDefinition({
+		id: "command-bot",
+		displayName: "Command Bot",
+		repository: { url: "https://example.invalid/command-bot.git", branch: "main" },
+		runtime: {},
+		commands: { deployCommands: { executable: "npm", args: ["run", "deploy"] } },
+	});
+	assert(commandAdapter.capabilities.discordCommands, "A reviewed Discord deployment adapter should imply its required capability.");
 	let rejectedUnsafeCredentialAdapter = false;
 	try {
 		validateExternalBotDefinition({
@@ -546,12 +554,42 @@ function validateRendererAndMenuWiring() {
 		indexSource.includes("data-action=\"check-all-updates\"") &&
 			indexSource.includes("id=\"hachiCurrentVersion\"") &&
 			indexSource.includes("id=\"hachigenCurrentVersion\"") &&
+			indexSource.includes("id=\"selectedBotUpdateLocation\"") &&
+			rendererSource.includes("selectedUpdateInstallationLabel") &&
+			rendererSource.includes("state = { ...(state || {}), hachiGenUpdate: hachiGen }") &&
+			managerSource.includes("currentVersion = readJson(path.join(context.deployment.installPath, \"package.json\")") &&
 			indexSource.includes("class=\"stash-header\"") &&
 			!indexSource.includes("id=\"incomingCommitsList\"") &&
 			!indexSource.includes("id=\"localChangesList\""),
 		"Updates view should use combined update checking and version summaries instead of always-visible Git detail panels.",
 	);
-	assert(indexSource.includes("data-view=\"diagnostics\"") && indexSource.includes("data-action=\"export-support-bundle\""), "Diagnostics view or diagnostics bundle action is missing.");
+	assert(
+		/async function checkUpdatesOnStartup\(\)[\s\S]*runCombinedUpdateCheck\(\{ startup: true \}\)/u.test(rendererSource) &&
+			rendererSource.includes('setText("#combinedUpdatesMeta", "Checking for updates...")') &&
+			rendererSource.includes('setText("#dashboardHachiUpdate", "Checking...")') &&
+			rendererSource.includes("{ toast: !startup }"),
+		"Startup updates should use the complete combined check with visible, non-disruptive progress.",
+	);
+	assert(
+		indexSource.includes("data-view=\"diagnostics\"") &&
+		indexSource.includes("data-action=\"export-support-bundle\"") &&
+		indexSource.includes("data-action=\"export-runtime-archive\"") &&
+		indexSource.includes("data-action=\"pull-remote-runtime\"") &&
+		indexSource.includes("data-action=\"push-remote-runtime\"") &&
+		preloadSource.includes("exportRuntimeArchive") &&
+		preloadSource.includes("transferFleetRuntime") &&
+		mainSource.includes('ipcMain.handle("manager:export-runtime-archive"') &&
+		mainSource.includes('ipcMain.handle("manager:transfer-fleet-runtime"') &&
+		managerSource.includes('path.join(this.backupsRoot, "Runtime Transfers"') &&
+		managerSource.includes('run("scp"') &&
+		managerSource.includes('run("tar", ["-xzf"') &&
+		managerSource.includes('"tar", "-czf"') &&
+		managerSource.includes("events: this.logger.readRecentEvents(220)") &&
+		!rendererSource.includes("HachiGen activity remains available in Diagnostics") &&
+		rendererSource.includes('title: pull ? "Import Remote Runtime" : "Export Runtime to Remote"') &&
+		mainSource.includes('sendMenuAction("export-runtime-archive")'),
+		"Diagnostics export or centralized Fleet runtime-transfer wiring is missing.",
+	);
 	assert(
 		indexSource.indexOf('data-view="setup">Hachi') > indexSource.indexOf('data-view="dashboard">Dashboard') &&
 			indexSource.indexOf('data-view="setup">Hachi') < indexSource.indexOf('data-view="fleet">Fleet') &&
@@ -831,6 +869,8 @@ async function validateRuntimeArchiveRoundTrip() {
 		].join("\n"), "utf8");
 		fs.writeFileSync(path.join(sourceRoot, "config", "config.json"), JSON.stringify({ guildIds: ["123"] }), "utf8");
 		fs.writeFileSync(path.join(sourceRoot, "database", "database.sqlite"), "sqlite-content", "utf8");
+		fs.writeFileSync(path.join(sourceRoot, "database", "database.sqlite-wal"), "stale-wal", "utf8");
+		fs.writeFileSync(path.join(sourceRoot, "database", "database.sqlite-journal"), "stale-journal", "utf8");
 		fs.writeFileSync(path.join(sourceRoot, "node_modules", "ignored", "package.js"), "ignored", "utf8");
 		fs.writeFileSync(path.join(sourceRoot, "exports", "old.tar.gz"), "ignored", "utf8");
 		fs.writeFileSync(path.join(sourceRoot, "logs", "hachi.log"), "ignored", "utf8");
@@ -844,6 +884,9 @@ async function validateRuntimeArchiveRoundTrip() {
 			userDataPath: path.join(tempDir, "exporterUserData"),
 		});
 		exporter.checkpointDatabase = async () => undefined;
+		// This fixture uses opaque bytes to test archive packaging; snapshot locking
+		// is exercised separately with a real SQLite file below.
+		exporter.runLocalDatabaseWorker = async () => ({ bytes: 14, content: Buffer.from("sqlite-content").toString("base64"), ok: true });
 
 		const exported = await exporter.exportRuntimeArchive({ source: "local" });
 		const preview = exporter.previewRuntimeArchive(exported.archivePath);
@@ -858,12 +901,19 @@ async function validateRuntimeArchiveRoundTrip() {
 			userDataPath: path.join(tempDir, "restorerUserData"),
 		});
 		restorer.checkpointDatabase = async () => undefined;
+		let restoreStopped = false;
+		restorer.ensureHachiStopped = async () => {
+			restoreStopped = true;
+		};
 
 		const restored = await restorer.restoreRuntimeArchive(exported.archivePath);
 		const restoredEnv = fs.readFileSync(path.join(restoreRoot, ".env"), "utf8");
 
 		assert(restored.ok === true, "Runtime archive restore did not report success.");
+		assert(restoreStopped, "Runtime archive restore should verify Hachi stopped before replacing files.");
 		assert(fs.readFileSync(path.join(restoreRoot, "database", "database.sqlite"), "utf8") === "sqlite-content", "Runtime archive did not restore the database.");
+		assert(!fs.existsSync(path.join(restoreRoot, "database", "database.sqlite-wal")) &&
+			!fs.existsSync(path.join(restoreRoot, "database", "database.sqlite-journal")), "Runtime archive must exclude live database sidecars.");
 		assert(fs.existsSync(restorer.getLocalDatabaseKeyLocation().path), "Runtime archive did not restore the database key to the local key location.");
 		assert(fs.existsSync(restorer.getLocalSecretsKeyLocation().path), "Runtime archive did not restore the secrets key to the local key location.");
 		assert(!restoredEnv.includes(databaseKeyPath) && !restoredEnv.includes(secretsKeyPath), "Runtime archive restore should rewrite remote/source key paths.");
@@ -874,6 +924,235 @@ async function validateRuntimeArchiveRoundTrip() {
 	} finally {
 		restoreEnvValue("APPDATA", originalAppData);
 		restoreEnvValue("XDG_CONFIG_HOME", originalXdgConfigHome);
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateFleetRuntimeArchiveWithoutDatabase() {
+	const { HachiManager } = requireFresh("src", "manager.js");
+	const { parseDotEnvContent } = requireFresh("src", "configuration.js");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-runtime-optional-db-"));
+	try {
+		const sourceRoot = path.join(tempDir, "source");
+		const destinationRoot = path.join(tempDir, "destination");
+		const secretsKeyPath = path.join(tempDir, "external", "source-secrets.key");
+		const remoteTar = path.join(tempDir, "remote-source.tar.gz");
+		fs.mkdirSync(path.join(sourceRoot, "config"), { recursive: true });
+		fs.mkdirSync(path.dirname(secretsKeyPath), { recursive: true });
+		fs.writeFileSync(path.join(sourceRoot, ".env"), `HACHI_SECRETS_KEY_FILE=${JSON.stringify(secretsKeyPath)}\n`, "utf8");
+		fs.writeFileSync(path.join(sourceRoot, "config", "secretEncryption.js"),
+			"exports.resolveKeyFilePath=(value,cwd)=>require('node:path').resolve(cwd,value);\n", "utf8");
+		fs.writeFileSync(path.join(sourceRoot, "index.js"), "module.exports = {};\n", "utf8");
+		fs.writeFileSync(secretsKeyPath, "external-secrets-key\n", "utf8");
+		childProcess.execFileSync("tar", ["-czf", remoteTar, "-C", sourceRoot, "."], { stdio: "ignore" });
+		const manager = new HachiManager({
+			backupsRoot: path.join(tempDir, "Backups"),
+			defaultInstallPath: sourceRoot,
+			managerRoot: projectRoot,
+			userDataPath: path.join(tempDir, "userData"),
+		});
+		const localContext = {
+			definition: { displayName: "Hachi", id: "hachi", paths: { database: "database/database.sqlite" } },
+			deployment: { id: "hachi-local-smoke", installPath: sourceRoot },
+			server: { connection: { type: "local" }, id: "local", name: "Local" },
+		};
+		const remoteContext = {
+			...localContext,
+			deployment: { id: "hachi-remote-smoke", installPath: "/srv/hachi" },
+			server: { connection: { host: "example.invalid", type: "ssh" }, id: "remote-smoke", name: "Remote" },
+		};
+		manager.readFleetDatabaseSnapshot = async () => {
+			throw new Error("Missing database was snapshotted.");
+		};
+		manager.readFleetDatabaseRuntimeKey = async () => ({ key: "", keyFilePath: "" });
+		const local = await manager.collectLocalFleetRuntimeArchiveEntries(localContext);
+		assert(local.entries.some(entry => entry.restoreKind === "secrets-key") &&
+			!local.entries.some(entry => entry.restorePath === "database/database.sqlite"),
+		"A local Fleet export should include the external Hachi secrets key and skip an absent database.");
+		manager.copyFleetFileFromRemote = async (_context, _source, target) => fs.copyFileSync(remoteTar, target);
+		manager.runFleetRemoteCommand = async (_server, command) => {
+			if (command.includes("test -f")) {
+				return { code: 1, stdout: "" };
+			}
+			if (command.includes("node -e")) {
+				const configured = parseDotEnvContent(fs.readFileSync(path.join(sourceRoot, ".env"), "utf8")).HACHI_SECRETS_KEY_FILE;
+				const stdout = childProcess.execFileSync(process.execPath,
+					["-e", manager.remoteSecretsKeyArchiveScript(), JSON.stringify(configured)], { cwd: sourceRoot, encoding: "utf8" });
+				return { code: 0, stdout };
+			}
+			return { code: 0, stdout: "" };
+		};
+		const remote = await manager.collectRemoteFleetRuntimeArchiveEntries(remoteContext);
+		const remoteSecrets = remote.entries.find(entry => entry.restoreKind === "secrets-key");
+		assert(remoteSecrets?.content.equals(fs.readFileSync(secretsKeyPath)) &&
+			!remote.entries.some(entry => entry.restorePath === "database/database.sqlite"),
+		"A remote Fleet export should preserve exact external key bytes and skip an absent database.");
+		manager.collectRemoteRuntimeArchiveEntries = async () => manager.collectRemoteFleetRuntimeArchiveEntries(remoteContext);
+		const archive = await manager.exportRuntimeArchive({ source: "remote", targetPath: path.join(tempDir, "remote-export.tar.gz") });
+		assert(manager.previewRuntimeArchive(archive.archivePath).keyFileCount === 1,
+			"A remote Hachi archive should expose the captured external secrets key for restore.");
+		const restorer = new HachiManager({ defaultInstallPath: destinationRoot, managerRoot: projectRoot, userDataPath: path.join(tempDir, "restoreUserData") });
+		restorer.ensureHachiStopped = async () => undefined;
+		restorer.getLocalSecretsKeyLocation = () => ({ path: path.join(tempDir, "restored-secrets.key") });
+		await restorer.restoreRuntimeArchive(archive.archivePath);
+		const restoredEnv = parseDotEnvContent(fs.readFileSync(path.join(destinationRoot, ".env"), "utf8"));
+		assert(fs.readFileSync(restorer.getLocalSecretsKeyLocation().path).equals(fs.readFileSync(secretsKeyPath)) &&
+			restoredEnv.HACHI_SECRETS_KEY_FILE === restorer.getLocalSecretsKeyLocation().path,
+		"Restoring a remote archive should install the secrets key and rewrite .env to the destination path.");
+		const localDestination = { ...localContext, deployment: { id: "hachi-local-destination", installPath: destinationRoot } };
+		const prepared = manager.prepareRuntimeTransferSecrets(localDestination, remote);
+		const destinationKeyPath = manager.transferSecretsKeyPath(localDestination);
+		fs.mkdirSync(path.dirname(destinationKeyPath), { recursive: true });
+		fs.writeFileSync(destinationKeyPath, "previous-secrets-key\n", "utf8");
+		const applied = await manager.applyLocalRuntimeTransfer(localDestination, prepared, null, "remote-to-local");
+		const transferredEnv = parseDotEnvContent(fs.readFileSync(path.join(destinationRoot, ".env"), "utf8"));
+		assert(fs.readFileSync(destinationKeyPath).equals(fs.readFileSync(secretsKeyPath)) &&
+			transferredEnv.HACHI_SECRETS_KEY_FILE === destinationKeyPath &&
+			fs.readFileSync(path.join(applied.backupDir, "keys", "secrets-key"), "utf8") === "previous-secrets-key\n",
+		"A local transfer should install the key at a destination-specific path and preserve the previous key.");
+		const insideKeyPath = path.join(sourceRoot, "config", "inside-secrets.key");
+		fs.writeFileSync(insideKeyPath, "inside-secrets-key\n", "utf8");
+		fs.writeFileSync(path.join(sourceRoot, ".env"), `HACHI_SECRETS_KEY_FILE=${JSON.stringify(insideKeyPath)}\n`, "utf8");
+		childProcess.execFileSync("tar", ["-czf", remoteTar, "-C", sourceRoot, "."], { stdio: "ignore" });
+		const insideLocal = await manager.collectLocalFleetRuntimeArchiveEntries(localContext);
+		const insideRemote = await manager.collectRemoteFleetRuntimeArchiveEntries(remoteContext);
+		assert(insideLocal.entries.some(entry => entry.restoreKind === "secrets-key" && entry.sourcePath === insideKeyPath) &&
+			insideRemote.entries.some(entry => entry.restoreKind === "secrets-key" && entry.sourcePath === insideKeyPath),
+		"Absolute Hachi secrets-key paths inside the source project must be captured for both transfer directions.");
+		const insideTransfer = manager.prepareRuntimeTransferSecrets(localDestination, insideLocal);
+		const insideTransferEnv = insideTransfer.entries.find(entry => entry.restorePath === ".env");
+		assert(!insideTransfer.entries.some(entry => entry.restoreKind === "project" && entry.restorePath === "config/inside-secrets.key") &&
+			parseDotEnvContent(insideTransferEnv.content.toString("utf8")).HACHI_SECRETS_KEY_FILE === destinationKeyPath,
+		"Transferring an in-project absolute key path must install one managed key and rewrite the destination .env.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateRemoteRuntimeTransferVerificationRollback() {
+	const { HachiManager } = requireFresh("src", "manager.js");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-remote-transfer-rollback-"));
+	try {
+		const remoteRoot = path.join(tempDir, "remote");
+		const backupRoot = path.join(tempDir, "remote-backup");
+		const currentProject = path.join(remoteRoot, "index.js");
+		const secretsKeyPath = path.join(tempDir, "keys", "secrets.key");
+		const databaseKeyPath = path.join(tempDir, "keys", "database.key");
+		const backupProject = path.join(backupRoot, "project", "index.js");
+		const backupSecrets = path.join(backupRoot, "keys", "secrets-key");
+		const backupDatabase = path.join(backupRoot, "keys", "database.key");
+		for (const directory of [remoteRoot, path.dirname(secretsKeyPath), path.dirname(backupProject), path.dirname(backupSecrets)]) {
+			fs.mkdirSync(directory, { recursive: true });
+		}
+		fs.writeFileSync(currentProject, "old-project", "utf8");
+		fs.writeFileSync(secretsKeyPath, "old-secrets", "utf8");
+		fs.writeFileSync(databaseKeyPath, "old-database-key", "utf8");
+		const manager = new HachiManager({
+			defaultInstallPath: remoteRoot,
+			managerRoot: projectRoot,
+			userDataPath: path.join(tempDir, "userData"),
+		});
+		const destination = {
+			definition: { commands: { databaseVerify: { executable: "node" } }, displayName: "Hachi", id: "hachi" },
+			deployment: { id: "remote-rollback", installPath: remoteRoot },
+			server: { connection: { type: "ssh" }, id: "remote-smoke", name: "Remote" },
+		};
+		manager.transferKeyPath = () => databaseKeyPath;
+		manager.transferSecretsKeyPath = () => secretsKeyPath;
+		manager.readFleetDatabaseRuntimeKey = async () => ({ key: "old-database-key", keyFilePath: databaseKeyPath, source: "file" });
+		manager.copyFleetFileToRemote = async () => undefined;
+		manager.applyFleetDatabaseRuntimeKey = async () => fs.writeFileSync(databaseKeyPath, "new-database-key", "utf8");
+		manager.verifyFleetDatabaseRuntimeKey = async () => false;
+		let rollbackExecuted = false;
+		manager.runFleetRemoteCommand = async (_server, command) => {
+			if (command.includes("failed-incoming")) {
+				rollbackExecuted = true;
+				childProcess.execFileSync(process.execPath,
+					["-e", manager.remoteRuntimeTransferRollbackScript(), backupRoot, databaseKeyPath], { cwd: remoteRoot });
+				return { code: 0, stdout: "" };
+			}
+			if (command.includes("node -e")) {
+				for (const [current, preserved] of [
+					[currentProject, backupProject], [secretsKeyPath, backupSecrets], [databaseKeyPath, backupDatabase],
+				]) {
+					fs.renameSync(current, preserved);
+				}
+				fs.writeFileSync(currentProject, "new-project", "utf8");
+				fs.writeFileSync(secretsKeyPath, "new-secrets", "utf8");
+				fs.writeFileSync(path.join(backupRoot, "manifest.json"), JSON.stringify({
+					installed: [currentProject, secretsKeyPath],
+					moved: [
+						{ backup: backupProject, target: currentProject },
+						{ backup: backupSecrets, target: secretsKeyPath },
+						{ backup: backupDatabase, target: databaseKeyPath },
+					],
+				}));
+				return { code: 0, stdout: JSON.stringify({ ok: true }) };
+			}
+			return { code: 0, stdout: "" };
+		};
+		const collected = manager.prepareRuntimeTransferSecrets(destination, {
+			entries: [
+				{ content: Buffer.from("new-project"), restoreKind: "project", restorePath: "index.js" },
+				{ content: Buffer.from("HACHI_SECRETS_KEY_FILE=/old/source.key\n"), restoreKind: "project", restorePath: ".env" },
+				{ content: Buffer.from("new-secrets"), restoreKind: "secrets-key" },
+			],
+			source: { botId: "hachi", type: "local" },
+		});
+		let verificationRejected = false;
+		try {
+			await manager.applyRemoteRuntimeTransfer(destination, collected, { key: "new-database-key" }, "local-to-remote");
+		} catch (error) {
+			verificationRejected = error.message.includes("preserved remote files were restored");
+		}
+		assert(verificationRejected && rollbackExecuted &&
+			fs.readFileSync(currentProject, "utf8") === "old-project" &&
+			fs.readFileSync(secretsKeyPath, "utf8") === "old-secrets" &&
+			fs.readFileSync(databaseKeyPath, "utf8") === "old-database-key",
+		"A failed post-install database verification must restore project, secrets, and database keys.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateLocalRuntimeTransferPreservation() {
+	const { HachiManager } = requireFresh("src", "manager.js");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-transfer-"));
+	try {
+		const root = path.join(tempDir, "paldeck");
+		const backupsRoot = path.join(tempDir, "central-backups");
+		const oldKey = path.join(tempDir, "old.key");
+		fs.mkdirSync(path.join(root, "database"), { recursive: true });
+		fs.writeFileSync(path.join(root, "database", "database.sqlite"), "old-database", "utf8");
+		fs.writeFileSync(path.join(root, ".env"), "PALDECK_DB_KEY_FILE=old.key\n", "utf8");
+		fs.writeFileSync(oldKey, "old-key\n", "utf8");
+		const manager = new HachiManager({ backupsRoot, defaultInstallPath: root, managerRoot: projectRoot, userDataPath: path.join(tempDir, "userData") });
+		const context = {
+			definition: { commands: { databaseVerify: { command: "verify" } }, displayName: "Paldeck", id: "paldeck" },
+			deployment: { id: "paldeck-local", installPath: root },
+			server: { connection: { type: "local" }, id: "local", name: "Local" },
+		};
+		const secondContext = { ...context, deployment: { ...context.deployment, id: "paldeck-local-2" } };
+		assert(manager.transferKeyPath(context) !== manager.transferKeyPath(secondContext), "Each installation must receive a distinct HachiGen-managed database key path.");
+		manager.readFleetDatabaseRuntimeKey = async () => ({ key: "old-key", keyFilePath: oldKey, source: "file" });
+		manager.applyFleetDatabaseRuntimeKey = async (_context, key) => {
+			const keyPath = manager.transferKeyPath(context);
+			fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+			fs.writeFileSync(keyPath, key.key, { encoding: "utf8", flag: "w" });
+		};
+		manager.verifyFleetDatabaseRuntimeKey = async () => true;
+		const result = await manager.applyLocalRuntimeTransfer(context, {
+			entries: [
+				{ content: Buffer.from("new-database"), restoreKind: "project", restorePath: "database/database.sqlite" },
+				{ content: Buffer.from("PALDECK_DB_KEY_FILE=new.key\n"), restoreKind: "project", restorePath: ".env" },
+			],
+			source: { botId: "paldeck", type: "remote" },
+		}, { key: "new-key", source: "file" }, "remote-to-local");
+		assert(result.backupDir.startsWith(path.join(backupsRoot, "Runtime Transfers", "Paldeck", "Local")), "Runtime transfer backup should use the centralized hierarchy.");
+		assert(fs.readFileSync(path.join(root, "database", "database.sqlite"), "utf8") === "new-database", "Transferred database was not installed.");
+		assert(fs.readFileSync(path.join(result.backupDir, "project", "database", "database.sqlite"), "utf8") === "old-database", "Replaced database was not preserved.");
+		assert(fs.readFileSync(path.join(result.backupDir, "keys", "old.key"), "utf8") === "old-key\n", "Replaced key was not preserved.");
+	} finally {
 		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
 }
@@ -898,7 +1177,15 @@ async function validateDatabaseTransferOperations() {
 			unprotectSecret: value => Buffer.from(String(value), "base64").toString("utf8"),
 			userDataPath: path.join(tempDir, "userData"),
 		});
-		manager.checkpointLocalDatabase = async () => undefined;
+		manager.runLocalDatabaseWorker = async () => {
+			const content = fs.readFileSync(databasePath);
+			return { bytes: content.length, content: content.toString("base64"), ok: true };
+		};
+		const verifiedStops = [];
+		manager.ensureHachiStopped = async target => {
+			verifiedStops.push(target);
+		};
+		manager.readLocalDatabaseProtectionKeyIfAvailable = () => "local-key";
 		manager.getDatabaseState = async () => ({ exists: true, source: "local" });
 		manager.readRemoteDatabaseFile = async () => ({
 			bytes: Buffer.byteLength("remote-db"),
@@ -932,6 +1219,7 @@ async function validateDatabaseTransferOperations() {
 		assert(manager.readFleetBackupContent(manager.getFleetBackupVault().records[backups[0].backupId]).toString("utf8") === "local-before", "Pull database safety backup should contain the replaced database.");
 		assert(pulled.transform === "rekeyed", "Pull database should report key-aware transfer preparation.");
 		assert(localCipherTest?.ok === true, "Pull database should record destination key verification.");
+		assert(verifiedStops[0] === "local", "Pull must verify that the local destination stopped before replacing its database.");
 
 		fs.writeFileSync(databasePath, "local-after", "utf8");
 		let remoteBackupCreated = false;
@@ -960,6 +1248,7 @@ async function validateDatabaseTransferOperations() {
 		assert(remoteBackupCreated, "Push database should create a remote safety backup when a remote database exists.");
 		assert(pushedContent === "local-after", "Push database should send the local database bytes to remote.");
 		assert(pushed.transform === "rekeyed", "Push database should report key-aware transfer preparation.");
+		assert(verifiedStops[1] === "remote", "Push must verify that the remote destination stopped before replacing its database.");
 	} finally {
 		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
@@ -1059,7 +1348,7 @@ function validateDatabaseWorkerStaging() {
 			"Database worker should load Hachi modules from the selected install root.",
 		);
 		assert(
-			workerSource.includes("request.action === `view` ? {} : loadExpectedSchema(request.root)"),
+			workerSource.includes('["view", "snapshot"].includes(request.action) ? {} : loadExpectedSchema(request.root)'),
 			"External encrypted viewers should not require Hachi's schema audit module.",
 		);
 		assert(
@@ -1093,8 +1382,97 @@ function validateGenericSqliteViewerWorker() {
 		);
 		const result = JSON.parse(output);
 		assert(result.ok && result.selectedTable === "cards" && result.rows[0]?.name === "Smoke", "Generic SQLite viewer did not return the selected bot table.");
+		const snapshotOutput = childProcess.execFileSync(
+			process.execPath,
+			[resolveProject("src", "sqlite-viewer-worker.js")],
+			{ cwd: tempDir, input: JSON.stringify({ action: "snapshot", dbPath: "bot.sqlite", root: "." }), encoding: "utf8" },
+		);
+		const snapshot = JSON.parse(snapshotOutput);
+		assert(snapshot.ok && Buffer.from(snapshot.content, "base64").equals(fs.readFileSync(databasePath)), "Snapshot worker did not copy the complete SQLite file.");
+		const siblingBotModules = path.resolve(projectRoot, "..", "Hachi", "node_modules");
+		if (fs.existsSync(path.join(siblingBotModules, "better-sqlite3-multiple-ciphers"))) {
+			// Disable bundled SQLite to exercise the bot-driver path used on Node 20.
+			const fallbackOutput = childProcess.execFileSync(
+				process.execPath,
+				["--no-experimental-sqlite", resolveProject("src", "sqlite-viewer-worker.js")],
+				{
+					cwd: tempDir,
+					encoding: "utf8",
+					env: { ...process.env, NODE_PATH: siblingBotModules },
+					input: JSON.stringify({ action: "snapshot", dbPath: "bot.sqlite", root: "." }),
+				},
+			);
+			const fallback = JSON.parse(fallbackOutput);
+			assert(fallback.ok && Buffer.from(fallback.content, "base64").equals(fs.readFileSync(databasePath)), "Bot-installed SQLite driver did not produce a complete fallback snapshot.");
+		}
+		const walDatabase = new DatabaseSync(databasePath);
+		try {
+			walDatabase.exec("PRAGMA journal_mode=WAL; INSERT INTO cards (name) VALUES ('WAL row');");
+			const walOutput = childProcess.execFileSync(
+				process.execPath,
+				[resolveProject("src", "sqlite-viewer-worker.js")],
+				{ cwd: tempDir, input: JSON.stringify({ action: "snapshot", dbPath: "bot.sqlite", root: "." }), encoding: "utf8" },
+			);
+			const walSnapshot = JSON.parse(walOutput);
+			assert(!walSnapshot.ok && /wal journal mode/iu.test(walSnapshot.error), "Snapshot worker must reject a main-file-only WAL copy.");
+		} finally {
+			walDatabase.close();
+		}
 	} finally {
 		fs.rmSync(tempDir, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
+	}
+}
+
+async function validatePreUpdateDatabaseSnapshots() {
+	const { HachiManager } = requireFresh("src", "manager.js");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-pre-update-"));
+	try {
+		const installPath = path.join(tempDir, "Hachi");
+		const databasePath = path.join(installPath, "database", "database.sqlite");
+		fs.mkdirSync(path.join(installPath, "config"), { recursive: true });
+		fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+		fs.writeFileSync(path.join(installPath, ".env"), "TOKEN=smoke\n", "utf8");
+		fs.writeFileSync(path.join(installPath, "config", "config.json"), "{}\n", "utf8");
+		fs.writeFileSync(databasePath, "raw-live-file", "utf8");
+		const manager = new HachiManager({ defaultInstallPath: installPath, managerRoot: projectRoot, userDataPath: path.join(tempDir, "userData") });
+		const snapshotContent = Buffer.from("locked-snapshot");
+		let snapshotCalls = 0;
+		manager.runLocalDatabaseWorker = async action => {
+			assert(action === "snapshot", "Pre-update backup must request a locked SQLite snapshot.");
+			snapshotCalls += 1;
+			return { bytes: snapshotContent.length, content: snapshotContent.toString("base64"), ok: true };
+		};
+		const localBackup = await manager.backupBeforeUpdate();
+		assert(snapshotCalls === 1, "Local pre-update backup should snapshot its database once.");
+		assert(fs.readFileSync(path.join(localBackup.backupDir, "database", "database.sqlite")).equals(snapshotContent), "Local pre-update backup copied live database bytes instead of the locked snapshot.");
+		assert(localBackup.copied.includes(".env") && localBackup.copied.includes(path.join("config", "config.json")), "Pre-update backup should still preserve configuration files.");
+		fs.rmSync(databasePath);
+		const withoutDatabase = await manager.backupBeforeUpdate();
+		assert(snapshotCalls === 1 && !withoutDatabase.copied.includes(path.join("database", "database.sqlite")), "A missing local database should not block pre-update backup.");
+
+		let remoteSnapshotCalls = 0;
+		manager.remotePathExists = async () => true;
+		manager.runRemoteDatabaseWorker = async action => {
+			assert(action === "snapshot", "Remote pre-update backup must request a locked SQLite snapshot.");
+			remoteSnapshotCalls += 1;
+			return { bytes: snapshotContent.length, content: snapshotContent.toString("base64"), ok: true };
+		};
+		manager.runRemoteHachiJson = async (command, options) => {
+			assert(options.input === snapshotContent.toString("base64"), "Remote backup must stream the snapshot through stdin.");
+			assert(!command.includes('["database/database.sqlite", "database/database.sqlite"]'), "Remote backup must not raw-copy its live database.");
+			return { backupDir: "manager/backups/smoke", copied: [".env", "database/database.sqlite"], ok: true };
+		};
+		const remoteBackup = await manager.backupRemoteBeforeUpdate();
+		assert(remoteSnapshotCalls === 1 && remoteBackup.copied.includes("database/database.sqlite"), "Remote pre-update backup should preserve the snapshot.");
+		manager.remotePathExists = async () => false;
+		manager.runRemoteHachiJson = async (_command, options) => {
+			assert(options.input === "", "A missing remote database should send no snapshot bytes.");
+			return { backupDir: "manager/backups/smoke", copied: [".env"], ok: true };
+		};
+		const remoteWithoutDatabase = await manager.backupRemoteBeforeUpdate();
+		assert(remoteSnapshotCalls === 1 && !remoteWithoutDatabase.copied.includes("database/database.sqlite"), "A missing remote database should not block pre-update backup.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
 }
 
@@ -1208,7 +1586,7 @@ async function validateUpdateCheckDeduplication() {
 }
 
 function validatePm2BannerParsing() {
-	const { parsePm2Json } = requireFresh("src", "manager.js");
+	const { HachiManager, parsePm2Json } = requireFresh("src", "manager.js");
 	const processList = [{ name: "Paldeck", pm2_env: { status: "online" } }];
 	const parsed = parsePm2Json(`[PM2] Spawning PM2 daemon\n[PM2] PM2 Successfully daemonized\n${JSON.stringify(processList)}\n`);
 	assert(parsed.length === 1 && parsed[0].name === "Paldeck", "PM2 startup banners should not be parsed as the JSON process list.");
@@ -1220,6 +1598,149 @@ function validatePm2BannerParsing() {
 		malformedRejected = error.message.includes("valid JSON process list");
 	}
 	assert(malformedRejected, "Malformed PM2 output should return a stable diagnostic instead of leaking a JSON parser exception.");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-pm2-name-"));
+	try {
+		const manager = new HachiManager({ defaultInstallPath: tempDir, managerRoot: projectRoot, userDataPath: path.join(tempDir, "userData") });
+		const remoteStatus = manager.remotePm2StatusFromResult({ code: 0, stdout: JSON.stringify([{ name: "hachi", pid: 123, pm2_env: { status: "online" } }]) }, { pm2Name: "Hachi" });
+		assert(remoteStatus.registered && remoteStatus.processName === "hachi", "Remote PM2 status should find a legacy case-mismatched process before database replacement.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateVerifiedFleetStop() {
+	const { HachiManager } = requireFresh("src", "manager.js");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-stop-"));
+	try {
+		const manager = new HachiManager({ defaultInstallPath: tempDir, managerRoot: projectRoot, userDataPath: path.join(tempDir, "userData") });
+		manager.getFleetDeploymentContext = () => ({
+			definition: { capabilities: { pm2: true } },
+			deployment: { name: "Smoke Bot" },
+		});
+		let stopCalls = 0;
+		manager.controlFleetDeployment = async () => {
+			stopCalls += 1;
+		};
+		const online = { registered: true, pid: 321, status: "online" };
+		const stopped = { registered: true, pid: null, status: "stopped" };
+		let statusSequence = [online, stopped];
+		manager.getFleetDeploymentStatus = async () => statusSequence.shift();
+		assert((await manager.ensureFleetDeploymentStopped("smoke")).status === "stopped" && stopCalls === 1, "Verified stop should wait for a stopped process status.");
+		statusSequence = [online, online];
+		let runningRejected = false;
+		try {
+			await manager.ensureFleetDeploymentStopped("smoke");
+		} catch (error) {
+			runningRejected = error.message.includes("did not stop cleanly");
+		}
+		assert(runningRejected, "A process still running after PM2 stop must block database replacement.");
+		statusSequence = [{ registered: false, status: "error", message: "PM2 unavailable" }];
+		let unknownRejected = false;
+		try {
+			await manager.ensureFleetDeploymentStopped("smoke");
+		} catch (error) {
+			unknownRejected = error.message.includes("Could not verify");
+		}
+		assert(unknownRejected, "An unreadable PM2 status must block database replacement.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateNativeHachiTargetContexts() {
+	const { HachiManager } = requireFresh("src", "manager.js");
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hachigen-hachi-targets-"));
+	try {
+		const manager = new HachiManager({ defaultInstallPath: path.join(tempDir, "Hachi"), managerRoot: projectRoot, userDataPath: path.join(tempDir, "userData") });
+		const registryBeforeLookup = fs.readFileSync(manager.fleetPath, "utf8");
+		const deploymentsBeforeLookup = manager.fleet.deployments.length;
+		manager.getDatabaseBackupDir();
+		assert(manager.fleet.deployments.length === deploymentsBeforeLookup && fs.readFileSync(manager.fleetPath, "utf8") === registryBeforeLookup,
+			"Displaying a local backup directory must not register or save a Fleet installation.");
+		const local = manager.getNativeHachiContext("local");
+		local.deployment.pm2Name = "CustomLocalHachi";
+		manager.settings.remote = {
+			host: "hachi.example", username: "bot", sshKeyPath: path.join(tempDir, "remote.key"),
+			remotePath: "/srv/hachi", portMode: "default", pm2Name: "CustomRemoteHachi",
+		};
+		manager.settings.runtimeTarget = "remote";
+		const registryBeforeRemoteLookup = fs.readFileSync(manager.fleetPath, "utf8");
+		const serversBeforeRemoteLookup = manager.fleet.servers.length;
+		const remoteBackupDir = manager.getDatabaseBackupDir();
+		assert(remoteBackupDir.includes("Remote-Hachi hachi.example") &&
+			manager.fleet.servers.length === serversBeforeRemoteLookup &&
+			fs.readFileSync(manager.fleetPath, "utf8") === registryBeforeRemoteLookup,
+		"Displaying a configured remote backup directory must not create Fleet records.");
+		const remote = manager.getNativeHachiContext("remote");
+		assert(manager.getDatabaseBackupDir() === manager.getFleetBackupDir(remote), "Passive backup path should match a registered remote backup path.");
+		assert(remote.server.connection.type === "ssh" && remote.deployment.pm2Name === "CustomRemoteHachi", "Remote Hachi should use its configured PM2 name.");
+		assert(local.deployment.id !== remote.deployment.id && local.server.id !== remote.server.id, "Local and remote Hachi backups need distinct deployment identities.");
+		manager.setActiveFleetDeployment(remote.deployment.id);
+		assert(manager.getNativeHachiContext("remote").deployment.id === remote.deployment.id &&
+			manager.getNativeHachiContext("local").deployment.pm2Name === "CustomLocalHachi", "Target lookup should reuse each existing Hachi deployment.");
+		manager.settings.remote = { ...manager.settings.remote, host: "current.example", remotePath: "/srv/current-hachi" };
+		const preview = manager.previewFleetRuntimeTransfer("hachi", "remote-to-local");
+		assert(preview.source.installPath === "/srv/current-hachi" && preview.source.deploymentId !== remote.deployment.id &&
+			preview.selection.local.deploymentId === local.deployment.id,
+		"Transfer preview must use the configured Hachi remote instead of an older Fleet remote record.");
+		manager.settings.remote = { ...manager.settings.remote, remotePath: "/srv/changed-hachi" };
+		let statusChecked = false;
+		manager.getFleetDeploymentStatus = async () => {
+			statusChecked = true;
+			throw new Error("Transfer reached PM2.");
+		};
+		let staleSelectionRejected = false;
+		try {
+			await manager.transferFleetRuntime("hachi", "remote-to-local", preview.selection);
+		} catch (error) {
+			staleSelectionRejected = error.message.includes("installation changed");
+		}
+		assert(staleSelectionRejected && !statusChecked, "A changed configured installation must cancel transfer before PM2 or file work.");
+		const changedPathPreview = manager.previewFleetRuntimeTransfer("hachi", "remote-to-local");
+		manager.settings.remote = { ...manager.settings.remote, pm2Name: "RenamedRemoteHachi" };
+		const renamedProcessPreview = manager.previewFleetRuntimeTransfer("hachi", "remote-to-local");
+		assert(renamedProcessPreview.selection.remote.deploymentId === changedPathPreview.selection.remote.deploymentId &&
+			renamedProcessPreview.selection.remote.pm2Name === "RenamedRemoteHachi",
+		"A reused Hachi remote installation must follow its configured PM2 process name.");
+		const originalLocalPath = local.deployment.installPath;
+		const movedLocalPath = path.join(tempDir, "Hachi-moved");
+		local.deployment.installPath = movedLocalPath;
+		manager.settings.installPath = movedLocalPath;
+		let sameIdPathRejected = false;
+		try {
+			await manager.transferFleetRuntime("hachi", "remote-to-local", renamedProcessPreview.selection);
+		} catch (error) {
+			sameIdPathRejected = error.message.includes("installation changed");
+		}
+		assert(sameIdPathRejected && !statusChecked, "Changing an installation path under the same deployment ID must cancel transfer before PM2.");
+		local.deployment.installPath = originalLocalPath;
+		manager.settings.installPath = originalLocalPath;
+		const stablePreview = manager.previewFleetRuntimeTransfer("hachi", "remote-to-local");
+		const currentRemote = manager.getNativeHachiContext("remote");
+		currentRemote.server.connection.host = "renamed-host.example";
+		manager.settings.remote.host = "renamed-host.example";
+		let sameIdConnectionRejected = false;
+		try {
+			await manager.transferFleetRuntime("hachi", "remote-to-local", stablePreview.selection);
+		} catch (error) {
+			sameIdConnectionRejected = error.message.includes("installation changed");
+		}
+		assert(sameIdConnectionRejected && !statusChecked, "Changing SSH connection identity under the same server ID must cancel transfer before PM2.");
+		manager.fleet.deployments.push(
+			{ botTypeId: "other-bot", id: "other-local", serverId: "local" },
+			{ botTypeId: "other-bot", id: "other-remote-a", serverId: remote.server.id },
+			{ botTypeId: "other-bot", id: "other-remote-b", serverId: remote.server.id },
+		);
+		let ambiguousRemoteRejected = false;
+		try {
+			manager.getFleetTransferContexts("other-bot");
+		} catch (error) {
+			ambiguousRemoteRejected = error.message.includes("multiple remote installations");
+		}
+		assert(ambiguousRemoteRejected, "Transfer must reject multiple unselected remote installations instead of choosing the first.");
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
 }
 
 async function validateFleetCredentialAndBackupSecurity() {
@@ -1251,8 +1772,12 @@ async function validateFleetCredentialAndBackupSecurity() {
 	childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: deploymentPath, stdio: "ignore" });
 	childProcess.execFileSync("git", ["remote", "add", "origin", "https://example.invalid/optional-bot.git"], { cwd: deploymentPath, stdio: "ignore" });
 	childProcess.execFileSync("git", ["checkout", "-b", "test-feature"], { cwd: deploymentPath, stdio: "ignore" });
-	const originalDatabase = Buffer.from("SQLite format 3\0smoke database contents");
-	fs.writeFileSync(path.join(deploymentPath, "data", "bot.sqlite"), originalDatabase);
+	const productionDatabasePath = path.join(deploymentPath, "data", "bot.sqlite");
+	const { DatabaseSync } = require("node:sqlite");
+	const productionDatabase = new DatabaseSync(productionDatabasePath);
+	productionDatabase.exec("CREATE TABLE smoke_rows (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO smoke_rows (value) VALUES ('original');");
+	productionDatabase.close();
+	const originalDatabase = fs.readFileSync(productionDatabasePath);
 	let manager = null;
 	try {
 		manager = new HachiManager({
@@ -1373,7 +1898,6 @@ async function validateFleetCredentialAndBackupSecurity() {
 		);
 		await manager.stopTestingBot("optional-bot");
 		fs.rmSync(testingRun.databasePath, { force: true });
-		const { DatabaseSync } = require("node:sqlite");
 		const isolatedDatabase = new DatabaseSync(testingRun.databasePath);
 		isolatedDatabase.exec("CREATE TABLE test_rows (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO test_rows (value) VALUES ('isolated');");
 		isolatedDatabase.close();
@@ -1450,8 +1974,10 @@ async function validateFleetCredentialAndBackupSecurity() {
 			!restoredRuntimeEnvironment.OPTIONAL_BOT_DB_KEY_FILE,
 			"Encrypted backup restore should reinstate the selected profile's matching runtime key configuration.",
 		);
-		const productionDatabasePath = path.join(deploymentPath, "data", "bot.sqlite");
 		const productionDatabaseBeforeOverride = fs.readFileSync(productionDatabasePath);
+		// The remaining assertions exercise backup key recovery with synthetic
+		// encrypted headers; the real snapshot worker is covered separately.
+		manager.readFleetDatabaseSnapshot = async () => fs.readFileSync(productionDatabasePath);
 		fs.writeFileSync(productionDatabasePath, "orphaned-encrypted-database");
 		const overrideBackup = await manager.backupFleetDatabase("optional-bot", {
 			databaseRuntimeKeyOverride: { key: runtimeKey, source: "direct" },
@@ -1478,6 +2004,17 @@ async function validateFleetCredentialAndBackupSecurity() {
 			unconfirmedRestoreRejected = error.message.includes("requires explicit confirmation");
 		}
 		assert(unconfirmedRestoreRejected, "A plaintext transition should be rejected without explicit confirmation.");
+		manager.ensureFleetDeploymentStopped = async () => {
+			throw new Error("PM2 stop failed");
+		};
+		let failedStopBlockedRestore = false;
+		try {
+			await manager.restoreFleetDatabaseBackup("optional-bot", backup.backupId, { allowPlaintextTransition: true });
+		} catch (error) {
+			failedStopBlockedRestore = error.message.includes("PM2 stop failed");
+		}
+		assert(failedStopBlockedRestore && fs.readFileSync(productionDatabasePath, "utf8") === "damaged", "A failed stop must leave the destination database untouched.");
+		manager.ensureFleetDeploymentStopped = async () => ({ status: "stopped" });
 		await manager.restoreFleetDatabaseBackup("optional-bot", backup.backupId, { allowPlaintextTransition: true });
 		assert(fs.readFileSync(path.join(deploymentPath, "data", "bot.sqlite")).equals(originalDatabase), "Encrypted fleet backup did not restore original database bytes.");
 		assert(fs.existsSync(path.join(deploymentPath, "plaintext-runtime.enabled")), "Plaintext restore did not invoke the bot-owned runtime adapter.");
@@ -1625,14 +2162,20 @@ async function main() {
 	await test("self-update uses running package version before saved release tag", validateSelfUpdateUsesRunningVersion);
 	await test("diagnostics bundle is created and redacted", validateDiagnosticsBundle);
 	await test("runtime archive exports and restores secrets-bearing project data", validateRuntimeArchiveRoundTrip);
+	await test("Fleet runtime archives preserve external Hachi keys without a database", validateFleetRuntimeArchiveWithoutDatabase);
+	await test("remote runtime transfer rolls back after database verification failure", validateRemoteRuntimeTransferVerificationRollback);
+	await test("runtime transfer preserves replaced database and key centrally", validateLocalRuntimeTransferPreservation);
 	await test("database transfer creates destination backups and moves database bytes", validateDatabaseTransferOperations);
 	await test("HachiGen update downloads are verified before install", validateHachiGenUpdateVerification);
 	await test("shell wrapper resolves allowed commands safely", validateShellWrapperHardening);
 	await test("database worker stages from standalone manager source", validateDatabaseWorkerStaging);
 	await test("generic SQLite viewer reads additional bot databases", validateGenericSqliteViewerWorker);
+	await test("Hachi pre-update backups use consistent database snapshots", validatePreUpdateDatabaseSnapshots);
 	await test("logs redact secrets and hide Git plumbing", validateLoggingAndQuietState);
 	await test("update checks are deduplicated", validateUpdateCheckDeduplication);
 	await test("PM2 startup banners do not break runtime status", validatePm2BannerParsing);
+	await test("database replacement requires a verified PM2 stop", validateVerifiedFleetStop);
+	await test("Hachi backups and stops use the selected installation", validateNativeHachiTargetContexts);
 	await test("fleet credentials and database backups stay encrypted", validateFleetCredentialAndBackupSecurity);
 	await test("testing identities stay OS-protected and out of renderer state", validateTestingIdentityProtection);
 	await test("database encryption preflight verifies current package installation", validateDatabaseEncryptionPreflight);

@@ -186,6 +186,9 @@ const ACTION_ICONS = {
 	"edit-fleet-server": "settings",
 	"encrypt-fleet-database": "shieldCheck",
 	"export-database-key-backup": "key",
+	"export-runtime-archive": "download",
+	"pull-remote-runtime": "download",
+	"push-remote-runtime": "send",
 	"export-support-bundle": "package",
 	"fleet-edit-credentials": "key",
 	"force-migrate-database": "database",
@@ -762,7 +765,7 @@ function hachiAvailableVersionLabel() {
 		return hachiVersionUpdate.repositoryVersion || "Available";
 	}
 
-	return hachiVersionUpdate.repositoryVersion || "None";
+	return "None";
 }
 
 function hachiStatusMessage() {
@@ -793,17 +796,22 @@ function hachiGenAvailableVersionLabel(update = state?.hachiGenUpdate) {
 	}
 
 	if (update.updateAvailable || update.canInstall) {
-		return update.latestTag || "Available";
+		return String(update.latestTag || "Available").replace(/^hachigen-v/iu, "");
 	}
 
-	return update.latestTag || "None";
+	return "None";
+}
+
+function selectedUpdateInstallationLabel(serverType, serverName = "") {
+	return serverType === "ssh" ? `Remote${serverName ? ` · ${serverName}` : ""}` : "Local computer";
 }
 
 function hachiGenDashboardUpdateLabel(update = state?.hachiGenUpdate) {
 	const current = hachiGenCurrentVersionLabel(update);
 
 	if (update?.updateAvailable || update?.canInstall) {
-		return `${current} -> ${update.latestTag || "available"}`;
+		const available = String(update.latestTag || "available").replace(/^hachigen-v/iu, "");
+		return `${current} -> ${available}`;
 	}
 
 	return updateSummaryText(update);
@@ -1118,7 +1126,7 @@ function renderExternalDashboard(overview) {
 	const databaseStatus = security.database?.status || (security.error ? "error" : "unknown");
 	renderStatusCard("bot", {
 		detail: runtime?.message || overview.health?.error || "Runtime status unavailable",
-		dot: runtime?.status === "online" ? "good" : runtime?.status === "error" ? "bad" : "warn",
+		dot: runtime?.status === "online" ? "good" : ["stopped", "errored", "error", "not-registered"].includes(runtime?.status) ? "bad" : "warn",
 		label: readableStatus(runtime?.status || "Unknown"),
 	});
 	renderStatusCard("install", {
@@ -1158,6 +1166,9 @@ function renderExternalDashboard(overview) {
 	setText("#diagnosticsRuntimeTarget", overview.server?.type === "ssh" ? "Remote" : "Local");
 	setText("#diagnosticsPm2Status", readableStatus(runtime?.status || "Unknown"));
 	setText("#diagnosticsHachiUpdate", repository.error ? "Unavailable" : repository.updateAvailable ? "Update available" : "Current");
+	setDisabled("#exportRuntimeArchiveButton", false);
+	setText("#runtimeArchiveSummary", `Export the complete selected ${selectedBotName()} runtime to this computer, including repository files, configuration, database data, and its configured database key file.`);
+	renderRuntimeTransferAvailability();
 	setText("#diagnosticsSummaryOutput", JSON.stringify({
 		database: security.database || null,
 		deployment: overview.deployment,
@@ -1177,11 +1188,13 @@ function renderExternalDashboard(overview) {
 function renderExternalUpdates(overview) {
 	const repository = overview?.repository || {};
 	const name = selectedBotName();
+	const installation = selectedUpdateInstallationLabel(overview?.server?.type, overview?.server?.name);
 	setText("#combinedUpdatesMeta", `${name} and HachiGen update status`);
 	setText("#selectedBotUpdateName", name);
-	setText("#updatesMeta", repository.message || (repository.error ? "Unavailable" : "Repository status loaded"));
-	setText("#hachiCurrentVersion", repository.branch || "Unknown branch");
-	setText("#hachiAvailableVersion", repository.updateAvailable ? (repository.targetBranch || "Update available") : "Current");
+	setText("#updatesMeta", repository.error ? `${installation} · Unavailable` : `${installation} · ${repository.branch || "Unknown branch"}`);
+	setText("#selectedBotUpdateLocation", installation);
+	setText("#hachiCurrentVersion", repository.currentVersion || "Unknown");
+	setText("#hachiAvailableVersion", repository.updateAvailable ? (repository.availableVersion || "Update available") : "None");
 	setText("#updateMessage", repository.error || (repository.dirty ? "Local changes must be handled before updating." : repository.updateAvailable ? "An update is available." : "Repository is current."));
 	setElementText($("#hachiUpdateButton"), `Update ${name}`);
 	setDisabled("#hachiUpdateButton", Boolean(repository.error || repository.dirty || !repository.updateAvailable));
@@ -1932,10 +1945,16 @@ function renderStashedChanges(updates) {
 
 function renderHachiUpdateSummary() {
 	const canUpdate = Boolean(state?.updates?.available);
+	const remoteSettings = state?.remote?.settings || {};
+	const remoteLabel = remoteSettings.host ? `${remoteSettings.username || "user"}@${remoteSettings.host}` : "";
 
 	setText("#selectedBotUpdateName", "Hachi");
 	setText("#combinedUpdatesMeta", "Hachi and HachiGen update status");
 	setText("#updatesMeta", updateMetaLabel(state?.updates, state?.repository));
+	setText(
+		"#selectedBotUpdateLocation",
+		selectedUpdateInstallationLabel(state?.runtimeTarget === "remote" ? "ssh" : "local", remoteLabel),
+	);
 	setText("#hachiCurrentVersion", hachiCurrentVersionLabel());
 	setText("#hachiAvailableVersion", hachiAvailableVersionLabel());
 	setText("#updateMessage", hachiStatusMessage());
@@ -2035,6 +2054,21 @@ function renderDiagnostics(diagnostics = diagnosticsState || diagnosticSnapshotF
 	setText("#diagnosticsCrashCount", String(diagnostics?.recovery?.crashCount || 0));
 	setText("#diagnosticsRecoveryEvent", lastRecoveryEvent ? `${formatDateTime(lastRecoveryEvent.time)} | ${lastRecoveryEvent.message}` : "No recovery events");
 	setText("#diagnosticsSummaryOutput", summary);
+	setDisabled("#exportRuntimeArchiveButton", false);
+	setText("#runtimeArchiveSummary", runtimeTarget === "remote" ?
+		"Export the complete selected remote Hachi runtime to this computer, including project files, configuration, database data, and configured key files." :
+		"Export the complete selected local Hachi runtime, including project files, configuration, database data, and configured key files.");
+	renderRuntimeTransferAvailability();
+}
+
+function renderRuntimeTransferAvailability() {
+	const botTypeId = selectedBotId;
+	const deployments = fleetState?.deployments?.filter(item => item.botTypeId === botTypeId) || [];
+	const servers = new Map((fleetState?.servers || []).map(server => [server.id, server]));
+	const hasLocal = deployments.some(item => servers.get(item.serverId)?.connection?.type === "local");
+	const hasRemote = deployments.some(item => servers.get(item.serverId)?.connection?.type === "ssh");
+	setDisabled("#pullRemoteRuntimeButton", !hasLocal || !hasRemote);
+	setDisabled("#pushRemoteRuntimeButton", !hasLocal || !hasRemote);
 }
 
 async function loadDiagnostics() {
@@ -3775,7 +3809,7 @@ function renderFleetOverview(overview = null) {
 	}
 	const runtime = overview.health?.runtime;
 	const runtimeGood = runtime?.status === "online";
-	const runtimeBad = overview.health?.error || ["error", "pm2-missing"].includes(runtime?.status);
+	const runtimeBad = overview.health?.error || ["error", "pm2-missing", "stopped"].includes(runtime?.status);
 	setText("#fleetBotCardLabel", overview.deployment?.name || "Bot");
 	setDot("#fleetRuntimeDot", runtimeGood ? "good" : runtimeBad ? "bad" : "warn");
 	setText("#fleetRuntimeStatus", readableStatus(runtime?.status || (overview.health?.error ? "Unavailable" : "Unknown")));
@@ -4057,7 +4091,9 @@ async function refreshLogs() {
 	if (selectedBotId !== HACHI_BOT_ID) {
 		const result = await api.getFleetDeploymentLogs(selectedBotId, 300);
 		setLogText("pm2Logs", result.logs || "No bot logs returned.");
-		setText("#eventLogs", `Showing ${selectedBotName()} runtime logs. HachiGen activity remains available in Diagnostics.`);
+		if (!hachiGenLogHistoryHidden) {
+			setLogText("eventLogs", result.events?.length ? result.events.map(eventLine).join("\n") : "No manager activity yet.");
+		}
 		return;
 	}
 	const logs = await api.getLogs();
@@ -4101,19 +4137,13 @@ function updateLogPolling() {
 }
 
 async function checkUpdatesOnStartup() {
-	// Check updates after the first render. Doing this in the background lets
-	// the window open before Git/network work has finished.
+	// Run the same complete check used by the Updates view after the first
+	// render. Keeping one workflow prevents a partial Git-only result from
+	// briefly claiming an update exists without its available version.
 	if (selectedBotId !== HACHI_BOT_ID) {
 		return;
 	}
-	try {
-		await api.checkUpdates();
-		await refreshState();
-	} catch (error) {
-		recordRendererEvent("error", `Startup update check failed: ${error.message || error}`, {
-			label: "Startup update check",
-		});
-	}
+	await runCombinedUpdateCheck({ startup: true });
 }
 
 function clearPm2LogWindow() {
@@ -4186,8 +4216,21 @@ async function runAction(label, action, options = {}) {
 	}
 }
 
-async function runCombinedUpdateCheck() {
-	await runAction("Check updates", async () => {
+function renderUpdateCheckPending() {
+	setText("#combinedUpdatesMeta", "Checking for updates...");
+	setText("#updateMessage", "Checking Hachi updates...");
+	setText("#hachigenUpdateMessage", "Checking HachiGen updates...");
+	setText("#dashboardHachiUpdate", "Checking...");
+	setText("#dashboardHachiGenUpdate", "Checking...");
+}
+
+async function runCombinedUpdateCheck({ startup = false } = {}) {
+	if (busy) {
+		return;
+	}
+
+	renderUpdateCheckPending();
+	const result = await runAction(startup ? "Startup update check" : "Check updates", async () => {
 		const hachiVersion = await api.checkVersionUpdates();
 		hachiVersionUpdate = hachiVersion;
 		const hachi = await api.checkUpdates();
@@ -4200,7 +4243,13 @@ async function runCombinedUpdateCheck() {
 			message: "Update check complete.",
 			ok: true,
 		};
-	});
+	}, { toast: !startup });
+
+	// A failed action has no state refresh to replace the pending labels. Restore
+	// the last complete snapshot while the error remains available in activity.
+	if (!result && state && selectedBotId === HACHI_BOT_ID) {
+		renderState(state);
+	}
 }
 
 function localChangeReviewDetails(changes = []) {
@@ -4500,6 +4549,12 @@ function handleMenuAction(payload = {}) {
 
 	if (action === "open-folder") {
 		runAction("Open folder", () => api.openInstallFolder());
+		return;
+	}
+
+	if (action === "export-runtime-archive") {
+		showView("diagnostics");
+		window.requestAnimationFrame(() => document.querySelector('[data-action="export-runtime-archive"]')?.click());
 	}
 }
 
@@ -4642,6 +4697,9 @@ function handleAction(event) {
 	if (externalDeployment && action === "check-all-updates") {
 		runAction(`Check ${externalDeployment.name} updates`, async () => {
 			const result = await api.getFleetRepositoryStatus(externalDeployment.id, { fetch: true });
+			const hachiGen = await api.checkHachiGenUpdates();
+			state = { ...(state || {}), hachiGenUpdate: hachiGen };
+			renderHachiGenUpdate(hachiGen);
 			await refreshFleetOverview();
 			return result;
 		});
@@ -5173,6 +5231,63 @@ function handleAction(event) {
 		return;
 	}
 
+	if (action === "export-runtime-archive") {
+		showConfirmModal({
+			confirmText: "Export Runtime Archive",
+			details: [
+				`Source: ${selectedBotName()} · ${selectedFleetDeployment()?.installPath || state?.installPath || "selected runtime"}`,
+				"The archive can include configuration, database data, database keys, and secret-encryption keys.",
+				"Anyone with this archive may be able to run the bot or read its data.",
+			],
+			meta: `${selectedBotName()} · secrets-bearing archive`,
+			summary: "Export the selected runtime to HachiGen's local exports folder?",
+			title: "Export Runtime Archive",
+			variant: "warning",
+		}).then(confirmed => {
+			if (!confirmed) return;
+			runAction("Export runtime archive", async () => {
+				const result = await api.exportRuntimeArchive(selectedBotId === HACHI_BOT_ID ? "" : selectedBotId);
+				if (result?.ok) {
+					const source = result.source?.type === "remote" ? "remote runtime" : "local runtime";
+					setText("#runtimeArchiveSummary", `${source} exported to ${result.archivePath}. ${result.fileCount} files included.`);
+				}
+				return result;
+			});
+		});
+		return;
+	}
+
+	if (action === "pull-remote-runtime" || action === "push-remote-runtime") {
+		const direction = action === "pull-remote-runtime" ? "remote-to-local" : "local-to-remote";
+		const botTypeId = selectedBotId;
+		const botName = selectedBotName();
+		const pull = direction === "remote-to-local";
+		// Resolve the same concrete installations that the manager will verify
+		// when the user confirms. The Fleet overview can include older records.
+		api.previewFleetRuntimeTransfer(botTypeId, direction).then(preview => showConfirmModal({
+			confirmText: pull ? "Replace Local Runtime" : "Replace Remote Runtime",
+			details: [
+				`Source: ${preview.source.name} on ${preview.source.serverName} (${preview.source.installPath})`,
+				`Destination: ${preview.destination.name} on ${preview.destination.serverName} (${preview.destination.installPath})`,
+				"A destination recovery archive is saved under backups/Runtime Transfers before replacement.",
+				"The database and matching key move together without key rotation.",
+			],
+			meta: `${botName} · guarded runtime transfer`,
+			summary: pull ? "Replace local runtime data with the selected remote installation?" : "Overwrite remote runtime data with the selected local installation?",
+			title: pull ? "Import Remote Runtime" : "Export Runtime to Remote",
+			variant: "danger",
+		}).then(confirmed => {
+			if (!confirmed) return;
+			runAction(pull ? "Import remote runtime" : "Export runtime to remote", async () => {
+				const result = await api.transferFleetRuntime(botTypeId, direction, preview.selection);
+				if (result?.ok) setText("#runtimeArchiveSummary", result.message);
+				await refreshFleet();
+				return result;
+			});
+		})).catch(error => toast(actionErrorMessage("Review runtime transfer", error), "error", { label: "Review runtime transfer" }));
+		return;
+	}
+
 	if (action === "open-hachigen-log-folder") {
 		runAction("Open HachiGen log folder", () => api.openHachiGenLogFolder());
 		return;
@@ -5277,7 +5392,12 @@ function handleAction(event) {
 			return;
 		}
 
-		runAction("Check HachiGen updates", () => api.checkHachiGenUpdates());
+		runAction("Check HachiGen updates", async () => {
+			const update = await api.checkHachiGenUpdates();
+			state = { ...(state || {}), hachiGenUpdate: update };
+			renderHachiGenUpdate(update);
+			return update;
+		});
 		return;
 	}
 

@@ -126,6 +126,13 @@ function validateExternalBotDefinition(input, sourcePath = "external definition"
 		}
 		definition.commands[name] = { executable, args };
 	}
+	// A reviewed command adapter is itself the declaration of the matching
+	// capability. Older generated profiles could retain deployCommands while
+	// omitting discordCommands, leaving an approved action permanently blocked.
+	if (["deployCommands", "deployGlobalCommands", "deployGuildCommands", "deleteCommands", "testDeployCommands"]
+		.some(name => definition.commands[name])) {
+		definition.capabilities.discordCommands = true;
+	}
 	for (const [key, value] of Object.entries(input.paths || {})) {
 		if (value !== undefined && value !== null && String(value).trim()) {
 			definition.paths[key] = assertSafeRelativePath(value, `paths.${key}`);

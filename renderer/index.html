@@ -428,6 +428,10 @@
 							</div>
 							<dl class="detail-list">
 								<div>
+									<dt>Installation</dt>
+									<dd id="selectedBotUpdateLocation">Local computer</dd>
+								</div>
+								<div>
 									<dt>Current</dt>
 									<dd id="hachiCurrentVersion">Unknown</dd>
 								</div>
@@ -755,6 +759,9 @@
 							<div class="update-message" id="diagnosticsMessage"></div>
 						</div>
 						<div class="button-row wrap">
+							<button class="button warning" id="pullRemoteRuntimeButton" type="button" data-action="pull-remote-runtime">Import Remote</button>
+							<button class="button danger" id="pushRemoteRuntimeButton" type="button" data-action="push-remote-runtime">Export to Remote</button>
+							<button class="button warning" id="exportRuntimeArchiveButton" type="button" data-action="export-runtime-archive">Export Runtime</button>
 							<button class="button primary" type="button" data-action="export-support-bundle">Export Diagnostics</button>
 							<button class="button secondary" type="button" data-action="copy-diagnostic-info">Copy Info</button>
 							<button class="button secondary" type="button" data-action="open-hachigen-log-folder">Open Logs</button>
@@ -819,6 +826,11 @@
 									<dd id="diagnosticsRecoveryEvent">No recovery events</dd>
 								</div>
 							</dl>
+						</div>
+
+						<div class="panel diagnostics-card diagnostics-card-wide">
+							<h2>Runtime Export</h2>
+							<div class="update-summary" id="runtimeArchiveSummary">Transfer between the selected bot's local and remote Fleet installations, or export the active installation to a local archive. Destination files are preserved before replacement.</div>
 						</div>
 
 						<div class="panel diagnostics-card diagnostics-card-wide">

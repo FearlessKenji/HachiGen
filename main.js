@@ -259,56 +259,16 @@ function showMenuActionError(title, error) {
 	dialog.showErrorBox(title, message);
 }
 
-function runtimeArchiveSourceLabel() {
-	if (manager?.getRuntimeTarget?.() !== "remote") {
-		return `Local: ${manager?.getInstallPath?.() || "selected Hachi folder"}`;
-	}
-
-	const remote = manager.getRemoteSettings();
-	const host = remote.username && remote.host ? `${remote.username}@${remote.host}` : remote.host || "remote profile";
-	return `Remote: ${host}${remote.remotePath ? `:${remote.remotePath}` : ""}`;
-}
-
-async function exportRuntimeArchive() {
+async function exportRuntimeArchive(deploymentId = "") {
 	if (!manager) {
 		return { ok: false, message: "HachiGen is still starting." };
 	}
+	const targetPath = manager.runtimeArchiveDefaultPath(deploymentId);
+	return manager.exportRuntimeArchive({ deploymentId, targetPath });
+}
 
-	const targetPath = manager.runtimeArchiveDefaultPath();
-	const result = await dialog.showMessageBox(mainWindow, {
-		buttons: ["Export Runtime Archive", "Cancel"],
-		cancelId: 1,
-		defaultId: 1,
-		detail: [
-			"This archive includes Hachi project files and can include .env, database files, configured database keys, and configured secret-encryption keys.",
-			"Anyone with the archive may be able to run this Hachi runtime or read its data.",
-			"",
-			`Source: ${runtimeArchiveSourceLabel()}`,
-			`Destination: ${targetPath}`,
-			"",
-			"HachiGen saves runtime archives in the Hachi exports folder, which is ignored by git.",
-		].join("\n"),
-		message: "Export a secrets-bearing runtime archive?",
-		type: "warning",
-	});
-
-	if (result.response !== 0) {
-		return { ok: false, message: "Runtime archive export canceled." };
-	}
-
-	try {
-		const exported = await manager.exportRuntimeArchive({ targetPath });
-		await dialog.showMessageBox(mainWindow, {
-			buttons: ["OK"],
-			detail: `${exported.archivePath}\n\nFiles: ${exported.fileCount}`,
-			message: "Runtime archive exported.",
-			type: "info",
-		});
-		return exported;
-	} catch (error) {
-		showMenuActionError("Export Runtime Archive", error);
-		return { ok: false, message: error?.message || String(error) };
-	}
+async function transferFleetRuntime(botTypeId, direction, selection) {
+	return manager ? manager.transferFleetRuntime(botTypeId, direction, selection) : { ok: false, message: "HachiGen is still starting." };
 }
 
 async function restoreRuntimeArchive() {
@@ -346,7 +306,7 @@ async function restoreRuntimeArchive() {
 				"",
 				"Restore writes into the selected local Hachi folder and updates restored key-file paths to this computer.",
 				"Existing matching files are copied to manager/backups before they are replaced.",
-				"Stop Hachi before restoring if it is currently running.",
+				"HachiGen will stop the local Hachi process and verify that it stopped before restoring files.",
 			].join("\n"),
 			message: "Restore this runtime archive?",
 			type: "warning",
@@ -693,7 +653,7 @@ function buildApplicationMenu() {
 				},
 				{
 					label: "Export Runtime Archive...",
-					click: () => exportRuntimeArchive(),
+					click: () => sendMenuAction("export-runtime-archive"),
 				},
 				{
 					label: "Restore Runtime Archive...",
@@ -1109,6 +1069,12 @@ function registerIpc() {
 	ipcMain.handle("manager:record-renderer-event", (_event, payload) => manager.recordRendererEvent(payload));
 	ipcMain.handle("manager:copy-diagnostic-info", (_event, deploymentId) => copyDiagnosticInfo(deploymentId));
 	ipcMain.handle("manager:export-support-bundle", () => exportSupportBundle());
+	// Keep the secrets warning and destination disclosure in the trusted main
+	// process before a remote or local runtime is copied to disk.
+	ipcMain.handle("manager:export-runtime-archive", (_event, deploymentId) => exportRuntimeArchive(deploymentId));
+	ipcMain.handle("manager:preview-fleet-runtime-transfer", (_event, botTypeId, direction) =>
+		manager ? manager.previewFleetRuntimeTransfer(botTypeId, direction) : { ok: false, message: "HachiGen is still starting." });
+	ipcMain.handle("manager:transfer-fleet-runtime", (_event, botTypeId, direction, selection) => transferFleetRuntime(botTypeId, direction, selection));
 	ipcMain.handle("manager:open-hachigen-log-folder", () => openHachiGenLogFolder());
 
 	// Database viewer and maintenance channels. The renderer controls what the
@@ -1227,6 +1193,7 @@ if (!singleInstanceLock) {
 
 		manager = new HachiManager({
 			managerRoot: __dirname,
+			hachiGenVersion: app.getVersion(),
 			backupsRoot,
 			defaultInstallPath,
 			userDataPath: app.getPath("userData"),

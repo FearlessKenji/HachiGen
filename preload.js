@@ -109,6 +109,9 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	recordRendererEvent: payload => invoke("manager:record-renderer-event", payload),
 	copyDiagnosticInfo: deploymentId => invoke("manager:copy-diagnostic-info", deploymentId),
 	exportSupportBundle: () => invoke("manager:export-support-bundle"),
+	exportRuntimeArchive: deploymentId => invoke("manager:export-runtime-archive", deploymentId),
+	previewFleetRuntimeTransfer: (botTypeId, direction) => invoke("manager:preview-fleet-runtime-transfer", botTypeId, direction),
+	transferFleetRuntime: (botTypeId, direction, selection) => invoke("manager:transfer-fleet-runtime", botTypeId, direction, selection),
 	openHachiGenLogFolder: () => invoke("manager:open-hachigen-log-folder"),
 
 	// Database viewing, maintenance, encryption, and backup actions.

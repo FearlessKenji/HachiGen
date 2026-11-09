@@ -654,7 +654,7 @@ function readTarGzEntries(archivePath) {
 			break;
 		}
 
-		const name = readTarName(header, 0);
+		const name = readTarName(header, 0).replace(/^\.\//u, "");
 		const size = readTarOctal(header, 124, 12);
 		const typeFlag = header.toString("ascii", 156, 157);
 		const contentStart = offset + 512;
@@ -688,8 +688,27 @@ function runtimeArchiveProjectFileEntry(filePath, restorePath, sourcePath = file
 	};
 }
 
-function collectLocalProjectFiles(root) {
+function databaseArchivePaths(databaseRelativePath) {
+	const databasePath = assertSafeRelativeArchivePath(databaseRelativePath, "database archive path");
+	return [databasePath, `${databasePath}-journal`, `${databasePath}-wal`, `${databasePath}-shm`];
+}
+
+function databaseSnapshotArchiveEntry(root, databaseRelativePath, content) {
+	const restorePath = databaseArchivePaths(databaseRelativePath)[0];
+	return {
+		bytes: content.length,
+		content,
+		restoreKind: "project",
+		restorePath,
+		sensitive: true,
+		sha256: sha256Buffer(content),
+		sourcePath: path.join(root, restorePath),
+	};
+}
+
+function collectLocalProjectFiles(root, { excludedRestorePaths = [] } = {}) {
 	const files = [];
+	const excludedPaths = new Set(excludedRestorePaths);
 
 	function visit(directory) {
 		for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -707,6 +726,9 @@ function collectLocalProjectFiles(root) {
 
 			const fullPath = path.join(directory, entry.name);
 			const restorePath = normalizeArchivePath(path.relative(root, fullPath));
+			if (excludedPaths.has(restorePath)) {
+				continue;
+			}
 			files.push(runtimeArchiveProjectFileEntry(fullPath, restorePath));
 		}
 	}
@@ -1976,11 +1998,12 @@ function shouldShowShellEntryInUi(entry) {
 }
 
 class HachiManager {
-	constructor({ managerRoot, defaultInstallPath, userDataPath, backupsRoot, sendEvent, protectSecret, unprotectSecret }) {
+	constructor({ managerRoot, defaultInstallPath, userDataPath, backupsRoot, hachiGenVersion, sendEvent, protectSecret, unprotectSecret }) {
 		// managerRoot is the manager folder in development and the bundled app
 		// location after packaging. defaultInstallPath is passed from main.js so
 		// packaged HachiGen can default to the folder beside HachiGen.exe.
 		this.managerRoot = managerRoot;
+		this.hachiGenVersion = String(hachiGenVersion || "").trim();
 		this.defaultInstallPath = defaultInstallPath || path.resolve(managerRoot, "..");
 
 		// userDataPath is Electron's app data folder. HachiGen uses this in both
@@ -3305,13 +3328,30 @@ class HachiManager {
 		if (!originMatches && options.fetch) {
 			throw new Error(`Repository origin mismatch. Expected ${context.definition.repository?.url || "a declared URL"}, found ${redactUrlCredentials(originUrl) || "none"}.`);
 		}
+		let currentVersion = "";
+		if (context.server.connection.type === "ssh") {
+			const currentPackage = await this.runFleetRemoteCommand(
+				context.server,
+				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix("const p=require('./package.json');process.stdout.write(String(p.version||''))")}`,
+				{ allowFailure: true, log: false, timeoutMs: 30000 },
+			);
+			currentVersion = currentPackage.code === 0 ? currentPackage.stdout.trim() : "";
+		} else {
+			currentVersion = readJson(path.join(context.deployment.installPath, "package.json"), {}).version || "";
+		}
 		let behind = null;
+		let availableVersion = "";
 		if (options.fetch) {
 			await this.runFleetGit(context, ["fetch", "origin", targetBranch], { timeoutMs: 300000 });
-			const count = await this.runFleetGit(context, ["rev-list", "--count", `HEAD..origin/${targetBranch}`], { allowFailure: true, log: false });
-			behind = count.code === 0 ? Number.parseInt(count.stdout.trim(), 10) || 0 : null;
 		}
+		// Recompute from the fetched tracking ref on every redraw. Previously the
+		// post-check overview discarded the result and immediately showed Current.
+		const count = await this.runFleetGit(context, ["rev-list", "--count", `HEAD..origin/${targetBranch}`], { allowFailure: true, log: false });
+		behind = count.code === 0 ? Number.parseInt(count.stdout.trim(), 10) || 0 : null;
+		const availablePackage = await this.runFleetGit(context, ["show", `origin/${targetBranch}:package.json`], { allowFailure: true, log: false });
+		availableVersion = availablePackage.code === 0 ? parseJsonText(availablePackage.stdout, {}).version || "" : "";
 		return {
+			checkedAt: new Date().toISOString(),
 			deploymentId,
 			isGit: true,
 			head: head.stdout.trim(),
@@ -3322,6 +3362,8 @@ class HachiManager {
 			dirty: Boolean(changes.stdout.trim()),
 			changes: changes.stdout.trim().split(/\r?\n/u).filter(Boolean).slice(0, 100),
 			behind,
+			currentVersion,
+			availableVersion,
 			updateAvailable: behind !== null && behind > 0,
 		};
 	}
@@ -3348,7 +3390,7 @@ class HachiManager {
 			this.assertFleetCapability(context, "backups");
 			databaseBackup = await this.backupFleetDatabase(deploymentId);
 		}
-		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		await this.ensureFleetDeploymentStopped(deploymentId);
 		try {
 			await this.runFleetGit(context, ["merge", "--ff-only", `origin/${before.targetBranch}`], { timeoutMs: 300000 });
 			if (context.definition.commands?.install) {
@@ -3434,6 +3476,63 @@ class HachiManager {
 		return { definition, deployment, server };
 	}
 
+	getNativeHachiContext(target) {
+		// Legacy Hachi controls can address local and remote installs while Fleet
+		// initially records only one. Register the missing side so a safety backup
+		// keeps the identity of the database it actually copied.
+		let server;
+		let installPath;
+		let pm2Name = PROCESS_NAME;
+		if (target === "local") {
+			server = this.fleet.servers.find(item => item.id === "local");
+			installPath = this.getInstallPath();
+		} else if (target === "remote") {
+			const remote = this.getRemoteSettings();
+			const errors = validateRemoteSettings(remote);
+			if (errors.length) {
+				throw new Error(errors.join(" "));
+			}
+			installPath = remote.remotePath;
+			pm2Name = remote.pm2Name;
+			server = this.fleet.servers.find(item => item.connection.type === "ssh" &&
+				item.connection.host.toLowerCase() === remote.host.toLowerCase() &&
+				item.connection.username === remote.username &&
+				item.connection.port === remote.port &&
+				item.connection.sshKeyPath === remote.sshKeyPath);
+			if (!server) {
+				server = normalizeServer({
+					id: `server-${crypto.randomUUID()}`,
+					name: `Hachi ${remote.host}`,
+					connection: { ...remote, type: "ssh" },
+				}, new Set(this.fleet.servers.map(item => item.id)));
+				this.fleet.servers.push(server);
+			}
+		} else {
+			throw new Error("Unknown Hachi runtime target.");
+		}
+		if (!server) {
+			throw new Error(`No ${target} Fleet server is available for Hachi.`);
+		}
+		const samePath = candidate => target === "remote" ?
+			path.posix.normalize(candidate) === path.posix.normalize(installPath) :
+			path.resolve(candidate).toLowerCase() === path.resolve(installPath).toLowerCase();
+		let deployment = this.fleet.deployments.find(item => item.botTypeId === "hachi" &&
+			item.serverId === server.id && samePath(item.installPath));
+		if (!deployment) {
+			deployment = normalizeDeployment({
+				botTypeId: "hachi", installPath, name: "Hachi", pm2Name, serverId: server.id,
+			}, this.fleet, loadBotDefinitions(this.botDefinitionsDir).definitions);
+			this.fleet.deployments.push(deployment);
+			this.saveFleetRegistry();
+		} else if (target === "remote" && deployment.pm2Name !== pm2Name) {
+			// Remote settings own Hachi's PM2 name; a reused Fleet record may
+			// otherwise stop an older process before replacing runtime files.
+			deployment.pm2Name = pm2Name;
+			this.saveFleetRegistry();
+		}
+		return this.getFleetDeploymentContext(deployment.id);
+	}
+
 	getLocalTestingDeploymentContext(deploymentId) {
 		// Testing always executes from a local source checkout, independently of
 		// the production runtime target. Accept logical bot IDs so removed or
@@ -3479,6 +3578,39 @@ class HachiManager {
 		});
 	}
 
+	buildFleetScpArgs(server, source, destination) {
+		const connection = server.connection;
+		const args = [
+			"-i", expandWindowsEnv(connection.sshKeyPath),
+			"-o", "BatchMode=yes",
+			"-o", "ConnectTimeout=10",
+		];
+		if (connection.portMode === "custom") {
+			args.push("-P", String(connection.port));
+		}
+		args.push(source, destination);
+		return args;
+	}
+
+	async copyFleetFileFromRemote(context, remotePath, localPath) {
+		ensureDir(path.dirname(localPath));
+		const connection = context.server.connection;
+		const source = `${connection.username}@${connection.host}:${remotePath}`;
+		return run("scp", this.buildFleetScpArgs(context.server, source, localPath), {
+			timeoutMs: 600000,
+			onLog: entry => this.logShell(entry),
+		});
+	}
+
+	async copyFleetFileToRemote(context, localPath, remotePath) {
+		const connection = context.server.connection;
+		const destination = `${connection.username}@${connection.host}:${remotePath}`;
+		return run("scp", this.buildFleetScpArgs(context.server, localPath, destination), {
+			timeoutMs: 600000,
+			onLog: entry => this.logShell(entry),
+		});
+	}
+
 	async runFleetDeploymentCommand(context, localCommand, remoteCommand, options = {}) {
 		if (context.server.connection.type === "ssh") {
 			return this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && ${remoteCommand}`, options);
@@ -3508,7 +3640,10 @@ class HachiManager {
 			return { deploymentId, installed: true, registered: false, status: "error", message: result.stderr || "Could not read PM2 status." };
 		}
 		try {
-			const app = parsePm2Json(result.stdout).find(item => item.name === context.deployment.pm2Name);
+			// PM2 names are case-sensitive for commands, but older onboarding used the
+			// display label (Paldeck) even when the ecosystem declared `paldeck`.
+			const expectedName = context.deployment.pm2Name.toLowerCase();
+			const app = parsePm2Json(result.stdout).find(item => String(item.name || "").toLowerCase() === expectedName);
 			if (!app) {
 				return { deploymentId, installed: true, registered: false, status: "not-registered", message: `${context.deployment.pm2Name} is not registered.` };
 			}
@@ -3516,6 +3651,7 @@ class HachiManager {
 				deploymentId,
 				installed: true,
 				registered: true,
+				processName: app.name,
 				status: app.pm2_env?.status || "unknown",
 				pid: app.pid || null,
 				cpu: app.monit?.cpu || 0,
@@ -3540,19 +3676,36 @@ class HachiManager {
 		if (!context.definition.capabilities?.pm2) {
 			throw new Error(`${context.definition.displayName} does not declare PM2 capability.`);
 		}
-		const status = await this.getFleetDeploymentStatus(deploymentId);
+		const before = await this.getFleetDeploymentStatus(deploymentId);
+		const processName = before.processName || context.deployment.pm2Name;
 		const ecosystem = context.definition.runtime.ecosystemFile;
 		let localArgs;
 		let remoteCommand;
-		if (action === "start" && !status.registered) {
-			localArgs = ["start", ecosystem, "--only", context.deployment.pm2Name];
-			remoteCommand = `pm2 start ${quotePosix(ecosystem)} --only ${quotePosix(context.deployment.pm2Name)}`;
+		if (action === "start" || action === "restart") {
+			localArgs = ["start", ecosystem, "--only", processName];
+			remoteCommand = `pm2 start ${quotePosix(ecosystem)} --only ${quotePosix(processName)}`;
 		} else {
-			localArgs = [action === "start" ? "restart" : action, context.deployment.pm2Name];
-			remoteCommand = `pm2 ${action === "start" ? "restart" : action} ${quotePosix(context.deployment.pm2Name)}`;
+			localArgs = [action, processName];
+			remoteCommand = `pm2 ${action} ${quotePosix(processName)}`;
 		}
 		this.log(`${action[0].toUpperCase()}${action.slice(1)}ing fleet deployment ${context.deployment.name}.`, { area: "fleet-runtime", action, deploymentId, serverId: context.server.id });
 		await this.runFleetDeploymentCommand(context, { command: "pm2", args: localArgs }, remoteCommand);
+		let status = await this.getFleetDeploymentStatus(deploymentId);
+		if ((action === "start" || action === "restart") && !status.registered) {
+			// A case-mismatched legacy PM2 name makes --only silently select no app.
+			// Starting the already approved ecosystem once lets status resolve its
+			// declared name; subsequent controls remain scoped to that exact process.
+			this.log(`No ${context.deployment.pm2Name} process matched the saved PM2 name. Registering the approved ecosystem file.`, { area: "fleet-runtime", action, deploymentId });
+			await this.runFleetDeploymentCommand(
+				context,
+				{ command: "pm2", args: ["start", ecosystem] },
+				`pm2 start ${quotePosix(ecosystem)}`,
+			);
+			status = await this.getFleetDeploymentStatus(deploymentId);
+		}
+		if ((action === "start" || action === "restart") && !status.registered) {
+			throw new Error(`${context.deployment.name} was not registered by ${ecosystem}. Check the ecosystem app name in Bot Settings.`);
+		}
 		if (action !== "stop") {
 			if (context.server.connection.type === "ssh") {
 				await this.runFleetRemoteCommand(context.server, "pm2 save", { timeoutMs: 120000 });
@@ -3560,7 +3713,32 @@ class HachiManager {
 				await run("pm2", ["save"], { timeoutMs: 120000, onLog: entry => this.logShell(entry) });
 			}
 		}
-		return this.getFleetDeploymentStatus(deploymentId);
+		return status;
+	}
+
+	async ensureFleetDeploymentStopped(deploymentId) {
+		const context = this.getFleetDeploymentContext(deploymentId);
+		if (!context.definition.capabilities?.pm2) {
+			throw new Error(`Cannot verify that ${context.deployment.name} is stopped because this bot has no PM2 control.`);
+		}
+		const current = await this.getFleetDeploymentStatus(deploymentId);
+		if (current.status === "error" || current.status === "pm2-missing") {
+			throw new Error(`Could not verify that ${deploymentId} is stopped: ${current.message}`);
+		}
+		if (current.registered && (current.pid || !["stopped", "errored"].includes(current.status))) {
+			await this.controlFleetDeployment(deploymentId, "stop");
+		}
+		const verified = await this.getFleetDeploymentStatus(deploymentId);
+		if (verified.status === "error" || verified.status === "pm2-missing" ||
+			(verified.registered && (verified.pid || !["stopped", "errored"].includes(verified.status)))) {
+			throw new Error(`Database replacement was cancelled because ${deploymentId} did not stop cleanly.`);
+		}
+		return verified;
+	}
+
+	async ensureHachiStopped(target = this.getRuntimeTarget()) {
+		const context = this.getNativeHachiContext(target);
+		return this.ensureFleetDeploymentStopped(context.deployment.id);
 	}
 
 	async getFleetDeploymentLogs(deploymentId, lines = 200) {
@@ -3575,7 +3753,12 @@ class HachiManager {
 			`pm2 logs ${quotePosix(context.deployment.pm2Name)} --lines ${safeLines} --nostream --no-color`,
 			{ allowFailure: true, log: false, timeoutMs: 30000 },
 		);
-		return { deploymentId, logs: redactHachiGenLogText(`${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`), ok: result.code === 0 };
+		return {
+			deploymentId,
+			events: this.logger.readRecentEvents(220),
+			logs: redactHachiGenLogText(`${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`),
+			ok: result.code === 0,
+		};
 	}
 
 	async readFleetDatabaseTable(deploymentId, tableName = "", sort = {}) {
@@ -3739,7 +3922,14 @@ class HachiManager {
 		const failure = result => result.status === "rejected" ? { error: readableCause(result.reason) } : result.value;
 		return {
 			deployment: {
-				capabilities: context.definition.source === "native" ? context.definition.capabilities : context.deployment.approvedCapabilities,
+				// Advertise only powers present in both the current definition and the
+				// immutable approval snapshot used by the command boundary.
+				capabilities: context.definition.source === "native" ?
+					context.definition.capabilities :
+					Object.fromEntries(
+						Object.entries(context.definition.capabilities || {}).filter(([name, enabled]) => enabled && context.deployment.approvedCapabilities?.[name]),
+					),
+				approvalChanged: context.definition.source === "external" && context.deployment.definitionFingerprint !== context.definition.fingerprint,
 				id: context.deployment.id,
 				installPath: context.deployment.installPath,
 				name: context.deployment.name,
@@ -3835,6 +4025,55 @@ class HachiManager {
 		};
 	}
 
+	async readFleetDatabaseSnapshot(context) {
+		const databaseRelativePath = context.definition.paths?.database;
+		if (!databaseRelativePath) {
+			throw new Error("This bot type does not declare a database.");
+		}
+		const approvedAdapter = context.definition.source === "native" ||
+			(context.definition.capabilities?.databaseToolConnection &&
+				context.deployment.approvedCapabilities?.databaseToolConnection &&
+				context.deployment.definitionFingerprint === context.definition.fingerprint);
+		const workerFile = approvedAdapter ? DATABASE_WORKER_FILE : SQLITE_VIEWER_WORKER_FILE;
+		const workerSource = fs.readFileSync(path.join(this.managerRoot, "src", workerFile), "utf8");
+		const request = { action: "snapshot", dbPath: databaseRelativePath, root: "." };
+		let result;
+		if (context.server.connection.type === "ssh") {
+			const workerPath = `/tmp/hachigen-snapshot-${crypto.randomUUID()}.js`;
+			try {
+				await this.runFleetRemoteCommand(context.server, `cat > ${quotePosix(workerPath)}`, {
+					input: workerSource, log: false, timeoutMs: 30000,
+				});
+				result = await this.runFleetRemoteCommand(context.server,
+					`cd ${quoteRemotePath(context.deployment.installPath)} && node ${quotePosix(workerPath)}`, {
+						allowFailure: true, input: JSON.stringify(request), log: false, timeoutMs: 300000,
+					});
+			} finally {
+				await this.runFleetRemoteCommand(context.server, `rm -f ${quotePosix(workerPath)}`, {
+					allowFailure: true, log: false, timeoutMs: 30000,
+				}).catch(() => null);
+			}
+		} else {
+			const sourcePath = path.join(context.deployment.installPath, databaseRelativePath);
+			if (!isPathInside(context.deployment.installPath, sourcePath) || !fileExists(sourcePath)) {
+				throw new Error("The declared database is missing or outside the deployment root.");
+			}
+			result = await run("node", [path.join(this.managerRoot, "src", workerFile)], {
+				allowFailure: true, cwd: context.deployment.installPath,
+				input: JSON.stringify(request), timeoutMs: 300000,
+			});
+		}
+		const snapshot = parseJsonText((result.stdout || "").trim(), null);
+		if (!snapshot?.ok || typeof snapshot.content !== "string") {
+			throw new Error(snapshot?.error || result.stderr || "Database snapshot failed.");
+		}
+		const content = Buffer.from(snapshot.content, "base64");
+		if (!content.length || content.length !== snapshot.bytes) {
+			throw new Error("Database snapshot returned incomplete bytes.");
+		}
+		return content;
+	}
+
 	async backupFleetDatabase(deploymentId, { databaseRuntimeKeyOverride = null, prune = true, reason = "backup" } = {}) {
 		if (!this.protectSecret) {
 			throw new Error("Operating-system backup-key encryption is unavailable.");
@@ -3845,27 +4084,9 @@ class HachiManager {
 		if (!databaseRelativePath) {
 			throw new Error("This bot type does not declare a database.");
 		}
-		let content;
-		if (context.server.connection.type === "ssh") {
-			// Remote database bytes are encoded only for SSH transport, then encrypted
-			// into the same local HGBK store used by every other installation.
-			const script = "const fs=require('node:fs'),p=process.argv[1];if(!fs.existsSync(p))throw Error('Declared database was not found.');process.stdout.write(fs.readFileSync(p).toString('base64'))";
-			const result = await this.runFleetRemoteCommand(
-				context.server,
-				`cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(script)} ${quotePosix(databaseRelativePath)}`,
-				{ log: false, timeoutMs: 300000 },
-			);
-			content = Buffer.from(String(result.stdout || "").trim(), "base64");
-			if (!content.length) {
-				throw new Error("Remote database backup returned no data.");
-			}
-		} else {
-			const sourcePath = path.join(context.deployment.installPath, databaseRelativePath);
-			if (!isPathInside(context.deployment.installPath, sourcePath) || !fileExists(sourcePath)) {
-				throw new Error("Declared database was not found.");
-			}
-			content = fs.readFileSync(sourcePath);
-		}
+		// The worker holds a SQLite read lock during the byte copy. Raw reads of a
+		// live database can capture pages from different transaction states.
+		const content = await this.readFleetDatabaseSnapshot(context);
 		let databaseRuntimeKey = null;
 		if (!content.subarray(0, 16).equals(SQLITE_HEADER)) {
 			databaseRuntimeKey = databaseRuntimeKeyOverride || await this.readFleetDatabaseRuntimeKey(context);
@@ -4060,7 +4281,7 @@ class HachiManager {
 				"const fs=require('node:fs'),os=require('node:os'),path=require('node:path');",
 				"const data=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8')),file='.env';",
 				"if(data.keyFilePath){const p=data.keyFilePath.startsWith('~/')?path.join(os.homedir(),data.keyFilePath.slice(2)):data.keyFilePath;",
-				"fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,data.key+'\\n',{mode:0o600})}",
+				"fs.mkdirSync(path.dirname(p),{recursive:true,mode:0o700});fs.chmodSync(path.dirname(p),0o700);fs.writeFileSync(p,data.key+'\\n',{mode:0o600});fs.chmodSync(p,0o600)}",
 				"const text=fs.existsSync(file)?fs.readFileSync(file,'utf8'):'';",
 				"const pending=new Map(Object.entries(data.updates)),out=[];",
 				"for(const line of text.split(/\\r?\\n/u)){const m=line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=/u);",
@@ -4075,6 +4296,12 @@ class HachiManager {
 		if (useKeyFile) {
 			ensureDir(path.dirname(keyInfo.keyFilePath));
 			fs.writeFileSync(keyInfo.keyFilePath, `${keyInfo.key}\n`, { encoding: "utf8", mode: 0o600 });
+			try {
+				fs.chmodSync(path.dirname(keyInfo.keyFilePath), 0o700);
+				fs.chmodSync(keyInfo.keyFilePath, 0o600);
+			} catch {
+				// Windows access control does not map directly to POSIX modes.
+			}
 		}
 		const envPath = path.join(context.deployment.installPath, ".env");
 		const current = fileExists(envPath) ? fs.readFileSync(envPath, "utf8") : "";
@@ -4137,7 +4364,7 @@ class HachiManager {
 		});
 		const recoveryRecord = this.getFleetBackupVault().records[recovery.backupId];
 		const databaseRelativePath = context.definition.paths?.database;
-		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		await this.ensureFleetDeploymentStopped(deploymentId);
 		try {
 			await this.writeFleetDatabaseBackupToDestination(context, record, databaseRelativePath);
 			if (inspection.disablesEncryption) {
@@ -4187,7 +4414,7 @@ class HachiManager {
 		}
 		await this.verifyFleetDatabaseEncryptionPrerequisites(context);
 		const recovery = await this.backupFleetDatabase(deploymentId, { reason: "pre-encryption" });
-		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		await this.ensureFleetDeploymentStopped(deploymentId);
 		try {
 			await this.runFleetDefinitionCommand(deploymentId, "databaseEncrypt", { timeoutMs: 600000 });
 			const audit = await this.auditFleetDeploymentSecurity(deploymentId);
@@ -4208,7 +4435,7 @@ class HachiManager {
 			throw new Error("This bot profile does not declare a databaseRotate command. Review the updated profile before rotating its key.");
 		}
 		await this.verifyFleetDatabaseEncryptionPrerequisites(context, { requireRotation: true });
-		await this.controlFleetDeployment(deploymentId, "stop").catch(() => null);
+		await this.ensureFleetDeploymentStopped(deploymentId);
 		await this.runFleetDefinitionCommand(deploymentId, "databaseRotate", { timeoutMs: 600000 });
 		const audit = await this.auditFleetDeploymentSecurity(deploymentId);
 		if (!audit.ok) {
@@ -4871,7 +5098,7 @@ class HachiManager {
 	getHachiGenVersion() {
 		// HachiGen has its own package metadata because the manager executable is
 		// released separately from the bot checkout it manages.
-		return readJson(path.join(this.managerRoot, "package.json"), {}).version || "";
+		return this.hachiGenVersion || readJson(path.join(this.managerRoot, "package.json"), {}).version || "";
 	}
 
 	loadSecretEncryption() {
@@ -5221,7 +5448,7 @@ class HachiManager {
 
 		try {
 			const apps = parsePm2Json(result.stdout);
-			const app = apps.find(item => item.name === settings.pm2Name);
+			const app = apps.find(item => String(item.name || "").toLowerCase() === settings.pm2Name.toLowerCase());
 
 			if (!app) {
 				return {
@@ -5236,6 +5463,7 @@ class HachiManager {
 			return {
 				installed: true,
 				registered: true,
+				processName: app.name,
 				status: app.pm2_env?.status || "unknown",
 				restarts: app.pm2_env?.restart_time || 0,
 				cpu: app.monit?.cpu || 0,
@@ -5421,7 +5649,19 @@ class HachiManager {
 	}
 
 	getDatabaseBackupDir() {
-		return this.getFleetBackupDir(this.getFleetDeploymentContext("hachi"));
+		if (this.getRuntimeTarget() === "local") {
+			return path.join(this.backupsRoot, "Hachi", "Local");
+		}
+		// A state read must not register a Fleet installation just to display its
+		// backup folder. Match the configured server name used by real backups.
+		const remote = normalizeRemoteSettings(this.settings.remote);
+		const server = this.fleet.servers.find(item => item.connection.type === "ssh" &&
+			item.connection.host.toLowerCase() === remote.host.toLowerCase() &&
+			item.connection.username === remote.username &&
+			item.connection.port === remote.port &&
+			item.connection.sshKeyPath === remote.sshKeyPath);
+		const serverName = server?.name || `Hachi ${remote.host}`;
+		return path.join(this.backupsRoot, "Hachi", `Remote-${this.backupFolderName(serverName, server?.id || "Hachi")}`);
 	}
 
 	getRuntimeExportsDir() {
@@ -6862,6 +7102,7 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 		const backupFileName = `database-pre-encryption-${fileTimestamp()}-${Date.now()}.sqlite`;
 
 		this.logDatabase("starting plaintext database conversion.");
+		await this.ensureHachiStopped();
 		await this.prepareDatabaseProtection();
 		const verification = await this.verifyDatabaseProtection();
 
@@ -6869,11 +7110,9 @@ function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
 			throw new Error(verification.message || "Database protection verification failed.");
 		}
 
-		this.logDatabase("checkpointing database before conversion.");
-		await this.checkpointDatabase();
 		// Keep the durable recovery point in HachiGen's shared backup vault. The
 		// bot-side script still uses a short-lived raw copy for atomic rollback.
-		const recovery = await this.backupFleetDatabase("hachi", { prune: false, reason: "pre-encryption" });
+		const recovery = await this.backupFleetDatabase(this.getNativeHachiContext(this.getRuntimeTarget()).deployment.id, { prune: false, reason: "pre-encryption" });
 
 		const script = this.databaseEncryptionConversionScript(backupFileName);
 		this.logDatabase(`creating encrypted database and recovery backup ${backupFileName}.`);
@@ -7186,7 +7425,8 @@ async function verifyRuntimeOpen(newKey, keyFilePath) {
 
 		this.logDatabase(`starting key rotation${rotateBackups ? " with backup rotation" : ""}.`);
 		this.logDatabase(`planned safety backup: ${backupFileName}.`);
-		const recovery = await this.backupFleetDatabase("hachi", { prune: false, reason: "pre-key-rotation" });
+		const recovery = await this.backupFleetDatabase(this.getNativeHachiContext(this.getRuntimeTarget()).deployment.id, { prune: false, reason: "pre-key-rotation" });
+		await this.ensureHachiStopped();
 		const script = this.databaseKeyRotationScript(backupFileName, { rotateBackups });
 		const result = this.getRuntimeTarget() === "remote" ?
 			await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
@@ -7705,8 +7945,7 @@ process.stdout.write(JSON.stringify({
 	async backupDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false } = {}) {
 		void fileName;
 		void overwrite;
-		await this.checkpointDatabase();
-		return this.backupFleetDatabase("hachi");
+		return this.backupFleetDatabase(this.getNativeHachiContext(this.getRuntimeTarget()).deployment.id);
 	}
 
 	async backupLocalDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false, reason = "manual" } = {}) {
@@ -7716,9 +7955,17 @@ process.stdout.write(JSON.stringify({
 		if (!fileExists(paths.database)) {
 			throw new Error("No Hachi database exists to back up.");
 		}
-		await this.checkpointLocalDatabase();
-		const context = this.getFleetDeploymentContext("hachi");
-		const backup = this.createFleetBackupRecord(context, fs.readFileSync(paths.database), { reason });
+		const context = this.getNativeHachiContext("local");
+		const snapshot = await this.runLocalDatabaseWorker("snapshot");
+		const content = Buffer.from(snapshot.content || "", "base64");
+		if (!content.length || content.length !== snapshot.bytes) {
+			throw new Error("Local database snapshot returned incomplete bytes.");
+		}
+		const key = content.subarray(0, 16).equals(SQLITE_HEADER) ? "" : this.readLocalDatabaseProtectionKeyIfAvailable();
+		if (!content.subarray(0, 16).equals(SQLITE_HEADER) && !key) {
+			throw new Error("The local database is encrypted, but its runtime key could not be read.");
+		}
+		const backup = this.createFleetBackupRecord(context, content, { databaseRuntimeKey: key ? { key } : null, reason });
 		this.logDatabase(`Hachi ${reason} backup created in the root backups folder.`);
 		return { ...backup, fileName: path.basename(backup.backupPath), message: "Hachi database backup created." };
 	}
@@ -7726,40 +7973,29 @@ process.stdout.write(JSON.stringify({
 	async backupRemoteDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false } = {}) {
 		void fileName;
 		void overwrite;
-		await this.checkpointRemoteDatabase();
-		return this.backupFleetDatabase("hachi");
+		const snapshot = await this.readRemoteDatabaseFile();
+		const content = Buffer.from(snapshot.content, "base64");
+		const key = content.subarray(0, 16).equals(SQLITE_HEADER) ? "" : await this.readRemoteDatabaseProtectionKeyIfAvailable();
+		if (!content.subarray(0, 16).equals(SQLITE_HEADER) && !key) {
+			throw new Error("The remote database is encrypted, but its runtime key could not be read.");
+		}
+		const context = this.getNativeHachiContext("remote");
+		const backup = this.createFleetBackupRecord(context, content, {
+			databaseRuntimeKey: key ? { key } : null,
+			reason: "transfer-push",
+		});
+		await this.pruneFleetBackups(context.deployment.id);
+		this.logDatabase("Remote Hachi transfer safety backup created.");
+		return backup;
 	}
 
 	async readRemoteDatabaseFile() {
-		await this.checkpointRemoteDatabase();
-		const script = `
-const fs = require("node:fs");
-const databasePath = "database/database.sqlite";
-if (!fs.existsSync(databasePath)) {
-	process.stdout.write(JSON.stringify({ ok: false, error: "No remote Hachi database exists to pull." }));
-	process.exit(0);
-}
-const content = fs.readFileSync(databasePath);
-const stats = fs.statSync(databasePath);
-process.stdout.write(JSON.stringify({
-	bytes: content.length,
-	content: content.toString("base64"),
-	modifiedAt: stats.mtime.toISOString(),
-	ok: true,
-	path: databasePath,
-}));
-`;
-		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
-			fallbackMessage: "Remote database pull did not return valid JSON.",
-			log: false,
-			timeoutMs: 300000,
-		});
-
-		if (!result.ok) {
-			throw new Error(result.error || "Remote database pull failed.");
+		const snapshot = await this.runRemoteDatabaseWorker("snapshot");
+		const content = Buffer.from(snapshot.content || "", "base64");
+		if (!content.length || content.length !== snapshot.bytes) {
+			throw new Error("Remote database snapshot returned incomplete bytes.");
 		}
-
-		return result;
+		return { ...snapshot, path: "database/database.sqlite" };
 	}
 
 	async writeRemoteDatabaseFile(content) {
@@ -8093,6 +8329,7 @@ process.stdin.on("end", () => {
 			bytes: remoteDatabase.bytes,
 			remotePath: remoteDatabase.path || "database/database.sqlite",
 		});
+		await this.ensureHachiStopped("local");
 		const localKey = this.ensureLocalDatabaseProtectionKeyForTransfer();
 		const remoteKey = await this.readRemoteDatabaseProtectionKeyIfAvailable();
 		const transfer = await this.prepareDatabaseBytesForTransfer({
@@ -8152,7 +8389,12 @@ process.stdin.on("end", () => {
 		}
 
 		this.logDatabase("pushing local database to remote install.");
-		await this.checkpointLocalDatabase();
+		const snapshot = await this.runLocalDatabaseWorker("snapshot");
+		const sourceContent = Buffer.from(snapshot.content || "", "base64");
+		if (!sourceContent.length || sourceContent.length !== snapshot.bytes) {
+			throw new Error("Local database snapshot returned incomplete bytes.");
+		}
+		await this.ensureHachiStopped("remote");
 		const remoteKey = await this.ensureRemoteDatabaseProtectionKeyForTransfer();
 		const localKey = this.readLocalDatabaseProtectionKeyIfAvailable();
 		const transfer = await this.prepareDatabaseBytesForTransfer({
@@ -8160,7 +8402,7 @@ process.stdin.on("end", () => {
 			destinationLabel: "remote",
 			sourceKey: localKey,
 			sourceLabel: "local",
-			sourcePath: paths.database,
+			sourceContent,
 		});
 		let safetyBackup = null;
 
@@ -8241,16 +8483,9 @@ process.stdin.on("end", () => {
 			safetyBackup = safety.backupPath;
 		}
 
+		await this.ensureHachiStopped("local");
+		removeLocalDatabaseSidecars(paths.database);
 		fs.copyFileSync(resolvedBackup, paths.database);
-
-		// SQLite may leave write-ahead-log sidecar files beside the database.
-		// After restoring a backup, old sidecars must be removed so they do not
-		// overlay stale data onto the restored database.
-		for (const sidecar of [`${paths.database}-wal`, `${paths.database}-shm`]) {
-			if (fileExists(sidecar)) {
-				fs.rmSync(sidecar, { force: true });
-			}
-		}
 
 		this.logDatabase(`restored backup ${path.basename(resolvedBackup)}.`, {
 			safetyBackup: safetyBackup ? displayPath(safetyBackup, paths.root) : "",
@@ -9175,19 +9410,21 @@ process.stdout.write(JSON.stringify(payload));
 		}
 	}
 
-	runtimeArchiveDefaultPath() {
-		return path.join(this.getRuntimeExportsDir(), `hachi-runtime-${runtimeArchiveStamp()}.tar.gz`);
+	runtimeArchiveDefaultPath(deploymentId = "") {
+		const botId = deploymentId ? this.getFleetDeploymentContext(deploymentId).definition.id : "hachi";
+		const safeBotId = normalizeArchivePath(botId).replace(/[^a-z0-9_-]+/giu, "-").toLowerCase() || "bot";
+		return path.join(this.getRuntimeExportsDir(), `${safeBotId}-runtime-${runtimeArchiveStamp()}.tar.gz`);
 	}
 
-	resolveLocalSecretsKeyFile(value) {
+	resolveLocalSecretsKeyFile(value, root = this.getInstallPath()) {
 		try {
-			return this.loadSecretEncryption().resolveKeyFilePath(value, this.getInstallPath());
+			return this.loadSecretEncryption().resolveKeyFilePath(value, root);
 		} catch {
-			return resolveLocalPath(value, this.getInstallPath());
+			return resolveLocalPath(value, root);
 		}
 	}
 
-	addExternalLocalKeyEntry(entries, rawEnv, { field, restoreKind, resolver }) {
+	addConfiguredLocalKeyEntry(entries, rawEnv, { field, restoreKind, resolver, root = this.getInstallPath(), includeInside = false, required = false }) {
 		const configured = String(rawEnv[field] || "").trim();
 
 		if (!configured) {
@@ -9196,7 +9433,13 @@ process.stdout.write(JSON.stringify(payload));
 
 		const keyPath = resolver(configured);
 
-		if (!keyPath || !fileExists(keyPath) || isPathInside(this.getInstallPath(), keyPath)) {
+		if (!keyPath || !fileExists(keyPath)) {
+			if (required) {
+				throw new Error(`Configured ${field} file is missing: ${keyPath || configured}`);
+			}
+			return;
+		}
+		if (!includeInside && isPathInside(root, keyPath)) {
 			return;
 		}
 
@@ -9218,20 +9461,37 @@ process.stdout.write(JSON.stringify(payload));
 			throw new Error("The selected local Hachi folder does not exist.");
 		}
 
-		await this.checkpointDatabase();
-		const entries = collectLocalProjectFiles(paths.root);
+		const databaseRelativePath = fileExists(paths.database) ? path.relative(paths.root, paths.database) : null;
+		let databaseContent = null;
+		if (databaseRelativePath) {
+			const snapshot = await this.runLocalDatabaseWorker("snapshot");
+			databaseContent = Buffer.from(snapshot.content || "", "base64");
+			if (!databaseContent.length || databaseContent.length !== snapshot.bytes) {
+				throw new Error("Database snapshot returned incomplete bytes.");
+			}
+		}
+		const entries = collectLocalProjectFiles(paths.root, {
+			excludedRestorePaths: databaseRelativePath ? databaseArchivePaths(databaseRelativePath) : [],
+		});
+		if (databaseContent) {
+			entries.push(databaseSnapshotArchiveEntry(paths.root, databaseRelativePath, databaseContent));
+		}
 		const rawEnv = fileExists(paths.env) ? parseDotEnv(paths.env) : {};
 
-		this.addExternalLocalKeyEntry(entries, rawEnv, {
+		this.addConfiguredLocalKeyEntry(entries, rawEnv, {
 			field: "HACHI_DB_KEY_FILE",
 			restoreKind: "database-key",
 			resolver: value => resolveLocalPath(value, paths.root),
 		});
-		this.addExternalLocalKeyEntry(entries, rawEnv, {
-			field: "HACHI_SECRETS_KEY_FILE",
-			restoreKind: "secrets-key",
-			resolver: value => this.resolveLocalSecretsKeyFile(value),
-		});
+		if (!String(rawEnv.HACHI_SECRETS_KEY || "").trim()) {
+			this.addConfiguredLocalKeyEntry(entries, rawEnv, {
+				field: "HACHI_SECRETS_KEY_FILE",
+				includeInside: true,
+				required: true,
+				restoreKind: "secrets-key",
+				resolver: value => this.resolveLocalSecretsKeyFile(value),
+			});
+		}
 
 		return {
 			entries,
@@ -9243,12 +9503,63 @@ process.stdout.write(JSON.stringify(payload));
 		};
 	}
 
-	remoteRuntimeArchiveScript() {
+	async collectLocalFleetRuntimeArchiveEntries(context) {
+		const root = context.deployment.installPath;
+		if (!fileExists(root)) {
+			throw new Error(`The selected local ${context.definition.displayName} folder does not exist.`);
+		}
+
+		const databaseRelativePath = context.definition.paths?.database;
+		const databasePath = databaseRelativePath ? path.join(root, databaseRelativePath) : "";
+		const databaseContent = databasePath && fileExists(databasePath) ? await this.readFleetDatabaseSnapshot(context) : null;
+		const entries = collectLocalProjectFiles(root, {
+			excludedRestorePaths: databaseRelativePath ? databaseArchivePaths(databaseRelativePath) : [],
+		});
+		if (databaseContent) {
+			entries.push(databaseSnapshotArchiveEntry(root, databaseRelativePath, databaseContent));
+		}
+		const keyInfo = await this.readFleetDatabaseRuntimeKey(context, { allowLegacyDiscovery: true });
+		// A direct key is already preserved inside .env. Only add a separate payload
+		// when the runtime resolves its database key from outside the repository.
+		if (keyInfo.keyFilePath && fileExists(keyInfo.keyFilePath) && !isPathInside(root, keyInfo.keyFilePath)) {
+			const content = fs.readFileSync(keyInfo.keyFilePath);
+			entries.push({
+				bytes: content.length,
+				content,
+				restoreKind: "database-key",
+				sensitive: true,
+				sha256: sha256Buffer(content),
+				sourcePath: keyInfo.keyFilePath,
+			});
+		}
+		if (context.definition.id === "hachi") {
+			const rawEnv = parseDotEnv(path.join(root, ".env"));
+			if (!String(rawEnv.HACHI_SECRETS_KEY || "").trim()) {
+				this.addConfiguredLocalKeyEntry(entries, rawEnv, {
+					field: "HACHI_SECRETS_KEY_FILE",
+					includeInside: true,
+					required: true,
+					restoreKind: "secrets-key",
+					resolver: value => this.resolveLocalSecretsKeyFile(value, root),
+					root,
+				});
+			}
+		}
+
+		return {
+			entries,
+			source: { botId: context.definition.id, path: root, type: "local" },
+			warnings: [],
+		};
+	}
+
+	remoteRuntimeArchiveScript(databaseFields = { keyFile: "HACHI_DB_KEY_FILE" }) {
 		return `
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const databaseFields = ${JSON.stringify(databaseFields)};
 const excludedDirectories = new Set(${JSON.stringify([...RUNTIME_ARCHIVE_EXCLUDED_DIRECTORIES])});
 const excludedFiles = new Set(${JSON.stringify([...RUNTIME_ARCHIVE_EXCLUDED_FILES])});
 function normalizeArchivePath(value) {
@@ -9351,7 +9662,7 @@ function addExternalKey(env, field, restoreKind) {
 }
 visit(process.cwd());
 const env = parseDotEnvContent(fs.existsSync(".env") ? fs.readFileSync(".env", "utf8") : "");
-addExternalKey(env, "HACHI_DB_KEY_FILE", "database-key");
+addExternalKey(env, databaseFields.keyFile, "database-key");
 addExternalKey(env, "HACHI_SECRETS_KEY_FILE", "secrets-key");
 process.stdout.write(JSON.stringify({
 	files,
@@ -9363,35 +9674,494 @@ process.stdout.write(JSON.stringify({
 	}
 
 	async collectRemoteRuntimeArchiveEntries() {
-		await this.checkpointDatabase();
-		const remote = await this.requireRemoteRuntime();
-		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(this.remoteRuntimeArchiveScript())}`, {
-			fallbackMessage: "Remote runtime export did not return valid JSON.",
-			log: false,
-			timeoutMs: 600000,
-		});
+		return this.collectRemoteFleetRuntimeArchiveEntries(this.getNativeHachiContext("remote"));
+	}
 
-		if (!result.ok) {
-			throw new Error(result.error || "Remote runtime export failed.");
+	remoteSecretsKeyArchiveScript() {
+		return [
+			"const fs=require('node:fs'),path=require('node:path');",
+			"const secrets=require('./config/secretEncryption.js');",
+			"const configured=JSON.parse(process.argv[1]);",
+			"const filePath=secrets.resolveKeyFilePath(configured,process.cwd());",
+			"const content=fs.readFileSync(filePath);",
+			"if(!content.toString('utf8').trim())throw new Error('Configured secrets key file is empty');",
+			"process.stdout.write(JSON.stringify({filePath,content:content.toString('base64')}));",
+		].join("");
+	}
+
+	async collectRemoteFleetRuntimeArchiveEntries(context) {
+		const transferId = crypto.randomUUID();
+		const remoteArchive = `/tmp/hachigen-runtime-${transferId}.tar.gz`;
+		const localArchive = path.join(this.userDataPath, "runtime-transfers", `${transferId}.tar.gz`);
+		const extractDir = path.join(this.userDataPath, "runtime-transfers", `${transferId}-extracted`);
+		ensureDir(path.dirname(localArchive));
+		const exclusions = [...RUNTIME_ARCHIVE_EXCLUDED_DIRECTORIES].flatMap(name => ["--exclude", name]);
+		const databaseRelativePath = context.definition.paths?.database;
+		const databasePaths = databaseRelativePath ? databaseArchivePaths(databaseRelativePath) : [];
+		const databaseExclusions = databasePaths.flatMap(name => ["--exclude", name, "--exclude", `./${name}`]);
+		const archiveCommand = ["tar", "-czf", remoteArchive, ...exclusions,
+			...[...RUNTIME_ARCHIVE_EXCLUDED_FILES].flatMap(name => ["--exclude", name]), ...databaseExclusions, "."]
+			.map(quotePosix)
+			.join(" ");
+		try {
+			await this.runFleetRemoteCommand(context.server, `cd ${quoteRemotePath(context.deployment.installPath)} && ${archiveCommand}`, {
+				log: false,
+				timeoutMs: 600000,
+			});
+			await this.copyFleetFileFromRemote(context, remoteArchive, localArchive);
+			ensureDir(extractDir);
+			await run("tar", ["-xzf", localArchive, "-C", extractDir], { timeoutMs: 600000 });
+			const entries = collectLocalProjectFiles(extractDir, { excludedRestorePaths: databasePaths }).map(entry => ({
+				...entry,
+				sourcePath: path.posix.join(context.deployment.installPath, entry.restorePath),
+			}));
+			const databaseProbe = databaseRelativePath ?
+				await this.runFleetRemoteCommand(context.server,
+					`cd ${quoteRemotePath(context.deployment.installPath)} && test -f ${quotePosix(databaseRelativePath)}`,
+					{ allowFailure: true, log: false, timeoutMs: 30000 }) :
+				null;
+			if (databaseProbe && databaseProbe.code !== 0 && databaseProbe.code !== 1) {
+				throw new Error(`Could not check the remote ${context.definition.displayName} database before export.`);
+			}
+			if (databaseProbe?.code === 0) {
+				const content = await this.readFleetDatabaseSnapshot(context);
+				entries.push({
+					...databaseSnapshotArchiveEntry(context.deployment.installPath, databaseRelativePath, content),
+					sourcePath: path.posix.join(context.deployment.installPath, databasePaths[0]),
+				});
+			}
+			const keyInfo = await this.readFleetDatabaseRuntimeKey(context, { allowLegacyDiscovery: true });
+			if (keyInfo.key && keyInfo.keyFilePath && !entries.some(entry => entry.sourcePath === keyInfo.keyFilePath)) {
+				const content = Buffer.from(`${keyInfo.key}\n`);
+				entries.push({ bytes: content.length, content, restoreKind: "database-key", sensitive: true, sha256: sha256Buffer(content), sourcePath: keyInfo.keyFilePath });
+			}
+			if (context.definition.id === "hachi") {
+				const rawEnv = parseDotEnv(path.join(extractDir, ".env"));
+				const configured = String(rawEnv.HACHI_SECRETS_KEY_FILE || "").trim();
+				if (configured && !String(rawEnv.HACHI_SECRETS_KEY || "").trim()) {
+					// Resolve with Hachi's own helper on the selected host. Base64 carries
+					// exact key bytes through SSH without shell or event-log exposure.
+					const command = `cd ${quoteRemotePath(context.deployment.installPath)} && node -e ${quotePosix(this.remoteSecretsKeyArchiveScript())} ${quotePosix(JSON.stringify(configured))}`;
+					const result = await this.runFleetRemoteCommand(context.server, command, { log: false, timeoutMs: 30000 });
+					const keyFile = parseJsonText(result.stdout, {});
+					const content = Buffer.from(keyFile.content || "", "base64");
+					if (!keyFile.filePath || !content.length) {
+						throw new Error("Remote secrets key capture returned incomplete data.");
+					}
+					entries.push({ bytes: content.length, content, restoreKind: "secrets-key", sensitive: true, sha256: sha256Buffer(content), sourcePath: keyFile.filePath });
+				}
+			}
+			return {
+				entries,
+				source: {
+					botId: context.definition.id,
+					host: context.server.connection.host,
+					path: context.deployment.installPath,
+					type: "remote",
+				},
+				warnings: [],
+			};
+		} finally {
+			fs.rmSync(localArchive, { force: true });
+			fs.rmSync(extractDir, { force: true, recursive: true });
+			await this.runFleetRemoteCommand(context.server, `rm -f ${quotePosix(remoteArchive)}`, { allowFailure: true, log: false, timeoutMs: 30000 }).catch(() => null);
 		}
+	}
 
-		return {
-			entries: (result.files || []).map(file => ({
-				bytes: Number(file.bytes) || 0,
-				content: Buffer.from(String(file.content || ""), "base64"),
-				restoreKind: file.restoreKind,
-				restorePath: file.restorePath || "",
-				sensitive: Boolean(file.sensitive),
-				sha256: file.sha256 || "",
-				sourcePath: file.sourcePath || "",
-			})),
-			source: {
-				host: remote.host,
-				path: result.path || remote.remotePath,
-				type: "remote",
-			},
-			warnings: Array.isArray(result.warnings) ? result.warnings : [],
+	getFleetTransferContexts(botTypeId) {
+		if (botTypeId === "hachi") {
+			// Hachi's runtime controls follow its configured paths. Historical Fleet
+			// records may contain other remote installs and must not win by order.
+			return { local: this.getNativeHachiContext("local"), remote: this.getNativeHachiContext("remote") };
+		}
+		const deployments = this.fleet.deployments.filter(item => item.botTypeId === botTypeId);
+		const activeId = this.fleet.activeDeploymentByBotType?.[botTypeId];
+		const selectSide = type => {
+			const candidates = deployments.filter(item => this.fleet.servers.find(server => server.id === item.serverId)?.connection?.type === type);
+			if (candidates.length === 1) {
+				return candidates[0];
+			}
+			const active = candidates.find(item => item.id === activeId);
+			if (active) {
+				return active;
+			}
+			if (candidates.length > 1) {
+				throw new Error(`${botTypeId} has multiple ${type === "ssh" ? "remote" : "local"} installations. Select the intended installation in Fleet before transferring runtime data.`);
+			}
+			return null;
 		};
+		const local = selectSide("local");
+		const remote = selectSide("ssh");
+		if (!local || !remote) {
+			throw new Error(`${botTypeId} needs both a local and remote Fleet installation before runtime data can be transferred.`);
+		}
+		return { local: this.getFleetDeploymentContext(local.id), remote: this.getFleetDeploymentContext(remote.id) };
+	}
+
+	previewFleetRuntimeTransfer(botTypeId, direction) {
+		if (direction !== "remote-to-local" && direction !== "local-to-remote") {
+			throw new Error("Unknown runtime transfer direction.");
+		}
+		const contexts = this.getFleetTransferContexts(botTypeId);
+		const identifyInstallation = context => ({
+			deploymentId: context.deployment.id,
+			installPath: context.deployment.installPath,
+			pm2Name: context.deployment.pm2Name,
+			serverId: context.server.id,
+			connection: context.server.connection.type === "ssh" ?
+				{
+					type: "ssh",
+					host: context.server.connection.host,
+					username: context.server.connection.username,
+					port: context.server.connection.port,
+					sshKeyPath: context.server.connection.sshKeyPath,
+				} :
+				{ type: "local" },
+		});
+		const selection = {
+			local: identifyInstallation(contexts.local),
+			remote: identifyInstallation(contexts.remote),
+		};
+		const source = direction === "remote-to-local" ? contexts.remote : contexts.local;
+		const destination = direction === "remote-to-local" ? contexts.local : contexts.remote;
+		const describe = context => ({
+			deploymentId: context.deployment.id,
+			name: context.deployment.name,
+			serverName: context.server.name,
+			installPath: context.deployment.installPath,
+		});
+		return { source: describe(source), destination: describe(destination), selection };
+	}
+
+	transferKeyPath(context) {
+		const safeId = context.definition.id.replace(/[^a-z0-9_-]+/giu, "-").toLowerCase();
+		const installationId = context.deployment.id.replace(/[^a-z0-9_-]+/giu, "-").toLowerCase();
+		return context.server.connection.type === "ssh" ?
+			`~/.hachigen/keys/${safeId}/${installationId}/database.key` :
+			path.join(this.userDataPath, "runtime-keys", safeId, installationId, "database.key");
+	}
+
+	transferSecretsKeyPath(context) {
+		const installationId = context.deployment.id.replace(/[^a-z0-9_-]+/giu, "-").toLowerCase();
+		return context.server.connection.type === "ssh" ?
+			`~/.hachigen/keys/hachi/${installationId}/secrets.key` :
+			path.join(this.userDataPath, "runtime-keys", "hachi", installationId, "secrets.key");
+	}
+
+	prepareRuntimeTransferSecrets(destination, collected) {
+		const secretsEntry = collected.entries.find(entry => entry.restoreKind === "secrets-key");
+		if (!secretsEntry) {
+			return collected;
+		}
+		if (destination.definition.id !== "hachi") {
+			throw new Error("Only Hachi runtime transfers can install a Hachi secrets key.");
+		}
+		const envEntry = collected.entries.find(entry => entry.restoreKind === "project" && entry.restorePath === ".env");
+		if (!envEntry) {
+			throw new Error("The source .env is required to transfer its external secrets key safely.");
+		}
+		// Never copy the source host's absolute key path into the destination.
+		// Place the key under this installation's private runtime-key directory.
+		const envContent = Buffer.from(updateDotEnvContent(envEntry.content.toString("utf8"), {
+			HACHI_SECRETS_KEY: "",
+			HACHI_SECRETS_KEY_FILE: this.transferSecretsKeyPath(destination),
+		}));
+		const secretsSourcePath = String(secretsEntry.sourcePath || "").replaceAll("\\", "/");
+		return {
+			...collected,
+			entries: collected.entries.filter(entry => entry.restoreKind !== "project" || !secretsSourcePath ||
+				String(entry.sourcePath || "").replaceAll("\\", "/") !== secretsSourcePath).map(entry => entry === envEntry ?
+				{ ...entry, bytes: envContent.length, content: envContent, sha256: sha256Buffer(envContent) } :
+				entry),
+		};
+	}
+
+	getRuntimeTransferBackupDir(context, direction, stamp = timestampFolderName()) {
+		const profileName = this.backupFolderName(context.definition.displayName, context.definition.id);
+		const installationName = context.server.connection.type === "ssh" ?
+			`Remote-${this.backupFolderName(context.server.name, context.server.id)}` :
+			"Local";
+		return path.join(this.backupsRoot, "Runtime Transfers", profileName, installationName, `${direction}-${stamp}`);
+	}
+
+	moveRuntimeTransferFile(sourcePath, destinationPath) {
+		ensureDir(path.dirname(destinationPath));
+		try {
+			fs.renameSync(sourcePath, destinationPath);
+		} catch (error) {
+			if (error?.code !== "EXDEV") {
+				throw error;
+			}
+			// Central backups can live on another volume. Verify the fallback copy
+			// before removing the original so preservation never becomes data loss.
+			fs.copyFileSync(sourcePath, destinationPath);
+			if (sha256File(sourcePath) !== sha256File(destinationPath)) {
+				fs.rmSync(destinationPath, { force: true });
+				throw new Error(`Could not verify preserved transfer file ${sourcePath}.`);
+			}
+			fs.rmSync(sourcePath, { force: true });
+		}
+	}
+
+	async applyLocalRuntimeTransfer(destination, collected, incomingKey, direction) {
+		const root = destination.deployment.installPath;
+		const stamp = timestampFolderName();
+		const backupDir = this.getRuntimeTransferBackupDir(destination, direction, stamp);
+		const stagingDir = path.join(this.userDataPath, "runtime-transfers", `${destination.definition.id}-${stamp}`);
+		const moved = [];
+		const installed = [];
+		const currentKey = await this.readFleetDatabaseRuntimeKey(destination, { allowLegacyDiscovery: true });
+		const projectEntries = collected.entries.filter(entry => entry.restoreKind === "project");
+		const secretsEntry = collected.entries.find(entry => entry.restoreKind === "secrets-key");
+		const secretsKeyPath = secretsEntry ? this.transferSecretsKeyPath(destination) : "";
+		ensureDir(stagingDir);
+		ensureDir(backupDir);
+
+		try {
+			for (const entry of projectEntries) {
+				const relative = assertSafeRelativeArchivePath(entry.restorePath, "transfer path");
+				const staged = path.join(stagingDir, ...relative.split("/"));
+				ensureDir(path.dirname(staged));
+				fs.writeFileSync(staged, entry.content);
+			}
+			const targets = projectEntries.map(entry => ({
+				backup: path.join(backupDir, "project", ...entry.restorePath.split("/")),
+				target: path.join(root, ...entry.restorePath.split("/")),
+			}));
+			if (currentKey.keyFilePath && fileExists(currentKey.keyFilePath)) {
+				targets.push({ backup: path.join(backupDir, "keys", path.basename(currentKey.keyFilePath)), target: currentKey.keyFilePath });
+			}
+			if (secretsKeyPath && fileExists(secretsKeyPath)) {
+				targets.push({ backup: path.join(backupDir, "keys", "secrets-key"), target: secretsKeyPath });
+			}
+			// Move every replaced destination file into the recovery set first. No
+			// database, key, or configuration byte is overwritten in place.
+			for (const item of targets) {
+				if (!fileExists(item.target)) {
+					continue;
+				}
+				ensureDir(path.dirname(item.backup));
+				this.moveRuntimeTransferFile(item.target, item.backup);
+				moved.push(item);
+			}
+			for (const entry of projectEntries) {
+				const target = path.join(root, ...entry.restorePath.split("/"));
+				const staged = path.join(stagingDir, ...entry.restorePath.split("/"));
+				ensureDir(path.dirname(target));
+				this.moveRuntimeTransferFile(staged, target);
+				installed.push(target);
+			}
+			if (secretsEntry) {
+				ensureDir(path.dirname(secretsKeyPath));
+				fs.writeFileSync(secretsKeyPath, secretsEntry.content, { mode: 0o600 });
+				installed.push(secretsKeyPath);
+				try {
+					fs.chmodSync(path.dirname(secretsKeyPath), 0o700);
+					fs.chmodSync(secretsKeyPath, 0o600);
+				} catch {
+					// Windows ACLs may not map cleanly to POSIX modes.
+				}
+			}
+			if (incomingKey?.key) {
+				await this.applyFleetDatabaseRuntimeKey(destination, { ...incomingKey, keyFilePath: this.transferKeyPath(destination), source: "file" });
+				if (destination.definition.commands?.databaseVerify && !await this.verifyFleetDatabaseRuntimeKey(destination, incomingKey)) {
+					throw new Error("The transferred database did not verify with its transferred key.");
+				}
+			}
+			writeJsonFile(path.join(backupDir, "manifest.json"), { createdAt: new Date().toISOString(), direction, moved: moved.map(item => item.target), source: collected.source });
+			return { backupDir, fileCount: projectEntries.length, ok: true };
+		} catch (error) {
+			const incomingKeyPath = this.transferKeyPath(destination);
+			if (fileExists(incomingKeyPath) && !moved.some(item => path.resolve(item.target) === path.resolve(incomingKeyPath))) {
+				fs.rmSync(incomingKeyPath, { force: true });
+			}
+			for (const target of installed.reverse()) {
+				fs.rmSync(target, { force: true });
+			}
+			for (const item of moved.reverse()) {
+				ensureDir(path.dirname(item.target));
+				if (fileExists(item.backup)) {
+					this.moveRuntimeTransferFile(item.backup, item.target);
+				}
+			}
+			throw errorWithContext("Runtime transfer failed and the preserved local files were restored", error);
+		} finally {
+			fs.rmSync(stagingDir, { force: true, recursive: true });
+		}
+	}
+
+	async applyRemoteRuntimeTransfer(destination, collected, incomingKey, direction) {
+		const currentKey = await this.readFleetDatabaseRuntimeKey(destination, { allowLegacyDiscovery: true });
+		const stamp = timestampFolderName();
+		const backupDir = `~/.hachigen/transfer-backups/${destination.definition.id}/${direction}-${stamp}`;
+		const transferId = crypto.randomUUID();
+		const localStage = path.join(this.userDataPath, "runtime-transfers", `${transferId}-upload`);
+		const localArchive = `${localStage}.tar.gz`;
+		const remoteArchive = `/tmp/hachigen-runtime-${transferId}.tar.gz`;
+		const secretsEntry = collected.entries.find(entry => entry.restoreKind === "secrets-key");
+		const secretsPayload = secretsEntry ? `hachigen-transfer-secrets-${transferId}.key` : "";
+		const secretsKeyPath = secretsEntry ? this.transferSecretsKeyPath(destination) : "";
+		ensureDir(localStage);
+		for (const entry of collected.entries.filter(item => item.restoreKind === "project")) {
+			const relative = assertSafeRelativeArchivePath(entry.restorePath, "transfer path");
+			const target = path.join(localStage, ...relative.split("/"));
+			ensureDir(path.dirname(target));
+			fs.writeFileSync(target, entry.content);
+		}
+		if (secretsEntry) {
+			fs.writeFileSync(path.join(localStage, secretsPayload), secretsEntry.content, { mode: 0o600 });
+		}
+		if (!await this.logger.compressFolderToTarGz(localStage, localArchive)) {
+			throw new Error("Could not create the staged runtime transfer archive.");
+		}
+		try {
+			await this.copyFleetFileToRemote(destination, localArchive, remoteArchive);
+		} catch (error) {
+			fs.rmSync(localStage, { force: true, recursive: true });
+			fs.rmSync(localArchive, { force: true });
+			throw errorWithContext("Could not upload the staged runtime archive", error);
+		}
+		/* eslint-disable max-len -- Embedded remote script is kept contiguous for SSH execution. */
+		const script = [
+			"const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');",
+			"const d={backupDir:process.argv[1],currentKeyFile:process.argv[2],archive:process.argv[3],secretsPath:process.argv[4],secretsPayload:process.argv[5]},root=process.cwd();",
+			"const resolve=p=>p.startsWith('~/')?path.join(os.homedir(),p.slice(2)):path.resolve(p);const backup=resolve(d.backupDir),stage=backup+'-staging';",
+			"const safe=p=>{p=String(p||'').replace(/\\\\/g,'/').replace(/^\\/+/, '');if(!p||p.split('/').some(x=>!x||x==='.'||x==='..'))throw new Error('Unsafe transfer path: '+p);return p};",
+			"const move=(a,b)=>{fs.mkdirSync(path.dirname(b),{recursive:true});try{fs.renameSync(a,b)}catch(e){if(e.code!=='EXDEV')throw e;fs.copyFileSync(a,b);const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');if(hash(a)!==hash(b)){fs.rmSync(b,{force:true});throw new Error('Preserved file checksum failed: '+a)}fs.rmSync(a,{force:true})}};",
+			"fs.mkdirSync(stage,{recursive:true});cp.execFileSync('tar',['-xzf',d.archive,'-C',stage]);const moved=[],installed=[],files=[];",
+			"const visit=dir=>{for(const e of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,e.name);if(e.isDirectory())visit(p);else if(e.isFile()){const rel=safe(path.relative(stage,p));if(rel!==d.secretsPayload)files.push(rel)}}};visit(stage);",
+			"try{const targets=files.map(rel=>({target:path.join(root,rel),backup:path.join(backup,'project',rel)}));",
+			"if(d.currentKeyFile){const p=resolve(d.currentKeyFile);targets.push({target:p,backup:path.join(backup,'keys',path.basename(p))})}",
+			"const secretsTarget=d.secretsPayload?resolve(d.secretsPath):'';if(secretsTarget)targets.push({target:secretsTarget,backup:path.join(backup,'keys','secrets-key')});",
+			"for(const x of targets){if(!fs.existsSync(x.target))continue;move(x.target,x.backup);moved.push(x)}",
+			"for(const rel of files){const target=path.join(root,rel);move(path.join(stage,rel),target);installed.push(target)}",
+			"if(secretsTarget){move(path.join(stage,d.secretsPayload),secretsTarget);fs.chmodSync(path.dirname(secretsTarget),0o700);fs.chmodSync(secretsTarget,0o600);installed.push(secretsTarget)}",
+			"fs.writeFileSync(path.join(backup,'manifest.json'),JSON.stringify({createdAt:new Date().toISOString(),installed,moved},null,2));process.stdout.write(JSON.stringify({ok:true,backupDir:d.backupDir,fileCount:files.length}))}",
+			"catch(e){for(const p of installed.reverse())fs.rmSync(p,{force:true});for(const x of moved.reverse()){fs.mkdirSync(path.dirname(x.target),{recursive:true});if(fs.existsSync(x.backup))fs.renameSync(x.backup,x.target)}throw e}finally{fs.rmSync(stage,{force:true,recursive:true})}",
+		].join("");
+		/* eslint-enable max-len */
+		const command = [
+			`cd ${quoteRemotePath(destination.deployment.installPath)} && node -e`,
+			quotePosix(script), quotePosix(backupDir), quotePosix(currentKey.keyFilePath || ""),
+			quotePosix(remoteArchive), quotePosix(secretsKeyPath), quotePosix(secretsPayload),
+		].join(" ");
+		let result;
+		try {
+			result = await this.runFleetRemoteCommand(destination.server, command, { log: false, timeoutMs: 600000 });
+		} finally {
+			fs.rmSync(localStage, { force: true, recursive: true });
+			fs.rmSync(localArchive, { force: true });
+			await this.runFleetRemoteCommand(destination.server, `rm -f ${quotePosix(remoteArchive)}`, { allowFailure: true, log: false, timeoutMs: 30000 }).catch(() => null);
+		}
+		const applied = parseJsonText(result.stdout, {});
+		if (!applied.ok) {
+			throw new Error("Remote runtime transfer did not complete.");
+		}
+		try {
+			if (incomingKey?.key) {
+				await this.applyFleetDatabaseRuntimeKey(destination, { ...incomingKey, keyFilePath: this.transferKeyPath(destination), source: "file" });
+				if (destination.definition.commands?.databaseVerify && !await this.verifyFleetDatabaseRuntimeKey(destination, incomingKey)) {
+					throw new Error("The transferred remote database did not verify with its transferred key.");
+				}
+			}
+		} catch (error) {
+			await this.rollbackRemoteRuntimeTransfer(destination, backupDir);
+			throw errorWithContext("Runtime transfer failed and the preserved remote files were restored", error);
+		}
+		return { ...applied, backupDir };
+	}
+
+	remoteRuntimeTransferRollbackScript() {
+		/* eslint-disable max-len -- Embedded rollback script is kept contiguous for SSH execution. */
+		const script = [
+			"const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),crypto=require('node:crypto');",
+			"const resolve=p=>p.startsWith('~/')?path.join(os.homedir(),p.slice(2)):path.resolve(p),backup=resolve(process.argv[1]),manifest=JSON.parse(fs.readFileSync(path.join(backup,'manifest.json'),'utf8')),failed=path.join(backup,'failed-incoming');",
+			"const move=(a,b)=>{fs.mkdirSync(path.dirname(b),{recursive:true});try{fs.renameSync(a,b)}catch(e){if(e.code!=='EXDEV')throw e;fs.copyFileSync(a,b);const h=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');if(h(a)!==h(b))throw new Error('Rollback checksum failed: '+a);fs.rmSync(a,{force:true})}};",
+			"const key=resolve(process.argv[2]);if(fs.existsSync(key))move(key,path.join(failed,'keys',path.basename(key)));",
+			"const inside=p=>{const rel=path.relative(process.cwd(),p);return rel&&rel!=='..'&&!rel.startsWith('..'+path.sep)&&!path.isAbsolute(rel)?rel:''};",
+			"for(const target of [...(manifest.installed||[])].reverse()){if(fs.existsSync(target)){const rel=inside(target);move(target,path.join(failed,rel?'project':'keys',rel||path.basename(target)))}}",
+			"for(const item of [...manifest.moved].reverse()){if(fs.existsSync(item.backup))move(item.backup,item.target)}",
+		].join("");
+		/* eslint-enable max-len */
+		return script;
+	}
+
+	async rollbackRemoteRuntimeTransfer(destination, backupDir) {
+		const incomingKeyPath = this.transferKeyPath(destination);
+		const command = `cd ${quoteRemotePath(destination.deployment.installPath)} && node -e ${quotePosix(this.remoteRuntimeTransferRollbackScript())} ${quotePosix(backupDir)} ${quotePosix(incomingKeyPath)}`;
+		await this.runFleetRemoteCommand(destination.server, command, { log: false, timeoutMs: 120000 });
+	}
+
+	async transferFleetRuntime(botTypeId, direction, selection) {
+		// The IPC request must carry the exact installations shown in the
+		// confirmation. A settings or Fleet selection change cancels the transfer.
+		if (!selection?.local?.deploymentId || !selection?.remote?.deploymentId) {
+			throw new Error("Review the runtime transfer installations again before continuing.");
+		}
+		const preview = this.previewFleetRuntimeTransfer(botTypeId, direction);
+		const sameInstallation = (confirmed, current) => confirmed.deploymentId === current.deploymentId &&
+			confirmed.installPath === current.installPath &&
+			confirmed.pm2Name === current.pm2Name &&
+			confirmed.serverId === current.serverId &&
+			confirmed.connection?.type === current.connection.type &&
+			confirmed.connection.host === current.connection.host &&
+			confirmed.connection.username === current.connection.username &&
+			confirmed.connection.port === current.connection.port &&
+			confirmed.connection.sshKeyPath === current.connection.sshKeyPath;
+		if (!sameInstallation(selection.local, preview.selection.local) ||
+			!sameInstallation(selection.remote, preview.selection.remote)) {
+			throw new Error("The runtime transfer installation changed. Review the transfer again before continuing.");
+		}
+		const contexts = {
+			local: this.getFleetDeploymentContext(selection.local.deploymentId),
+			remote: this.getFleetDeploymentContext(selection.remote.deploymentId),
+		};
+		const pull = direction === "remote-to-local";
+		const source = pull ? contexts.remote : contexts.local;
+		const destination = pull ? contexts.local : contexts.remote;
+		const runtime = await this.getFleetDeploymentStatus(destination.deployment.id);
+		const wasRunning = /online|running/iu.test(String(runtime?.status || ""));
+		if (wasRunning) {
+			this.log(`Runtime transfer: stopping destination ${destination.deployment.name}.`, { area: "runtime-transfer", direction, deploymentId: destination.deployment.id });
+		}
+		await this.ensureFleetDeploymentStopped(destination.deployment.id);
+		let phase = "destination recovery archive";
+		try {
+			// Snapshot the destination into the centralized backup tree
+			// before individual replaced files are moved aside. Remote snapshots are
+			// downloaded so recovery does not depend on the server remaining online.
+			const centralDir = this.getRuntimeTransferBackupDir(destination, direction);
+			ensureDir(centralDir);
+			const localRecoveryArchive = path.join(centralDir, "pre-transfer-runtime.tar.gz");
+			this.log(`Runtime transfer: creating the destination recovery archive.`, { area: "runtime-transfer", direction, deploymentId: destination.deployment.id });
+			await this.exportRuntimeArchive({ deploymentId: destination.deployment.id, targetPath: localRecoveryArchive });
+			phase = "source collection";
+			this.log(`Runtime transfer: collecting ${source.deployment.name} through a disk-backed archive.`, { area: "runtime-transfer", direction, deploymentId: source.deployment.id });
+			const collectedSource = source.server.connection.type === "ssh" ? await this.collectRemoteFleetRuntimeArchiveEntries(source) : await this.collectLocalFleetRuntimeArchiveEntries(source);
+			const collected = this.prepareRuntimeTransferSecrets(destination, collectedSource);
+			const incomingKey = await this.readFleetDatabaseRuntimeKey(source, { allowLegacyDiscovery: true });
+			phase = "destination installation";
+			this.log(`Runtime transfer: installing staged files at ${destination.deployment.name}.`, { area: "runtime-transfer", direction, deploymentId: destination.deployment.id });
+			const applied = destination.server.connection.type === "ssh" ?
+				await this.applyRemoteRuntimeTransfer(destination, collected, incomingKey, direction) :
+				await this.applyLocalRuntimeTransfer(destination, collected, incomingKey, direction);
+			this.log(`Runtime transfer completed and verified for ${destination.deployment.name}.`, { area: "runtime-transfer", direction, deploymentId: destination.deployment.id });
+			return {
+				...applied,
+				direction,
+				localRecoveryArchive,
+				message: `${source.definition.displayName} runtime transferred. Preserved destination: ${localRecoveryArchive || applied.backupDir}.`,
+				source: collected.source,
+			};
+		} catch (error) {
+			this.log(`Runtime transfer failed during ${phase}: ${readableCause(error)}`, { area: "runtime-transfer", direction, deploymentId: destination.deployment.id, level: "error" });
+			throw errorWithContext(`Runtime transfer failed during ${phase}`, error);
+		} finally {
+			if (wasRunning) {
+				this.log(`Runtime transfer: restoring the previous running state for ${destination.deployment.name}.`, { area: "runtime-transfer", direction, deploymentId: destination.deployment.id });
+				await this.controlFleetDeployment(destination.deployment.id, "start").catch(error => this.log(`Could not restore runtime state after transfer: ${readableCause(error)}`));
+			}
+		}
 	}
 
 	writeRuntimeArchivePayload(stagingFolder, entry, index) {
@@ -9413,11 +10183,19 @@ process.stdout.write(JSON.stringify({
 		};
 	}
 
-	async exportRuntimeArchive({ source = this.getRuntimeTarget(), targetPath = this.runtimeArchiveDefaultPath() } = {}) {
+	async exportRuntimeArchive({ deploymentId = "", source = this.getRuntimeTarget(), targetPath = this.runtimeArchiveDefaultPath(deploymentId) } = {}) {
 		const archiveSource = source === "remote" ? "remote" : "local";
-		const collected = archiveSource === "remote" ?
-			await this.collectRemoteRuntimeArchiveEntries() :
-			await this.collectLocalRuntimeArchiveEntries();
+		let collected;
+		if (deploymentId && deploymentId !== "hachi") {
+			const context = this.getFleetDeploymentContext(deploymentId);
+			collected = context.server.connection.type === "ssh" ?
+				await this.collectRemoteFleetRuntimeArchiveEntries(context) :
+				await this.collectLocalFleetRuntimeArchiveEntries(context);
+		} else {
+			collected = archiveSource === "remote" ?
+				await this.collectRemoteRuntimeArchiveEntries() :
+				await this.collectLocalRuntimeArchiveEntries();
+		}
 
 		if (!collected.entries.length) {
 			throw new Error("No runtime files were found to export.");
@@ -9542,6 +10320,7 @@ process.stdout.write(JSON.stringify({
 	async restoreRuntimeArchive(archivePath) {
 		const resolvedArchivePath = path.resolve(String(archivePath || ""));
 		const { entries, manifest } = readRuntimeArchiveManifest(resolvedArchivePath);
+		await this.ensureHachiStopped("local");
 		const root = this.getInstallPath();
 		const backupDir = path.join(root, "manager", "backups", `runtime-restore-${timestampFolderName()}`);
 		const copiedBackups = [];
@@ -9551,10 +10330,6 @@ process.stdout.write(JSON.stringify({
 
 		if (!fileExists(root)) {
 			ensureDir(root);
-		}
-
-		if (manifest.entries.some(entry => entry.restoreKind === "project" && entry.restorePath === "database/database.sqlite") && this.getRuntimeTarget() === "local") {
-			await this.checkpointDatabase();
 		}
 
 		for (const entry of manifest.entries) {
@@ -9603,7 +10378,7 @@ process.stdout.write(JSON.stringify({
 		}
 
 		if (restoredPaths.has("database/database.sqlite")) {
-			for (const sidecar of ["database/database.sqlite-wal", "database/database.sqlite-shm"]) {
+			for (const sidecar of ["database/database.sqlite-wal", "database/database.sqlite-shm", "database/database.sqlite-journal"]) {
 				if (restoredPaths.has(sidecar)) {
 					continue;
 				}
@@ -10525,14 +11300,13 @@ process.stdout.write(JSON.stringify({
 			return this.backupRemoteBeforeUpdate();
 		}
 
-		// Copy user-owned runtime files before changing code. This is separate
-		// from Git stash because .env/database files may be ignored by Git.
+		// Preserve user-owned runtime files separately from Git stash. The
+		// database needs a SQLite read lock instead of a raw live-file copy.
 		const paths = this.getPaths();
 		const backupDir = path.join(paths.root, "manager", "backups", timestampFolderName());
 		const files = [
 			[paths.env, ".env"],
 			[paths.configJson, path.join("config", "config.json")],
-			[paths.database, path.join("database", "database.sqlite")],
 		];
 		const copied = [];
 
@@ -10546,6 +11320,18 @@ process.stdout.write(JSON.stringify({
 			fs.copyFileSync(source, target);
 			copied.push(relativeTarget);
 		}
+		if (fileExists(paths.database)) {
+			const snapshot = await this.runLocalDatabaseWorker("snapshot");
+			const content = Buffer.from(snapshot.content || "", "base64");
+			if (!content.length || content.length !== snapshot.bytes) {
+				throw new Error("Pre-update database snapshot returned incomplete bytes.");
+			}
+			const relativeTarget = path.join("database", "database.sqlite");
+			const target = path.join(backupDir, relativeTarget);
+			ensureDir(path.dirname(target));
+			fs.writeFileSync(target, content);
+			copied.push(relativeTarget);
+		}
 
 		return {
 			backupDir,
@@ -10555,6 +11341,15 @@ process.stdout.write(JSON.stringify({
 
 	async backupRemoteBeforeUpdate() {
 		const backupDir = `manager/backups/${timestampFolderName()}`;
+		let databaseContent = "";
+		if (await this.remotePathExists("database/database.sqlite", "f")) {
+			const snapshot = await this.runRemoteDatabaseWorker("snapshot");
+			const content = Buffer.from(snapshot.content || "", "base64");
+			if (!content.length || content.length !== snapshot.bytes) {
+				throw new Error("Remote pre-update database snapshot returned incomplete bytes.");
+			}
+			databaseContent = snapshot.content;
+		}
 		const script = `
 const fs = require("node:fs");
 const path = require("node:path");
@@ -10562,24 +11357,43 @@ const backupDir = ${JSON.stringify(backupDir)};
 const files = [
 	[".env", ".env"],
 	["config/config.json", "config/config.json"],
-	["database/database.sqlite", "database/database.sqlite"],
 ];
-const copied = [];
-for (const [source, relativeTarget] of files) {
-	if (!fs.existsSync(source)) {
-		continue;
+// SSH stdin may be nonblocking; consume it as a stream before writing the
+// snapshot bytes that the remote worker captured under a SQLite read lock.
+const chunks = [];
+process.stdin.on("data", chunk => chunks.push(chunk));
+process.stdin.on("end", () => {
+	try {
+		const copied = [];
+		for (const [source, relativeTarget] of files) {
+			if (!fs.existsSync(source)) continue;
+			const target = path.posix.join(backupDir, relativeTarget);
+			fs.mkdirSync(path.posix.dirname(target), { recursive: true });
+			fs.copyFileSync(source, target);
+			copied.push(relativeTarget);
+		}
+		const encodedDatabase = Buffer.concat(chunks).toString("utf8");
+		if (encodedDatabase) {
+			const relativeTarget = "database/database.sqlite";
+			const target = path.posix.join(backupDir, relativeTarget);
+			fs.mkdirSync(path.posix.dirname(target), { recursive: true });
+			fs.writeFileSync(target, Buffer.from(encodedDatabase, "base64"));
+			copied.push(relativeTarget);
+		}
+		process.stdout.write(JSON.stringify({ backupDir, copied, ok: true }));
+	} catch (error) {
+		process.stdout.write(JSON.stringify({ error: error.message, ok: false }));
 	}
-	const target = path.posix.join(backupDir, relativeTarget);
-	fs.mkdirSync(path.posix.dirname(target), { recursive: true });
-	fs.copyFileSync(source, target);
-	copied.push(relativeTarget);
-}
-process.stdout.write(JSON.stringify({ backupDir, copied }));
+});
 `;
 		const backup = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
 			fallbackMessage: "Remote pre-update backup did not return valid JSON.",
+			input: databaseContent,
 			timeoutMs: 120000,
 		});
+		if (!backup.ok) {
+			throw new Error(backup.error || "Remote pre-update backup failed.");
+		}
 
 		return backup;
 	}
@@ -10789,7 +11603,7 @@ process.stdout.write(JSON.stringify({ backupDir, copied }));
 
 		try {
 			const apps = parsePm2Json(result.stdout);
-			const app = apps.find(item => item.name === PROCESS_NAME);
+			const app = apps.find(item => String(item.name || "").toLowerCase() === PROCESS_NAME.toLowerCase());
 
 			// PM2 can be installed even if Hachi has never been started.
 			if (!app) {
@@ -10804,6 +11618,7 @@ process.stdout.write(JSON.stringify({ backupDir, copied }));
 			return {
 				installed: true,
 				registered: true,
+				processName: app.name,
 				status: app.pm2_env?.status || "unknown",
 				restarts: app.pm2_env?.restart_time || 0,
 				cpu: app.monit?.cpu || 0,

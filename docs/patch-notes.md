@@ -2,9 +2,20 @@ HachiGen Patch Notes
 
 These notes are written for people running the HachiGen desktop manager. For the full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/HachiGen/blob/main/CHANGELOG.md).
 
-# Unreleased
+# v1.3.0 - 2026-11-09
 
-- Database table headers and other page content no longer cover operation messages in the bottom-right corner.
+- Database backups and runtime exports now capture a consistent SQLite snapshot. Before restoring or transferring data, encrypting a database, or rotating its key, HachiGen confirms the destination bot has stopped; the operation is canceled if the stop cannot be verified. Local and remote Hachi transfer safety backups are now stored under the correct installation.
+- Database cleanup no longer offers “Streamer row ID gaps”; it leaves existing streamer IDs unchanged to preserve linked stream data.
+- When Hachi is selected, startup and manual update checks now check Hachi and HachiGen together, show **Checking...** while running, and keep update buttons unavailable until the check finishes.
+- The Updates page now identifies the selected local or remote installation and shows its installed version and available version when found. It shows **Available: None** when current and refreshes HachiGen's result when checking another Fleet bot. Packaged HachiGen builds report their installed version correctly.
+- Diagnostics now offers **Import Remote** and **Export to Remote** when a bot has both local and remote Fleet installations. The confirmation identifies the exact source and destination; HachiGen cancels if that selection changes and asks for a Fleet selection when multiple installations make a target ambiguous. It saves a destination recovery archive locally under `backups/Runtime Transfers`, preserves replaced files, transfers the database with its key when present, verifies encrypted databases when a verification command is available, and attempts to restart a previously running bot.
+- Additional bots' SQLite Data Viewer and snapshot backups can use a supported database driver installed by the bot when its Node runtime does not include SQLite.
+- Diagnostics also offers **Export Runtime** for Hachi and additional bots. After a security warning, it saves the selected local or remote installation's project, configuration, available database, and configured key files to a local archive.
+- Remote runtime transfers now handle repositories with long file paths. Logs shows each transfer stage and the stage that failed, and controls become available again after a failure.
+- Paldeck and other Fleet bots now keep HachiGen activity visible in Logs while the page refreshes. Logs no longer points to a nonexistent activity history in Diagnostics.
+- Runtime transfers now place database keys and file-based Hachi secrets keys in a unique HachiGen-managed folder for each bot installation. HachiGen updates the transferred `.env` key-file settings for the destination while preserving unrelated settings, so installations do not share transferred key files.
+- Local and remote Paldeck Start and Restart now recover from stale PM2 registrations and the existing `Paldeck`/`paldeck` name mismatch. A stopped bot now uses a red status dot.
+- Paldeck command profiles that declare deployment scripts now correctly request command-deployment approval. HachiGen only shows deployment as ready when the current profile and its approval agree.
 - Fixed restoring an encrypted Paldeck or Hachi recovery point after restoring a plaintext database. HachiGen now keeps each new encrypted backup's matching database key protected with the backup record, restores and verifies both together, and can recover older backups when their retained standard key file is still available.
 - If an earlier restore left an encrypted database without active key settings, Restore can now verify its retained key first and safely recover instead of being blocked while creating the pre-restore backup.
 
