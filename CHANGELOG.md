@@ -2,9 +2,23 @@
 
 Notable changes to HachiGen are documented here.
 
-## Unreleased
+## v1.3.0 - 2026-11-09
 
-- Fixed toast notifications rendering beneath sticky database table headers by giving the shared toast region an explicit top-level stacking order.
+- Made database backups and runtime exports copy SQLite under a read transaction, rejecting unsafe journal modes and excluding live sidecars. Database restore, transfer, encryption, key rotation, and runtime archive replacement now require a verified PM2 stop; legacy Hachi transfers resolve the exact installation for PM2 control and backup ownership.
+- Updated Electron and transitive build dependencies, including a scoped patched `minimatch` override, so the full npm audit reports no vulnerabilities.
+- Used bot-installed SQLite drivers for generic database viewing and snapshot backups when the bot's Node runtime does not provide `node:sqlite`.
+- Removed the streamer row ID compaction cleanup because renumbering channels could invalidate provider identity and replay references.
+- When Hachi is selected, changed the automatic startup update check to use the same complete Hachi and HachiGen version workflow as a manual check, preventing partial update results. The dashboard and Updates view now show checking progress while update actions are disabled, without displaying a startup-completion toast.
+- Fixed the Updates view retaining stale HachiGen results after checking an additional bot, and changed additional-bot current-version detection to read the selected local or remote installation's actual `package.json` instead of committed Git contents. The selected bot panel now identifies its Local or named Remote installation, and Available displays `None` when the current version is already up to date.
+- Fixed downloaded Linux runtime archives failing HachiGen's limited in-process tar parser. Remote transfers now extract with the platform tar implementation for extended headers and long paths, and failures identify the exact transfer phase before releasing the UI action lock.
+- Fixed Fleet log polling erasing live HachiGen activity every five seconds and incorrectly directing users to Diagnostics. Fleet log responses now include retained manager events, and runtime transfers emit named phase events for backup, collection, installation, verification, and runtime-state restoration.
+- Standardized transferred database and file-based Hachi secrets keys under HachiGen-managed, per-installation paths locally and remotely. Runtime transfers rewrite the copied `.env` key-file references for the destination while preserving unrelated settings, preventing deployments from sharing key files.
+- Replaced remote runtime archive Base64/JSON buffering with disk-backed tar creation and SCP transfer, preventing repository-sized memory spikes on small servers. Transfer confirmations now use HachiGen's shared in-app modal instead of a generic Electron warning window.
+- Added guarded bidirectional Fleet runtime transfers for Hachi, Paldeck, and approved bot profiles. Pull and Push identify exact configured installations, reject changed or ambiguous selections, save destination recovery archives locally under `backups/Runtime Transfers`, move replaced files into recovery sets, transfer matching database keys when present without rotation, run database verification when supported, and attempt to restart a previously running destination. Remote replaced files are retained under `~/.hachigen/transfer-backups`.
+- Exposed secrets-bearing local/remote runtime archives from Diagnostics for Hachi and selected Fleet bots such as Paldeck, with an explicit warning before exporting repository files, configuration, available databases, and configured key files to local storage.
+- Fixed external-bot local and remote PM2 controls by reconciling Start and Restart through the approved ecosystem file, including stale registrations and legacy case differences between saved and declared PM2 names. Stopped runtime dots are now red.
+- Fixed external command adapters failing when older generated profiles omitted the implied Discord capability, and limited UI capability reporting to the current approved profile intersection.
+- Added current and available package versions to external-bot update checks, included HachiGen in the combined check, and sourced the packaged HachiGen version directly from Electron.
 - Fixed encrypted Fleet backup restoration after a plaintext transition. New encrypted recovery points snapshot their matching bot runtime key under operating-system protection, restore the key and database together, verify keyed access before success, and roll both states back on failure. Legacy Paldeck/Hachi recovery points can use a retained conventional key file when it verifies the restored database.
 - Fixed recovery when an earlier interrupted restore has already left encrypted database bytes without active runtime-key configuration. HachiGen now verifies retained keys without persisting them, uses the verified key to make a complete safety backup, and then restores the selected database and key atomically.
 

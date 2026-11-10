@@ -1,6 +1,6 @@
 {
   "name": "hachigen",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Desktop manager for installing, configuring, updating, and running Hachi.",
   "author": {
     "name": "FearlessKenji",
@@ -98,5 +98,9 @@
   "homepage": "https://github.com/FearlessKenji/HachiGen#readme",
   "dependencies": {
     "yaml": "^2.8.1"
+  },
+  "overrides": {
+    "minimatch@9": "11.0.5",
+    "minimatch@10": "11.0.5"
   }
 }

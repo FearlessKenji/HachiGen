@@ -12,13 +12,6 @@ const { createRequire } = require("node:module");
 // table cannot freeze the Electron window by returning thousands of rows.
 const VIEW_ROW_LIMIT = 200;
 const HIDDEN_VIEWER_TABLES = ["schemaMigrations"];
-const CHANNEL_ID_GAP_COUNT_SQL = `
-	SELECT MAX(
-		COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'channels'), 0),
-		COALESCE(MAX(id), 0)
-	) - COUNT(*) AS count
-	FROM channels
-`;
 
 // Clean actions are intentionally conservative. They remove or repair rows that
 // are internally invalid without calling Discord or guessing at server state.
@@ -45,14 +38,6 @@ const CLEAN_ACTIONS = [
 				OR TRIM(guildId) = ''
 				OR guildId NOT IN (SELECT guildId FROM servers);
 		`,
-	},
-	{
-		apply: compactChannelIds,
-		description: "Renumber streamer notification rows so internal channel IDs are sequential, then reset SQLite's next channel ID.",
-		id: "channels-compact-ids",
-		severity: "info",
-		title: "Streamer row ID gaps",
-		countSql: CHANNEL_ID_GAP_COUNT_SQL,
 	},
 	{
 		description: "Remove reaction-role panels whose guild no longer exists, including their role items.",
@@ -400,50 +385,33 @@ function closeDatabase(db) {
 	return db.close();
 }
 
+async function snapshotDatabase(db, dbPath) {
+	await exec(db, "BEGIN");
+	try {
+		// Force a SHARED lock before reading bytes. In rollback-journal mode it
+		// keeps a writer from committing changes until this copy finishes.
+		await get(db, "SELECT name FROM sqlite_master LIMIT 1");
+		const journalMode = String((await get(db, "PRAGMA journal_mode"))?.journal_mode || "").toLowerCase();
+		if (!["delete", "truncate", "persist"].includes(journalMode)) {
+			// A main-file-only copy cannot contain uncheckpointed WAL pages.
+			throw new Error(`A consistent byte-preserving snapshot is unavailable in ${journalMode || "unknown"} journal mode.`);
+		}
+		const content = fs.readFileSync(dbPath);
+		return {
+			bytes: content.length,
+			content: content.toString("base64"),
+			journalMode,
+			ok: true,
+		};
+	} finally {
+		await exec(db, "ROLLBACK");
+	}
+}
+
 async function countRows(db, sql) {
 	// Most review checks return "COUNT(*) AS count"; normalize that value here.
 	const row = await get(db, sql);
 	return Number(row?.count || 0);
-}
-
-async function compactChannelIds(db) {
-	// channels.id is an internal SQLite key; the bot relates stream rows by
-	// streamer/guild fields, so compacting these IDs does not affect Discord IDs.
-	await exec(db, `
-		DROP TABLE IF EXISTS temp.channel_id_compaction;
-		CREATE TEMP TABLE channel_id_compaction (
-			old_id INTEGER PRIMARY KEY,
-			new_id INTEGER NOT NULL UNIQUE
-		);
-		INSERT INTO channel_id_compaction (old_id, new_id)
-		SELECT id, ROW_NUMBER() OVER (ORDER BY id)
-		FROM channels;
-
-		UPDATE channels
-		SET id = -(
-			SELECT new_id
-			FROM channel_id_compaction
-			WHERE old_id = channels.id
-		)
-		WHERE EXISTS (
-			SELECT 1
-			FROM channel_id_compaction
-			WHERE old_id = channels.id
-		);
-
-		UPDATE channels
-		SET id = -id
-		WHERE id < 0;
-
-		DELETE FROM sqlite_sequence
-		WHERE name = 'channels';
-
-		INSERT INTO sqlite_sequence (name, seq)
-		SELECT 'channels', COALESCE(MAX(id), 0)
-		FROM channels;
-
-		DROP TABLE temp.channel_id_compaction;
-	`);
 }
 
 async function tableColumns(db, tableName) {
@@ -777,10 +745,15 @@ async function main() {
 	const request = JSON.parse(requestText);
 	// Read-only Fleet viewers need only the bot's connection adapter. Hachi's
 	// schema contract is loaded solely for native review and sanitation actions.
-	const expectedSchema = request.action === `view` ? {} : loadExpectedSchema(request.root);
-	const db = await openDatabase(request.root, request.dbPath, request.action === "view");
+	const expectedSchema = ["view", "snapshot"].includes(request.action) ? {} : loadExpectedSchema(request.root);
+	const db = await openDatabase(request.root, request.dbPath, ["view", "snapshot"].includes(request.action));
 
 	try {
+		if (request.action === "snapshot") {
+			output(await snapshotDatabase(db, request.dbPath));
+			return;
+		}
+
 		if (request.action === "checkpoint") {
 			// Flush any WAL sidecar data into the main database file before backup.
 			await exec(db, "PRAGMA wal_checkpoint(FULL)");
